@@ -18,14 +18,20 @@ import time
 from pathlib import Path
 
 import openpyxl
+from pathlib import Path as _DwPath
+import os as _dwos
+def _dwb_projects(*kind):
+    """<DWB>\\Projects\\<kind>  (DWB_PROJECTS overrides the Projects folder)."""
+    base = _dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")
+    return _DwPath(base).joinpath(*kind)
 
 HERE = Path(__file__).resolve().parent
 CONFIG_FILE = HERE / "config.xlsx"
-PROJECTS_FILE = HERE / "projects.xlsx"
+PROJECTS_FILE = _dwb_projects("Tools", "AIAnalyzer") / "projects.xlsx"        # <DWB>\\Projects\\Tools\\AIAnalyzer
 JOBS_DIR = HERE / "jobs"
 
 DEFAULT_CONFIG = {
-    "workspace_dir": "",
+    "workspace_dir": "",   # blank = <DWB>\\Projects\\Tools\\AIAnalyzer
     "agent_command": "claude --dangerously-skip-permissions",
     "code_dirs": "",
 }
@@ -52,6 +58,8 @@ def load_config():
             wb.close()
         except Exception:
             pass
+    if not cfg["workspace_dir"].strip():
+        cfg["workspace_dir"] = str(_dwb_projects("Tools", "AIAnalyzer"))      # default: <DWB>\\Projects\\Tools\\AIAnalyzer
     return cfg
 
 
@@ -83,6 +91,7 @@ def ensure_files():
 
 # ── projects ──────────────────────────────────────────────────────────────────────
 def _write_projects(rows):
+    PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Projects"
@@ -148,9 +157,7 @@ def clean_folder_name(name):
 
 def create_project(jira_id, title, folder_name, jira_url=""):
     cfg = load_config()
-    ws_dir = cfg["workspace_dir"].strip()
-    if not ws_dir:
-        return None, "Workspace directory is not configured - set it in the settings first."
+    ws_dir = cfg["workspace_dir"].strip() or str(_dwb_projects("Tools", "AIAnalyzer"))      # default: <DWB>\\Projects\\Tools\\AIAnalyzer
     folder_name = clean_folder_name(folder_name)
     if not folder_name or not folder_name.upper().startswith(jira_id.upper()):
         return None, f"The folder name must start with the JIRA ID ({jira_id})."

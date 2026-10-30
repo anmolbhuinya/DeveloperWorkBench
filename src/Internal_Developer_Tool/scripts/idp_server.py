@@ -23,13 +23,30 @@ from datetime import datetime
 SCRIPT_DIR     = Path(__file__).resolve().parent   # Internal_Developer_Tool/scripts/
 TOOL_ROOT      = SCRIPT_DIR.parent                # Internal_Developer_Tool/
 WORKFLOWS_ROOT = TOOL_ROOT.parent                 # claude_code_workflows/
+
+# ── Project data lives outside the program folder: <DWB>\Projects\<type> ───────────────────────────────
+# (<DWB> = the folder that contains DeveloperWorkBench\; ~\DWB when the program runs from somewhere else; DWB_PROJECTS overrides)
+PROJECTS_HOME = Path(os.environ.get("DWB_PROJECTS") or ((WORKFLOWS_ROOT.parent if WORKFLOWS_ROOT.name.lower() == "developerworkbench" else Path.home() / "DWB") / "Projects"))
+GP_DATA = PROJECTS_HOME / "WorkFlows" / "GP_Build"
+JB_DATA = PROJECTS_HOME / "WorkFlows" / "Jenkins_BaseLine"
+JR_DATA = PROJECTS_HOME / "WorkFlows" / "Jenkins_IT_Regression"
+JCJ_DATA = PROJECTS_HOME / "WorkFlows" / "Jenkins_Commit_Job"
+PUC_DATA = PROJECTS_HOME / "WorkFlows" / "Jenkins_Payor_Utils_Certification"
+LC_DATA = PROJECTS_HOME / "WorkFlows" / "Local_Clone_Tool"
+CW_DATA = PROJECTS_HOME / "WorkFlows" / "Clone_WorkFlow"
+RS_DATA = PROJECTS_HOME / "Remote_Setup"
+RPB_DATA = PROJECTS_HOME / "WorkFlows" / "Remote_Regression_Jenkins_IT_Failure"
+MDL_DATA = PROJECTS_HOME / "WorkFlows" / "Remote_Melissa_Data_Update_License"
+SPRINT_DATA = PROJECTS_HOME / "Project_Management" / "Sprint"
+PROJECTS_HOME.mkdir(parents=True, exist_ok=True)
+AIA_DATA = PROJECTS_HOME / "Tools" / "AIAnalyzer"
 STATIC_DIR     = TOOL_ROOT / "static"
 PID_FILE       = TOOL_ROOT / "ui.pid"
 
 # Clone Workflow data lives in its own folder
 CW_ROOT    = WORKFLOWS_ROOT / "WorkFlows" / "Clone_WorkFlow"
-PROJECTS   = CW_ROOT / "projects.xlsx"
-STATUS_DIR      = CW_ROOT / "projects" / "Payor"
+PROJECTS   = CW_DATA / "projects.xlsx"
+STATUS_DIR      = CW_DATA / "projects" / "Payor"
 WF_METRICS_FILE    = CW_ROOT / "stats" / "stats.xlsx"
 CW_SCHEDULER_CFG   = CW_ROOT / "scheduler_config.xlsx"
 
@@ -133,7 +150,7 @@ JR_ROOT  = WF_DIR / "Jenkins_IT_Regression"
 JCJ_ROOT = WF_DIR / "Jenkins_Commit_Job"
 PUC_ROOT = WF_DIR / "Jenkins_Payor_Utils_Certification"
 RPB_ROOT          = WF_DIR / "Remote_Regression_Jenkins_IT_Failure"
-RPB_PAYOR_PROJ_DIR = RPB_ROOT / "projects" / "Payor" / "projects"
+RPB_PAYOR_PROJ_DIR = RPB_DATA / "Payor" / "projects"
 GP_ROOT       = WF_DIR / "GP_Build"
 
 def _gp_app_slug(app_name):
@@ -174,9 +191,10 @@ LPAYORSERVER = LBD_APPS_ROOT / "Payor" / "lpayorserver.py"
 
 # UI Apps config (Manager, Designer, Admin)
 TEAM_MGMT_ROOT    = WORKFLOWS_ROOT / "Project_Management"
-SPRINT_ROOT       = TEAM_MGMT_ROOT / "Sprint"
+SPRINT_ROOT       = TEAM_MGMT_ROOT / "Sprint"           # Template.xlsx, Rules.xlsx stay here
+SPRINT_DATA_ROOT  = SPRINT_DATA                       # Sprints, PreviousSprints, Projects, Tasks
 SPRINT_TEMPLATE   = SPRINT_ROOT / "Template.xlsx"
-SPRINTS_DIR       = SPRINT_ROOT / "Sprints"
+SPRINTS_DIR       = SPRINT_DATA / "Sprints"
 
 import re as _re_team
 
@@ -208,17 +226,17 @@ def _team_from_sprint_filename(filename):
 def _sprint_team_path(filename):
     team = _team_from_sprint_filename(filename)
     if team:
-        p = SPRINT_ROOT / "Sprints" / team / filename
+        p = SPRINT_DATA / "Sprints" / team / filename
         if p.exists():
             return p
-        p_prev = SPRINT_ROOT / "PreviousSprints" / team / filename
+        p_prev = SPRINT_DATA / "PreviousSprints" / team / filename
         if p_prev.exists():
             return p_prev
         return p
     p = SPRINTS_DIR / filename
     if p.exists():
         return p
-    p_prev = SPRINT_ROOT / "PreviousSprints" / filename
+    p_prev = SPRINT_DATA / "PreviousSprints" / filename
     if p_prev.exists():
         return p_prev
     return p
@@ -227,11 +245,11 @@ def _sprint_sidecar_path(filename):
     stem = filename[:-5] if filename.endswith('.xlsx') else filename
     team = _team_from_sprint_filename(filename)
     if team:
-        return SPRINT_ROOT / "Sprints" / team / f"{stem}.json"
+        return SPRINT_DATA / "Sprints" / team / f"{stem}.json"
     return SPRINTS_DIR / f"{stem}.json"
 
 def _find_project_path(jira_id, team=None):
-    projects_root = SPRINT_ROOT / "Projects"
+    projects_root = SPRINT_DATA / "Projects"
     if team:
         return projects_root / team / f"{jira_id}.xlsx"
     for p in projects_root.glob(f"*/{jira_id}.xlsx"):
@@ -263,7 +281,7 @@ _RPB_LEASE_SECONDS  = 15 * 60
 def _rpb_projects_filelock():
     """Cross-process FileLock for RPB projects.xlsx with 15-min lease eviction."""
     import time as _t
-    _lp = RPB_ROOT / "projects.xlsx.lock"
+    _lp = RPB_DATA / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _RPB_LEASE_SECONDS:
@@ -311,7 +329,7 @@ _MDL_LEASE_SECONDS  = 15 * 60
 def _mdl_projects_filelock():
     """Cross-process FileLock for MDL projects.xlsx with 15-min lease eviction."""
     import time as _t
-    _lp = MDL_ROOT / "projects.xlsx.lock"
+    _lp = MDL_DATA / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _MDL_LEASE_SECONDS:
@@ -388,7 +406,7 @@ _JR_LEASE_SECONDS = 15 * 60
 def _jr_projects_filelock():
     """Cross-process FileLock for JReg projects.xlsx with 15-min lease eviction."""
     import time as _t
-    _lp = JR_ROOT / "projects.xlsx.lock"
+    _lp = JR_DATA / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _JR_LEASE_SECONDS:
@@ -426,7 +444,7 @@ _JB_LEASE_SECONDS = 15 * 60
 def _jb_projects_filelock():
     """Return a FileLock for projects.xlsx, evicting any stale lock older than the lease."""
     import time as _t
-    _lp = JB_ROOT / "projects.xlsx.lock"
+    _lp = JB_DATA / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _JB_LEASE_SECONDS:
@@ -454,7 +472,7 @@ _RS_LEASE_SECONDS   = 15 * 60
 def _rs_projects_filelock():
     """Cross-process FileLock for RS projects.xlsx with 15-min lease eviction."""
     import time as _t
-    _lp = RS_ROOT / "projects.xlsx.lock"
+    _lp = RS_DATA / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _RS_LEASE_SECONDS:
@@ -473,7 +491,7 @@ _CW_LEASE_SECONDS = 15 * 60
 def _cw_projects_filelock():
     """Cross-process FileLock for CW projects.xlsx with 15-min lease eviction."""
     import time as _t
-    _lp = CW_ROOT / "projects.xlsx.lock"
+    _lp = CW_DATA / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _CW_LEASE_SECONDS:
@@ -548,7 +566,7 @@ _build_stats_lock = _threading.Lock()
 def _puc_projects_filelock():
     """Cross-process FileLock for PUC projects.xlsx with 15-min lease eviction."""
     import time as _t
-    _lp = PUC_ROOT / "projects.xlsx.lock"
+    _lp = PUC_DATA / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _PUC_LEASE_SECONDS:
@@ -1751,7 +1769,7 @@ def _read_payor_docker_key(key):
 def _rpb_update_status_in_xlsx(pid, app='Payor', **fields):
     """Update named status columns in projects.xlsx for the given pid."""
     import openpyxl as _xl
-    path = RPB_ROOT / "projects.xlsx"
+    path = RPB_DATA / "projects.xlsx"
     if not path.exists():
         return
     try:
@@ -1774,7 +1792,7 @@ def _rpb_update_status_in_xlsx(pid, app='Payor', **fields):
 
 def _rpb_find_output_files(payor_version, app='Payor'):
     """Return paths to the most recent report xlsx and email docx for a version, or None."""
-    output_dir = RPB_ROOT / "projects" / app / "output"
+    output_dir = RPB_DATA / app / "output"
     if not output_dir.exists():
         return None, None
     v = payor_version
@@ -1791,7 +1809,7 @@ def _run_rpb_steps_bg(pid, payor_version, gp_enabled, app='Payor'):
     import subprocess as _sub
     import os as _os
     app_dir = RPB_ROOT / "projects" / app
-    log_dir = app_dir / "logs"
+    log_dir = RPB_DATA / app / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{pid}_run.log"
     scripts_dir = app_dir / "scripts"
@@ -1884,7 +1902,7 @@ def _run_rpb_steps_bg(pid, payor_version, gp_enabled, app='Payor'):
 
 
 def _rpb_find_proj_xlsx(pid, app='Payor'):
-    proj_dir = RPB_ROOT / "projects" / app / "projects"
+    proj_dir = RPB_DATA / app / "projects"
     if not proj_dir.exists():
         return None
     matches = list(proj_dir.glob(f"{pid}_*.xlsx"))
@@ -1958,7 +1976,7 @@ def _rpb_read_urls(pid, app='Payor'):
 def _rpb_write_urls(pid, version, payor_urls, app='Payor'):
     import openpyxl as _xl
     from openpyxl.styles import Font, PatternFill
-    proj_dir = RPB_ROOT / "projects" / app / "projects"
+    proj_dir = RPB_DATA / app / "projects"
     proj_dir.mkdir(parents=True, exist_ok=True)
     safe = str(version).replace("/", "_").replace("\\", "_")
     path = proj_dir / f"{pid}_{safe}.xlsx"
@@ -2000,16 +2018,16 @@ def _rpb_write_urls(pid, version, payor_urls, app='Payor'):
 
 # Mapping tool key → projects.xlsx path (or None if special)
 _TOOL_PROJECTS = {
-    "baseline":     JB_ROOT  / "projects.xlsx",
-    "jbaseline":    JB_ROOT  / "projects.xlsx",
-    "remote-setup": RS_ROOT  / "projects.xlsx",
-    "melissa":      MDL_ROOT / "projects.xlsx",
-    "clone":        LC_ROOT  / "projects" / "payor_projects.xlsx",
-    "puc":          PUC_ROOT / "projects.xlsx",
-    "jreg":         JR_ROOT  / "projects.xlsx",
-    "jcj":          JCJ_ROOT / "projects.xlsx",
-    "rpb":          RPB_ROOT / "projects.xlsx",
-    "gp-run":       GP_ROOT  / "projects.xlsx",
+    "baseline":     JB_DATA / "projects.xlsx",
+    "jbaseline":    JB_DATA / "projects.xlsx",
+    "remote-setup": RS_DATA / "projects.xlsx",
+    "melissa":      MDL_DATA / "projects.xlsx",
+    "clone":        LC_DATA / "projects" / "payor_projects.xlsx",
+    "puc":          PUC_DATA / "projects.xlsx",
+    "jreg":         JR_DATA / "projects.xlsx",
+    "jcj":          JCJ_DATA / "projects.xlsx",
+    "rpb":          RPB_DATA / "projects.xlsx",
+    "gp-run":       GP_DATA / "projects.xlsx",
 }
 
 RESET = "\x1b[0m"
@@ -2767,7 +2785,7 @@ def _wf_run_engine(pid_proj, polling_s, deps, trigger_fn, check_fn, op_stages, p
                                         try:
                                             import glob as _gl_jr_ck, re as _re_jr_ck
                                             _jr_xl_matches = _gl_jr_ck.glob(
-                                                str(JR_ROOT / "projects" / _jr_app_ck / f"{_jr_pid_ck}_*.xlsx"))
+                                                str(JR_DATA / "projects" / _jr_app_ck / f"{_jr_pid_ck}_*.xlsx"))
                                             if _jr_xl_matches:
                                                 _wb_jr_ck2 = _xl_jr_c.load_workbook(
                                                     _jr_xl_matches[0], read_only=True, data_only=True)
@@ -3446,7 +3464,7 @@ def _build_wf_fns(pid, proj_params):
                     def _capture_puc_pid(_pid_wf=pid, _ver=_puc_ver):
                         _t_puc_tp.sleep(10)
                         try:
-                            _puc_pr = PUC_ROOT / "projects.xlsx"
+                            _puc_pr = PUC_DATA / "projects.xlsx"
                             if not _puc_pr.exists():
                                 return
                             _wb_pp = _xl_puc_tp.load_workbook(str(_puc_pr), read_only=True, data_only=True)
@@ -3501,7 +3519,7 @@ def _build_wf_fns(pid, proj_params):
                 # Read completion status from JB projects.xlsx for this run_id.
                 try:
                     import openpyxl as _xl_chk
-                    _jb_proj = JB_ROOT / "projects.xlsx"
+                    _jb_proj = JB_DATA / "projects.xlsx"
                     if _jb_proj.exists():
                         with _jb_projects_filelock():
                             _wb_chk = _xl_chk.load_workbook(
@@ -3556,7 +3574,7 @@ def _build_wf_fns(pid, proj_params):
             try:
                 import openpyxl as _xl_jr_ck
                 _jr_app_ck = str(proj_params.get("app", "Payor") or "Payor").strip()
-                _jr_proj_path = JR_ROOT / "projects.xlsx"
+                _jr_proj_path = JR_DATA / "projects.xlsx"
                 if _jr_proj_path.exists():
                     with _jreg_projects_lock, _jr_projects_filelock():
                         _wb_jr_ck = _xl_jr_ck.load_workbook(
@@ -3671,7 +3689,7 @@ def _build_wf_fns(pid, proj_params):
                     if _op_raw:
                         try: _op_ck = _js_ck.loads(_op_raw)
                         except Exception: pass
-                    _gp_proj_path = GP_ROOT / "projects.xlsx"
+                    _gp_proj_path = GP_DATA / "projects.xlsx"
                     if not _gp_proj_path.exists():
                         return "running"  # xlsx not present — keep waiting
                     _wb_ck = _xl_ck.load_workbook(str(_gp_proj_path),
@@ -3731,7 +3749,7 @@ def _build_wf_fns(pid, proj_params):
                 return "running"  # trigger hasn't written tool_pid yet
             try:
                 import openpyxl as _xl_mdl, json as _js_mdl
-                _mdl_proj_path = MDL_ROOT / "projects.xlsx"
+                _mdl_proj_path = MDL_DATA / "projects.xlsx"
                 if not _mdl_proj_path.exists():
                     return "running"
                 with _mdl_projects_lock, _mdl_projects_filelock():
@@ -3835,7 +3853,7 @@ def _build_wf_fns(pid, proj_params):
                 # Check GP projects.xlsx for actual project status
                 try:
                     import openpyxl as _xl_mgp_ck, json as _js_mgp_op_ck
-                    _gp_proj_path_mgp = GP_ROOT / "projects.xlsx"
+                    _gp_proj_path_mgp = GP_DATA / "projects.xlsx"
                     if not _gp_proj_path_mgp.exists():
                         return "running"
                     _wb_mgp_ck = _xl_mgp_ck.load_workbook(str(_gp_proj_path_mgp),
@@ -3894,7 +3912,7 @@ def _build_wf_fns(pid, proj_params):
                 return "running"
             try:
                 import openpyxl as _xl_rpb_ck
-                _rpb_ck_path = RPB_ROOT / "projects.xlsx"
+                _rpb_ck_path = RPB_DATA / "projects.xlsx"
                 if not _rpb_ck_path.exists():
                     return "running"
                 with _rpb_projects_lock, _rpb_projects_filelock():
@@ -3940,7 +3958,7 @@ def _build_wf_fns(pid, proj_params):
             try:
                 import openpyxl as _xl_jcj_ck
                 _jcj_app_ck = str(proj_params.get("app", "Payor") or "Payor").strip()
-                _jcj_proj_path = JCJ_ROOT / "projects.xlsx"
+                _jcj_proj_path = JCJ_DATA / "projects.xlsx"
                 if _jcj_proj_path.exists():
                     _wb_jcj_ck = _xl_jcj_ck.load_workbook(
                         str(_jcj_proj_path), read_only=True, data_only=True)
@@ -3986,7 +4004,7 @@ def _build_wf_fns(pid, proj_params):
             try:
                 import openpyxl as _xl_jcjbl_ck
                 _jcjbl_app_ck = str(proj_params.get("app", "Payor") or "Payor").strip()
-                _jcjbl_proj_path = JCJ_ROOT / "projects.xlsx"
+                _jcjbl_proj_path = JCJ_DATA / "projects.xlsx"
                 if _jcjbl_proj_path.exists():
                     _wb_jcjbl_ck = _xl_jcjbl_ck.load_workbook(
                         str(_jcjbl_proj_path), read_only=True, data_only=True)
@@ -4032,7 +4050,7 @@ def _build_wf_fns(pid, proj_params):
             if _puc_ck_pid is not None:
                 try:
                     import openpyxl as _xl_puc_ck
-                    _puc_proj_ck = PUC_ROOT / "projects.xlsx"
+                    _puc_proj_ck = PUC_DATA / "projects.xlsx"
                     if _puc_proj_ck.exists():
                         _wb_puc_ck = _xl_puc_ck.load_workbook(
                             str(_puc_proj_ck), read_only=True, data_only=True)
@@ -4127,7 +4145,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
             if _jb_pid:
                 try:
                     import glob as _gl_bl, openpyxl as _xl_bl, re as _re_bl
-                    _jb_matches = _gl_bl.glob(str(JB_ROOT / "projects" / _jb_app / f"{_jb_pid}_*.xlsx"))
+                    _jb_matches = _gl_bl.glob(str(JB_DATA / "projects" / _jb_app / f"{_jb_pid}_*.xlsx"))
                     if _jb_matches:
                         _wb_bl = _xl_bl.load_workbook(_jb_matches[0], read_only=True, data_only=True)
                         if "jobs" in _wb_bl.sheetnames:
@@ -4158,7 +4176,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
             if rs_pid:
                 try:
                     import openpyxl as _xl_rs
-                    _rs_path = RS_ROOT / "projects.xlsx"
+                    _rs_path = RS_DATA / "projects.xlsx"
                     if _rs_path.exists():
                         with _rs_projects_lock, _rs_projects_filelock():
                             _rs_wb = _xl_rs.load_workbook(str(_rs_path), read_only=True, data_only=True)
@@ -4195,7 +4213,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
                 try:
                     import glob as _gl_jr, openpyxl as _xl_jr, re as _re_jr
                     _jr_matches = _gl_jr.glob(
-                        str(JR_ROOT / "projects" / _jr_app / f"{_jr_pid}_*.xlsx"))
+                        str(JR_DATA / "projects" / _jr_app / f"{_jr_pid}_*.xlsx"))
                     if _jr_matches:
                         _wb_jr_out = _xl_jr.load_workbook(
                             _jr_matches[0], read_only=True, data_only=True)
@@ -4236,7 +4254,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
             if _cb_gp:
                 try:
                     import openpyxl as _xl_gp_out
-                    _gp_proj_path = GP_ROOT / "projects.xlsx"
+                    _gp_proj_path = GP_DATA / "projects.xlsx"
                     if _gp_proj_path.exists():
                         _wb_gp = _xl_gp_out.load_workbook(str(_gp_proj_path), read_only=True, data_only=True)
                         for _sh in ("Payor", "Projects"):
@@ -4264,7 +4282,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
                 try:
                     import openpyxl as _xl_jcj_out
                     _jcj_app_out = str(proj_params.get("app", "Payor") or "Payor").strip()
-                    _jcj_proj_path = JCJ_ROOT / "projects.xlsx"
+                    _jcj_proj_path = JCJ_DATA / "projects.xlsx"
                     if _jcj_proj_path.exists():
                         _wb_jcj_out = _xl_jcj_out.load_workbook(
                             str(_jcj_proj_path), read_only=True, data_only=True)
@@ -4290,7 +4308,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
             _puc_ver_out = str(proj_params.get("payor_version") or proj_params.get("release_branch") or "").strip()
             try:
                 import openpyxl as _xl_puc_out
-                _puc_proj_path = PUC_ROOT / "projects.xlsx"
+                _puc_proj_path = PUC_DATA / "projects.xlsx"
                 if _puc_proj_path.exists():
                     with _puc_projects_lock, _puc_projects_filelock():
                         _wb_puc_out = _xl_puc_out.load_workbook(
@@ -4323,7 +4341,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
                 try:
                     import openpyxl as _xl_jcjbl_out
                     _jcjbl_app_out = str(proj_params.get("app", "Payor") or "Payor").strip()
-                    _jcjbl_proj_path = JCJ_ROOT / "projects.xlsx"
+                    _jcjbl_proj_path = JCJ_DATA / "projects.xlsx"
                     if _jcjbl_proj_path.exists():
                         _wb_jcjbl_out = _xl_jcjbl_out.load_workbook(
                             str(_jcjbl_proj_path), read_only=True, data_only=True)
@@ -4359,7 +4377,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
                 pass
             if _ticket_lc:
                 try:
-                    _idx_path = LC_ROOT / "projects" / "payor_projects.xlsx"
+                    _idx_path = LC_DATA / "projects" / "payor_projects.xlsx"
                     if _idx_path.exists():
                         _wb_lc_idx = _xl_lc.load_workbook(str(_idx_path), read_only=True, data_only=True)
                         _ws_lc_idx = (_wb_lc_idx["Projects"]
@@ -4383,7 +4401,7 @@ def _wf_collect_stage_outputs(pid_proj, sid_key, proj_params, stage_row):
                         if _lc_pid and _lc_pid > 0:
                             _det_files = [
                                 f for f in sorted(
-                                    (LC_ROOT / "projects").glob(f"{_lc_pid}_*.xlsx"))
+                                    (LC_DATA / "projects").glob(f"{_lc_pid}_*.xlsx"))
                                 if not f.name.endswith("_projects.xlsx")
                             ]
                             if _det_files:
@@ -4441,7 +4459,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
             _tab_name = "Baseline"
             _headers  = ["Job Name", "Jenkins URL", "Status"]
             if _tool_pid:
-                _matches = _glob_sr.glob(str(JB_ROOT / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
+                _matches = _glob_sr.glob(str(JB_DATA / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
                 if _matches:
                     try:
                         _wb_jb = _xl_sr.load_workbook(_matches[0], read_only=True, data_only=True)
@@ -4464,7 +4482,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
             _tab_name = "JReg"
             _headers  = ["Job Name", "Jenkins URL", "Status"]
             if _tool_pid:
-                _matches = _glob_sr.glob(str(JR_ROOT / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
+                _matches = _glob_sr.glob(str(JR_DATA / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
                 if _matches:
                     try:
                         _wb_jr = _xl_sr.load_workbook(_matches[0], read_only=True, data_only=True)
@@ -4488,7 +4506,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
             _headers  = ["Job Name", "Build URL", "Status", "Build Version", "Artifact URL"]
             if _tool_pid and _tool_pid.isdigit():
                 _jcj_app_sr = str(_payor_ver and "Payor" or "Payor")
-                _jcj_matches = _glob_sr.glob(str(JCJ_ROOT / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
+                _jcj_matches = _glob_sr.glob(str(JCJ_DATA / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
                 if _jcj_matches:
                     try:
                         _wb_jcj_sr = _xl_sr.load_workbook(_jcj_matches[0], read_only=True, data_only=True)
@@ -4513,7 +4531,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
             _tab_name = "JCJ Baseline"
             _headers  = ["Job Name", "Build URL", "Status", "Build Version", "Artifact URL"]
             if _tool_pid and _tool_pid.isdigit():
-                _jcjbl_matches = _glob_sr.glob(str(JCJ_ROOT / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
+                _jcjbl_matches = _glob_sr.glob(str(JCJ_DATA / "projects" / "Payor" / f"{_tool_pid}_*.xlsx"))
                 if _jcjbl_matches:
                     try:
                         _wb_jcjbl_sr = _xl_sr.load_workbook(_jcjbl_matches[0], read_only=True, data_only=True)
@@ -4538,7 +4556,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
             _tab_name = "Melissa Update"
             _headers  = ["Field", "Value"]
             try:
-                _mdl_path = MDL_ROOT / "projects.xlsx"
+                _mdl_path = MDL_DATA / "projects.xlsx"
                 if _mdl_path.exists():
                     _wb_mdl = _xl_sr.load_workbook(str(_mdl_path), read_only=True, data_only=True)
                     _ws_mdl = _wb_mdl.active
@@ -4572,7 +4590,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
                 else _ticket
             ) or _ticket
             try:
-                _gp_path = GP_ROOT / "projects.xlsx"
+                _gp_path = GP_DATA / "projects.xlsx"
                 if _gp_path.exists() and _lookup_ticket:
                     _wb_gp = _xl_sr.load_workbook(str(_gp_path), read_only=True, data_only=True)
                     if _sheet_name in _wb_gp.sheetnames:
@@ -4612,7 +4630,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
             _tab_name = "Clone"
             _headers  = ["Field", "Value"]
             try:
-                _lc_path = LC_ROOT / "projects" / "payor_projects.xlsx"
+                _lc_path = LC_DATA / "projects" / "payor_projects.xlsx"
                 if _lc_path.exists() and _ticket:
                     with _lc_projects_lock, _lc_per_file_lock(_lc_path):
                         _wb_lc = _xl_sr.load_workbook(str(_lc_path), read_only=True, data_only=True)
@@ -4640,7 +4658,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
                     if _best_lc_pid and _best_lc_pid > 0:
                         _det_lc = [
                             f for f in sorted(
-                                (LC_ROOT / "projects").glob(f"{_best_lc_pid}_*.xlsx"))
+                                (LC_DATA / "projects").glob(f"{_best_lc_pid}_*.xlsx"))
                             if not f.name.endswith("_projects.xlsx")
                         ]
                         if _det_lc:
@@ -4667,7 +4685,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
             _tab_name = "RPB"
             _headers  = ["Field", "Value"]
             try:
-                _rpb_path = RPB_ROOT / "projects.xlsx"
+                _rpb_path = RPB_DATA / "projects.xlsx"
                 if _rpb_path.exists():
                     _wb_rpb = _xl_sr.load_workbook(str(_rpb_path), read_only=True, data_only=True)
                     _ws_rpb = None
@@ -4690,7 +4708,7 @@ def _wf_save_stage_results(pid_proj, sid_key, proj_params, stage_row):
                         _rpb_pid = _rpb_row.get("pid", "")
                         _email_path = ""
                         try:
-                            _out_dir = RPB_ROOT / "projects" / "Payor" / "output" / f"reports_{_rpb_pid}_"
+                            _out_dir = RPB_DATA / "Payor" / "output" / f"reports_{_rpb_pid}_"
                             _em = _glob_sr.glob(str(_out_dir / "Regression_Email*.docx"))
                             if _em:
                                 _email_path = _em[0]
@@ -5840,7 +5858,7 @@ def create_flask_app():
             elif _sk == "remote_setup":
                 _rs_pid = str(_st.get("tool_pid") or "").strip()
                 if _rs_pid and RS_ROOT.exists():
-                    _rs_path = RS_ROOT / "projects.xlsx"
+                    _rs_path = RS_DATA / "projects.xlsx"
                     if _rs_path.exists():
                         try:
                             _wb_rs = _xl_ab.load_workbook(str(_rs_path))
@@ -8260,7 +8278,7 @@ def create_flask_app():
     def api_rpb_projects():
         import openpyxl as _xl
         import json as _json
-        path = RPB_ROOT / "projects.xlsx"
+        path = RPB_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify([])
         wb   = _xl.load_workbook(str(path))
@@ -8314,7 +8332,7 @@ def create_flask_app():
         if not app_name:
             return jsonify({"ok": False, "error": "app_name required"}), 400
         cfg_dir  = LC_ROOT / "project_type_config"
-        proj_dir = LC_ROOT / "projects"
+        proj_dir = LC_DATA / "projects"
         cfg_dir.mkdir(parents=True, exist_ok=True)
         proj_dir.mkdir(parents=True, exist_ok=True)
         cfg_path  = cfg_dir / f"{app_name}_config.xlsx"
@@ -8344,7 +8362,7 @@ def create_flask_app():
         import os as _os_da
         errs = []
         for p in [LC_ROOT / "project_type_config" / f"{app_name}_config.xlsx",
-                  LC_ROOT / "projects" / f"{app_name}_projects.xlsx"]:
+                  LC_DATA / "projects" / f"{app_name}_projects.xlsx"]:
             try:
                 if p.exists():
                     _os_da.remove(str(p))
@@ -8408,7 +8426,7 @@ def create_flask_app():
     @app.route("/api/tools/clone/apps/<app_name>/projects", methods=["GET"])
     def api_clone_get_app_projects(app_name):
         import openpyxl as _xl_gp
-        proj_path = LC_ROOT / "projects" / f"{app_name}_projects.xlsx"
+        proj_path = LC_DATA / "projects" / f"{app_name}_projects.xlsx"
         if not proj_path.exists():
             return jsonify([])
         try:
@@ -8456,7 +8474,7 @@ def create_flask_app():
     @app.route("/api/tools/clone/apps/<app_name>/projects/<project_id>", methods=["DELETE"])
     def api_clone_delete_app_project(app_name, project_id):
         import openpyxl as _xl_dp
-        proj_path = LC_ROOT / "projects" / f"{app_name}_projects.xlsx"
+        proj_path = LC_DATA / "projects" / f"{app_name}_projects.xlsx"
         if not proj_path.exists():
             return jsonify({"ok": True})
         try:
@@ -8859,7 +8877,7 @@ def create_flask_app():
         if not ticket_id:
             return jsonify({"ok": False, "error": "ticket_id required"}), 400
 
-        path = LC_ROOT / "projects" / f"{app_name}_projects.xlsx"
+        path = LC_DATA / "projects" / f"{app_name}_projects.xlsx"
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with _lc_projects_lock:
@@ -8938,7 +8956,7 @@ def create_flask_app():
         import openpyxl as _xl_ex, threading as _thr_ex, subprocess as _sp_ex, re as _re_ex
         from datetime import datetime as _dt_ex
 
-        proj_path = LC_ROOT / "projects" / f"{app_name}_projects.xlsx"
+        proj_path = LC_DATA / "projects" / f"{app_name}_projects.xlsx"
         if not proj_path.exists():
             return jsonify({"ok": False, "error": "Project not found"}), 404
 
@@ -9391,7 +9409,7 @@ def create_flask_app():
         body   = request.get_json() or {}
         action = str(body.get("action", "")).strip()
 
-        proj_path = LC_ROOT / "projects" / f"{app_name}_projects.xlsx"
+        proj_path = LC_DATA / "projects" / f"{app_name}_projects.xlsx"
         if not proj_path.exists():
             return jsonify({"ok": False, "error": "Project not found"}), 404
 
@@ -9627,7 +9645,7 @@ def create_flask_app():
         import openpyxl as _xl_pg
         from datetime import datetime as _dt_pg
 
-        proj_path = LC_ROOT / "projects" / f"{app_name}_projects.xlsx"
+        proj_path = LC_DATA / "projects" / f"{app_name}_projects.xlsx"
         if not proj_path.exists():
             return jsonify({"ok": False, "error": "Project not found"}), 404
 
@@ -9854,7 +9872,7 @@ def create_flask_app():
             if _jreg_wf_pid and _jreg_app:
                 try:
                     import openpyxl as _xl_rg
-                    _pd = JR_ROOT / "projects" / _jreg_app
+                    _pd = JR_DATA / "projects" / _jreg_app
                     if _pd.exists():
                         _fs = sorted(
                             _pd.glob("*.xlsx"),
@@ -9995,7 +10013,7 @@ def create_flask_app():
             if _jreg_abort.is_set():
                 return
             try:
-                proj_dir = JR_ROOT / "projects" / app_name
+                proj_dir = JR_DATA / "projects" / app_name
                 if not proj_dir.exists():
                     _t.sleep(60); continue
                 files = sorted(
@@ -10087,7 +10105,7 @@ def create_flask_app():
         else:
             # _MAX iterations exhausted — force remaining non-final jobs to "conn_err".
             try:
-                _pd_t = JR_ROOT / "projects" / app_name
+                _pd_t = JR_DATA / "projects" / app_name
                 if _pd_t.exists():
                     _ft = sorted(
                         _pd_t.glob("*.xlsx"),
@@ -10123,7 +10141,7 @@ def create_flask_app():
                             "error", "conn_err", "auth_error", "no_builds", "no_url"}
         _any_fail = False
         try:
-            _pd_final = JR_ROOT / "projects" / app_name
+            _pd_final = JR_DATA / "projects" / app_name
             _files_f = sorted(
                 _pd_final.glob("*.xlsx"),
                 key=lambda p: int(p.stem.split("_")[0]) if p.stem.split("_")[0].isdigit() else 0,
@@ -10250,7 +10268,7 @@ def create_flask_app():
             if _jbaseline_abort.is_set():
                 return
             try:
-                proj_dir = JB_ROOT / "projects" / app_name
+                proj_dir = JB_DATA / "projects" / app_name
                 if not proj_dir.exists():
                     _t.sleep(_POLL_S); continue
                 files = sorted(
@@ -10341,7 +10359,7 @@ def create_flask_app():
             # Force any remaining non-final jobs to "conn_err" so recovery does not
             # restart this poller on the next server start.
             try:
-                _pd_t = JB_ROOT / "projects" / app_name
+                _pd_t = JB_DATA / "projects" / app_name
                 if _pd_t.exists():
                     _ft = sorted(
                         _pd_t.glob("*.xlsx"),
@@ -10684,7 +10702,7 @@ def create_flask_app():
             if _poll_app and _wf_pid_ref:
                 try:
                     import openpyxl as _xl_bg
-                    _pd = JB_ROOT / "projects" / _poll_app
+                    _pd = JB_DATA / "projects" / _poll_app
                     if _pd.exists():
                         _fs = sorted(
                             _pd.glob("*.xlsx"),
@@ -10705,7 +10723,7 @@ def create_flask_app():
             if _poll_app:
                 try:
                     import openpyxl as _xl_bg2, sys as _sys_bg
-                    _pd2 = JB_ROOT / "projects" / _poll_app
+                    _pd2 = JB_DATA / "projects" / _poll_app
                     if _pd2.exists():
                         _fs2 = sorted(
                             _pd2.glob("*.xlsx"),
@@ -10713,7 +10731,7 @@ def create_flask_app():
                             reverse=True)
                         if _fs2:
                             _rid2 = int(_fs2[0].stem.split("_")[0])
-                            _proj_xlsx2 = JB_ROOT / "projects.xlsx"
+                            _proj_xlsx2 = JB_DATA / "projects.xlsx"
                             if _proj_xlsx2.exists():
                                 _row_found = True
                                 with _jbaseline_projects_lock, _jb_projects_filelock():
@@ -10992,7 +11010,7 @@ def create_flask_app():
     def api_jbaseline_project_jobs(pid):
         import openpyxl as _xl, requests as _req
         _jbaseline_app = request.args.get("app", "Payor")
-        proj_dir = JB_ROOT / "projects" / _jbaseline_app
+        proj_dir = JB_DATA / "projects" / _jbaseline_app
         if not proj_dir.exists():
             return jsonify([])
         matches = list(proj_dir.glob(f"{pid}_*.xlsx"))
@@ -11210,7 +11228,7 @@ def create_flask_app():
         app_name = (data.get("app") or "Payor").strip()
         if not job_name:
             return jsonify({"ok": False, "error": "job_name required"}), 400
-        proj_dir = JB_ROOT / "projects" / app_name
+        proj_dir = JB_DATA / "projects" / app_name
         matches  = list(proj_dir.glob(f"{pid}_*.xlsx")) if proj_dir.exists() else []
         if not matches:
             return jsonify({"ok": False, "error": "Project not found"}), 404
@@ -11690,7 +11708,7 @@ def create_flask_app():
     def api_jreg_project_jobs(pid):
         import openpyxl as _xl, requests as _req
         _jreg_app = request.args.get("app", "Payor")
-        proj_dir = JR_ROOT / "projects" / _jreg_app
+        proj_dir = JR_DATA / "projects" / _jreg_app
         if not proj_dir.exists():
             return jsonify([])
         matches = list(proj_dir.glob(f"{pid}_*.xlsx"))
@@ -11864,7 +11882,7 @@ def create_flask_app():
         app_name = (data.get("app") or "Payor").strip()
         if not job_name:
             return jsonify({"ok": False, "error": "job_name required"}), 400
-        proj_dir = JR_ROOT / "projects" / app_name
+        proj_dir = JR_DATA / "projects" / app_name
         matches  = list(proj_dir.glob(f"{pid}_*.xlsx")) if proj_dir.exists() else []
         if not matches:
             return jsonify({"ok": False, "error": "Project not found"}), 404
@@ -12136,7 +12154,7 @@ def create_flask_app():
             try:
                 import openpyxl as _xl_rj2, sys as _sys_rj2
                 _pid_int_rj2  = int(pid)
-                _proj_dir_rj2 = JR_ROOT / "projects" / app_name
+                _proj_dir_rj2 = JR_DATA / "projects" / app_name
                 _files_rj2    = sorted(
                     _proj_dir_rj2.glob(f"{_pid_int_rj2}_*.xlsx"),
                     key=lambda p: int(p.stem.split("_")[0]) if p.stem.split("_")[0].isdigit() else 0,
@@ -12199,7 +12217,7 @@ def create_flask_app():
             return jsonify({"ok": False, "error": "invalid pid"}), 400
 
         # Load per-project xlsx
-        _proj_dir_sfj = JR_ROOT / "projects" / app_name
+        _proj_dir_sfj = JR_DATA / "projects" / app_name
         _files_sfj    = sorted(
             _proj_dir_sfj.glob(f"{_pid_sfj}_*.xlsx"),
             key=lambda p: int(p.stem.split("_")[0]) if p.stem.split("_")[0].isdigit() else 0,
@@ -12368,9 +12386,9 @@ def create_flask_app():
     def _mdl_ensure():
         import openpyxl as _xl, zipfile as _zf
         from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _Aln
-        if MDL_ROOT.exists() and not (MDL_ROOT / "projects.xlsx").exists():
+        if MDL_ROOT.exists() and not (MDL_DATA / "projects.xlsx").exists():
             MDL_ROOT.mkdir(parents=True, exist_ok=True)
-        path = MDL_ROOT / "projects.xlsx"
+        path = MDL_DATA / "projects.xlsx"
         if path.exists():
             return path
         wb = _xl.Workbook(); ws = wb.active; ws.title = "Projects"
@@ -12383,7 +12401,7 @@ def create_flask_app():
         wb.save(str(path)); return path
 
     def _mdl_next_pid():
-        path = MDL_ROOT / "projects.xlsx"
+        path = MDL_DATA / "projects.xlsx"
         if not path.exists(): return 1
         import openpyxl as _xl
         try:
@@ -12442,7 +12460,7 @@ def create_flask_app():
     @app.route("/api/tools/melissa/projects/<int:pid>/execute", methods=["POST"])
     def api_melissa_execute_project(pid):
         import openpyxl as _xl, subprocess as _sp, threading as _thr, os as _os_ml, uuid as _uuid_ml
-        path = MDL_ROOT / "projects.xlsx"
+        path = MDL_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": False, "error": "projects.xlsx not found"}), 404
         # Read the project row
@@ -12703,7 +12721,7 @@ def create_flask_app():
 
     @app.route("/api/tools/melissa/images", methods=["GET"])
     def api_melissa_images():
-        img_dir = MDL_ROOT / "remote_images"
+        img_dir = MDL_DATA / "remote_images"
         if not img_dir.exists():
             return jsonify([])
         files = []
@@ -12714,7 +12732,7 @@ def create_flask_app():
 
     @app.route("/api/tools/melissa/images/<path:filename>", methods=["GET"])
     def api_melissa_image_download(filename):
-        img_dir = MDL_ROOT / "remote_images"
+        img_dir = MDL_DATA / "remote_images"
         target  = (img_dir / filename).resolve()
         if not str(target).startswith(str(img_dir.resolve())):
             return jsonify({"error": "forbidden"}), 403
@@ -12765,7 +12783,7 @@ def create_flask_app():
         # Delete per-project detail files FIRST (before removing rows)
         if tool == "gp-run":
             _del_app2 = request.args.get("app", "Payor")
-            _cfg_dir = GP_ROOT / "projects" / _del_app2
+            _cfg_dir = GP_DATA / "projects" / _del_app2
             for _cf in _gp_config_files:
                 _fp = _cfg_dir / _cf
                 try: _fp.unlink()
@@ -12783,19 +12801,19 @@ def create_flask_app():
                     pass
         elif tool == "jreg":
             _jreg_del_app = request.args.get("app", "Payor")
-            for f in (JR_ROOT / "projects" / _jreg_del_app).glob(f"{pid}_*.xlsx"):
+            for f in (JR_DATA / "projects" / _jreg_del_app).glob(f"{pid}_*.xlsx"):
                 try: f.unlink()
                 except Exception: pass
         elif tool == "jcj":
             _jcj_del_app = request.args.get("app", "Payor")
-            _jcj_proj_dir = JCJ_ROOT / "projects" / _jcj_del_app
+            _jcj_proj_dir = JCJ_DATA / "projects" / _jcj_del_app
             if _jcj_proj_dir.exists():
                 for f in _jcj_proj_dir.glob(f"{pid}_*.xlsx"):
                     try: f.unlink()
                     except Exception: pass
         elif tool == "jbaseline":
             _jbaseline_del_app = request.args.get("app", "Payor")
-            _jbaseline_proj_dir = JB_ROOT / "projects" / _jbaseline_del_app
+            _jbaseline_proj_dir = JB_DATA / "projects" / _jbaseline_del_app
             if _jbaseline_proj_dir.exists():
                 for f in _jbaseline_proj_dir.glob(f"{pid}_*.xlsx"):
                     try: f.unlink()
@@ -12877,7 +12895,7 @@ def create_flask_app():
         try:
             import openpyxl as _xl, zipfile as _zf
             app_name = request.args.get("app", "Payor")
-            path = GP_ROOT / "projects.xlsx"
+            path = GP_DATA / "projects.xlsx"
             if not path.exists():
                 return jsonify({"rows": [], "meta": {}})
             # Read projects
@@ -13115,7 +13133,7 @@ def create_flask_app():
             _sys.path.insert(0, _rs_scripts)
         import rvmsetupstatus as _rvm
 
-        path = RS_ROOT / "projects.xlsx"
+        path = RS_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify([])
         import openpyxl as _xl
@@ -13218,7 +13236,7 @@ def create_flask_app():
         if isinstance(_overrides, dict):
             params.update({str(k): str(v) for k, v in _overrides.items() if k})
 
-        path = RS_ROOT / "projects.xlsx"
+        path = RS_DATA / "projects.xlsx"
         now  = _dt.now().strftime("%Y-%m-%d %H:%M")
 
         if not path.exists():
@@ -13263,7 +13281,7 @@ def create_flask_app():
     @app.route("/api/tools/remote-setup/projects/<pid>", methods=["PATCH"])
     def api_remote_setup_patch(pid):
         import openpyxl as _xl, json as _json
-        path = RS_ROOT / "projects.xlsx"
+        path = RS_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": False}), 404
         wb   = _xl.load_workbook(str(path))
@@ -13285,7 +13303,7 @@ def create_flask_app():
     @app.route("/api/tools/remote-setup/projects/<pid>/server-logs", methods=["GET"])
     def api_remote_setup_server_logs(pid):
         import openpyxl as _xl
-        path = RS_ROOT / "projects.xlsx"
+        path = RS_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"error": "project not found"}), 404
         wb   = _xl.load_workbook(str(path))
@@ -13299,7 +13317,7 @@ def create_flask_app():
                 break
         if not config_file:
             return jsonify({"ok": False, "error": "No config file linked to this project"}), 404
-        file_path = RS_ROOT / "configured_servers" / config_file
+        file_path = RS_DATA / "configured_servers" / config_file
         if not file_path.exists():
             return jsonify({"ok": False, "error": f"{config_file} not found"}), 404
         wb2  = _xl.load_workbook(str(file_path))
@@ -13322,7 +13340,7 @@ def create_flask_app():
     @app.route("/api/tools/remote-setup/projects/<pid>/trigger", methods=["POST"])
     def api_remote_setup_trigger(pid):
         import openpyxl as _xl, subprocess as _sp, json as _json
-        path = RS_ROOT / "projects.xlsx"
+        path = RS_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": False, "error": "project not found"}), 404
         with _rs_projects_lock, _rs_projects_filelock():
@@ -13679,7 +13697,7 @@ def create_flask_app():
         app_name = request.args.get("app", "Payor")
         pid      = str(request.args.get("pid", "")).strip()
         info = {}
-        for f in (GP_ROOT / "projects" / app_name).glob(f"{pid}_*_config.xlsx"):
+        for f in (GP_DATA / "projects" / app_name).glob(f"{pid}_*_config.xlsx"):
             try:
                 wb = _oxl.load_workbook(str(f), read_only=True, data_only=True)
                 if "BuildParameters" in wb.sheetnames:
@@ -13853,7 +13871,7 @@ def create_flask_app():
                         ("auto_merge",14),("config_file",60),("status",18),("pr_url",60),("pr_status",14),("job_id",10)]
 
             # projects.xlsx — add sheet
-            proj_path = GP_ROOT / "projects.xlsx"
+            proj_path = GP_DATA / "projects.xlsx"
             wb = _xl.load_workbook(str(proj_path)) if proj_path.exists() else _xl.Workbook()
             if not proj_path.exists() and wb.active:
                 wb.remove(wb.active)
@@ -13865,7 +13883,7 @@ def create_flask_app():
                 wb.save(str(proj_path))
 
             # projects/{AppName}/ folder
-            (GP_ROOT / "projects" / app_name).mkdir(parents=True, exist_ok=True)
+            (GP_DATA / "projects" / app_name).mkdir(parents=True, exist_ok=True)
 
             # config.xlsx — add entry if not present
             cfg_path = GP_ROOT / "gp_job_config.xlsx"
@@ -13892,7 +13910,7 @@ def create_flask_app():
             return jsonify({"ok": False, "error": "App name required"})
         try:
             # projects.xlsx — remove sheet
-            proj_path = GP_ROOT / "projects.xlsx"
+            proj_path = GP_DATA / "projects.xlsx"
             if proj_path.exists():
                 wb = _xl.load_workbook(str(proj_path))
                 if app_name in wb.sheetnames:
@@ -13900,7 +13918,7 @@ def create_flask_app():
                     wb.save(str(proj_path))
 
             # projects/{AppName}/ — delete folder
-            proj_dir = GP_ROOT / "projects" / app_name
+            proj_dir = GP_DATA / "projects" / app_name
             if proj_dir.exists():
                 _sh.rmtree(str(proj_dir))
 
@@ -14026,7 +14044,7 @@ def create_flask_app():
     @app.route("/api/tools/jreg/apps", methods=["GET"])
     def api_jreg_apps_get():
         import openpyxl as _xl
-        path = JR_ROOT / "projects.xlsx"
+        path = JR_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": True, "apps": []})
         try:
@@ -14055,7 +14073,7 @@ def create_flask_app():
             _PROJ_WIDTHS = [12, 22, 8, 14, 22]
 
             # projects.xlsx — add sheet
-            proj_path = JR_ROOT / "projects.xlsx"
+            proj_path = JR_DATA / "projects.xlsx"
             wb = _xl.load_workbook(str(proj_path)) if proj_path.exists() else _xl.Workbook()
             if not proj_path.exists() and wb.active:
                 wb.remove(wb.active)
@@ -14068,7 +14086,7 @@ def create_flask_app():
                 wb.save(str(proj_path))
 
             # projects/{AppName}/ folder
-            (JR_ROOT / "projects" / app_name).mkdir(parents=True, exist_ok=True)
+            (JR_DATA / "projects" / app_name).mkdir(parents=True, exist_ok=True)
 
             # jenkins_params/{AppName}/ folder
             (JR_ROOT / "jenkins_params" / app_name).mkdir(parents=True, exist_ok=True)
@@ -14108,7 +14126,7 @@ def create_flask_app():
             return jsonify({"ok": False, "error": "App name required"})
         try:
             # projects.xlsx — remove sheet
-            proj_path = JR_ROOT / "projects.xlsx"
+            proj_path = JR_DATA / "projects.xlsx"
             if proj_path.exists():
                 wb = _xl.load_workbook(str(proj_path))
                 if app_name in wb.sheetnames:
@@ -14116,7 +14134,7 @@ def create_flask_app():
                     wb.save(str(proj_path))
 
             # projects/{AppName}/ — delete folder
-            proj_dir = JR_ROOT / "projects" / app_name
+            proj_dir = JR_DATA / "projects" / app_name
             if proj_dir.exists():
                 _sh.rmtree(str(proj_dir))
 
@@ -14386,7 +14404,7 @@ def create_flask_app():
     @app.route("/api/tools/jbaseline/apps", methods=["GET"])
     def api_jbaseline_apps_get():
         import openpyxl as _xl
-        path = JB_ROOT / "projects.xlsx"
+        path = JB_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": True, "apps": []})
         try:
@@ -14414,7 +14432,7 @@ def create_flask_app():
             _PROJ_COLS   = ["project_id", "payor_release_version", "runs", "status", "triggered_at"]
             _PROJ_WIDTHS = [12, 22, 8, 14, 22]
 
-            proj_path = JB_ROOT / "projects.xlsx"
+            proj_path = JB_DATA / "projects.xlsx"
             wb = _xl.load_workbook(str(proj_path)) if proj_path.exists() else _xl.Workbook()
             if not proj_path.exists() and wb.active:
                 wb.remove(wb.active)
@@ -14426,7 +14444,7 @@ def create_flask_app():
                     ws.column_dimensions[ws.cell(1, i).column_letter].width = w
                 wb.save(str(proj_path))
 
-            (JB_ROOT / "projects" / app_name).mkdir(parents=True, exist_ok=True)
+            (JB_DATA / "projects" / app_name).mkdir(parents=True, exist_ok=True)
             (JB_ROOT / "jenkins_params" / app_name).mkdir(parents=True, exist_ok=True)
 
             cfg_path = JB_ROOT / "baseline_job_config.xlsx"
@@ -14461,14 +14479,14 @@ def create_flask_app():
         if not app_name:
             return jsonify({"ok": False, "error": "App name required"})
         try:
-            proj_path = JB_ROOT / "projects.xlsx"
+            proj_path = JB_DATA / "projects.xlsx"
             if proj_path.exists():
                 wb = _xl.load_workbook(str(proj_path))
                 if app_name in wb.sheetnames:
                     del wb[app_name]
                     wb.save(str(proj_path))
 
-            proj_dir = JB_ROOT / "projects" / app_name
+            proj_dir = JB_DATA / "projects" / app_name
             if proj_dir.exists():
                 _sh.rmtree(str(proj_dir))
 
@@ -14804,7 +14822,7 @@ def create_flask_app():
 
             # --- allocate project ID ---
             JCJ_ROOT.mkdir(parents=True, exist_ok=True)
-            proj_path  = JCJ_ROOT / "projects.xlsx"
+            proj_path  = JCJ_DATA / "projects.xlsx"
             wb_p       = _xl.load_workbook(str(proj_path)) if proj_path.exists() else _xl.Workbook()
             sheet_p    = app_name
             if sheet_p not in wb_p.sheetnames:
@@ -14936,7 +14954,7 @@ def create_flask_app():
 
             def _save_jcj_detail():
                 try:
-                    _pdir = JCJ_ROOT / "projects" / app_name
+                    _pdir = JCJ_DATA / "projects" / app_name
                     _pdir.mkdir(parents=True, exist_ok=True)
                     _wb_j = _xl.Workbook()
                     _ws_j = _wb_j.active; _ws_j.title = "jobs"
@@ -15092,7 +15110,7 @@ def create_flask_app():
 
     def _jcj_update_project_status(app_name, pid, status):
         import openpyxl as _xl
-        proj_path = JCJ_ROOT / "projects.xlsx"
+        proj_path = JCJ_DATA / "projects.xlsx"
         if not proj_path.exists():
             return
         try:
@@ -15115,7 +15133,7 @@ def create_flask_app():
     def _jcj_update_project_payor_version(app_name, pid, version):
         """Write extracted build_version into payor_release_version column of projects.xlsx."""
         import openpyxl as _xl
-        proj_path = JCJ_ROOT / "projects.xlsx"
+        proj_path = JCJ_DATA / "projects.xlsx"
         if not proj_path.exists():
             return
         try:
@@ -15231,7 +15249,7 @@ def create_flask_app():
     def api_jcj_project_jobs(pid):
         import openpyxl as _xl, time as _tj
         _jcj_app = request.args.get("app", "Payor")
-        proj_dir = JCJ_ROOT / "projects" / _jcj_app
+        proj_dir = JCJ_DATA / "projects" / _jcj_app
         if not proj_dir.exists():
             return jsonify([])
         matches = list(proj_dir.glob(f"{pid}_*.xlsx"))
@@ -15451,7 +15469,7 @@ def create_flask_app():
         app_name = (data.get("app") or "Payor").strip()
         if not job_name:
             return jsonify({"ok": False, "error": "job_name required"}), 400
-        proj_dir  = JCJ_ROOT / "projects" / app_name
+        proj_dir  = JCJ_DATA / "projects" / app_name
         proj_path = proj_dir / f"{pid}_run.xlsx"
         if not proj_path.exists():
             matches   = list(proj_dir.glob(f"{pid}_*.xlsx")) if proj_dir.exists() else []
@@ -15562,7 +15580,7 @@ def create_flask_app():
     @app.route("/api/tools/jcj/apps", methods=["GET"])
     def api_jcj_apps_get():
         import openpyxl as _xl
-        path = JCJ_ROOT / "projects.xlsx"
+        path = JCJ_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": True, "apps": []})
         try:
@@ -15590,7 +15608,7 @@ def create_flask_app():
             _PROJ_COLS   = ["project_id", "payor_release_version", "runs", "status", "triggered_at"]
             _PROJ_WIDTHS = [12, 22, 8, 14, 22]
 
-            proj_path = JCJ_ROOT / "projects.xlsx"
+            proj_path = JCJ_DATA / "projects.xlsx"
             JCJ_ROOT.mkdir(parents=True, exist_ok=True)
             wb = _xl.load_workbook(str(proj_path)) if proj_path.exists() else _xl.Workbook()
             if app_name not in wb.sheetnames:
@@ -15603,7 +15621,7 @@ def create_flask_app():
                     wb.remove(wb["Sheet"])
                 wb.save(str(proj_path))
 
-            (JCJ_ROOT / "projects" / app_name).mkdir(parents=True, exist_ok=True)
+            (JCJ_DATA / "projects" / app_name).mkdir(parents=True, exist_ok=True)
             (JCJ_ROOT / "jenkins_params" / app_name).mkdir(parents=True, exist_ok=True)
 
             cfg_path = JCJ_ROOT / "commit_job_config.xlsx"
@@ -15630,7 +15648,7 @@ def create_flask_app():
         if not app_name:
             return jsonify({"ok": False, "error": "App name required"})
         try:
-            proj_path = JCJ_ROOT / "projects.xlsx"
+            proj_path = JCJ_DATA / "projects.xlsx"
             if proj_path.exists():
                 wb = _xl.load_workbook(str(proj_path))
                 if app_name in wb.sheetnames:
@@ -16302,7 +16320,7 @@ def create_flask_app():
     @app.route("/api/tools/puc/projects", methods=["GET"])
     def api_puc_projects():
         import openpyxl as _xl
-        path = PUC_ROOT / "projects.xlsx"
+        path = PUC_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"rows": [], "meta": {}})
         with _puc_projects_lock, _puc_projects_filelock():
@@ -16377,7 +16395,7 @@ def create_flask_app():
         import openpyxl as _xl
         body = request.get_json() or {}
         baseline_url = (body.get("baseline_url") or "").strip()
-        path = PUC_ROOT / "projects.xlsx"
+        path = PUC_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": False, "error": "projects.xlsx not found"})
         try:
@@ -16773,7 +16791,7 @@ def create_flask_app():
         baseline_version = str(data.get("baseline_version", "")).strip()
         if not payor_version:
             return jsonify({"ok": False, "error": "payor_version is required"}), 400
-        path = RPB_ROOT / "projects.xlsx"
+        path = RPB_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": False, "error": "projects.xlsx not found — run setupremoteregtool first"}), 500
         _rpb_create_app = str(data.get("app", "Payor") or "Payor").strip()
@@ -16813,7 +16831,7 @@ def create_flask_app():
             if t and t.is_alive():
                 return jsonify({"ok": False, "error": "Already running"}), 409
 
-        proj_path = RPB_ROOT / "projects.xlsx"
+        proj_path = RPB_DATA / "projects.xlsx"
         if not proj_path.exists():
             return jsonify({"ok": False, "error": "projects.xlsx not found"}), 404
 
@@ -16884,7 +16902,7 @@ def create_flask_app():
             except Exception:
                 pass
         # Kill remote VM process if step2 is in-flight (recovery file holds the remote PID)
-        _rec_file = RPB_ROOT / "projects" / _abort_app / "logs" / f"{pid}_recovery.json"
+        _rec_file = RPB_DATA / _abort_app / "logs" / f"{pid}_recovery.json"
         if _rec_file.exists():
             def _kill_remote_vm():
                 try:
@@ -16915,7 +16933,7 @@ def create_flask_app():
     @app.route("/api/tools/rpb/projects/<int:pid>/log", methods=["GET"])
     def api_rpb_log(pid):
         _log_app = request.args.get("app") or _rpb_thread_apps.get(pid, "Payor")
-        log_path = RPB_ROOT / "projects" / _log_app / "logs" / f"{pid}_run.log"
+        log_path = RPB_DATA / _log_app / "logs" / f"{pid}_run.log"
         with _rpb_threads_lock:
             t = _rpb_threads.get(pid)
             running = t is not None and t.is_alive()
@@ -16929,7 +16947,7 @@ def create_flask_app():
     def api_rpb_progress(pid):
         import re as _re_prog
         _prog_app = request.args.get("app") or _rpb_thread_apps.get(pid, "Payor")
-        log_path = RPB_ROOT / "projects" / _prog_app / "logs" / f"{pid}_run.log"
+        log_path = RPB_DATA / _prog_app / "logs" / f"{pid}_run.log"
         result = {"completed": None, "total": None, "eta": None}
         if not log_path.exists():
             return jsonify(result)
@@ -16955,7 +16973,7 @@ def create_flask_app():
     @app.route("/api/tools/rpb/projects/<int:pid>/download/<file_type>", methods=["GET"])
     def api_rpb_download(pid, file_type):
         import openpyxl as _xl
-        proj_path = RPB_ROOT / "projects.xlsx"
+        proj_path = RPB_DATA / "projects.xlsx"
         _dl_app = request.args.get("app", "Payor")
         payor_version = ""
         if proj_path.exists():
@@ -17002,7 +17020,7 @@ def create_flask_app():
         import openpyxl as _xl
         _app = request.args.get("app", "Payor")
         # Resolve payor_version
-        proj_path     = RPB_ROOT / "projects.xlsx"
+        proj_path     = RPB_DATA / "projects.xlsx"
         payor_version = ""
         if proj_path.exists():
             with _rpb_projects_lock, _rpb_projects_filelock():
@@ -17049,7 +17067,7 @@ def create_flask_app():
         _app    = request.args.get("app", "Payor")
         updates = (request.get_json() or {}).get("sheets", {})
         # Resolve payor_version
-        proj_path     = RPB_ROOT / "projects.xlsx"
+        proj_path     = RPB_DATA / "projects.xlsx"
         payor_version = ""
         if proj_path.exists():
             with _rpb_projects_lock, _rpb_projects_filelock():
@@ -17087,7 +17105,7 @@ def create_flask_app():
     def api_rpb_report_summary(pid):
         import openpyxl as _xl
         _app = request.args.get("app", "Payor")
-        proj_path     = RPB_ROOT / "projects.xlsx"
+        proj_path     = RPB_DATA / "projects.xlsx"
         payor_version = ""
         if proj_path.exists():
             with _rpb_projects_lock, _rpb_projects_filelock():
@@ -17128,7 +17146,7 @@ def create_flask_app():
         data = request.get_json() or {}
         if "payor_urls" in data:
             # Look up payor_version from projects.xlsx for the filename
-            path = RPB_ROOT / "projects.xlsx"
+            path = RPB_DATA / "projects.xlsx"
             _patch_app = str(data.get("app", "Payor") or "Payor").strip()
             version = str(pid)
             if path.exists():
@@ -17149,7 +17167,7 @@ def create_flask_app():
     @app.route("/api/tools/rpb/apps", methods=["GET"])
     def api_rpb_apps_get():
         import openpyxl as _xl
-        path = RPB_ROOT / "projects.xlsx"
+        path = RPB_DATA / "projects.xlsx"
         if not path.exists():
             return jsonify({"ok": True, "apps": ["Payor"]})
         try:
@@ -17178,7 +17196,7 @@ def create_flask_app():
                                 "rpb_status", "regression_status", "gp_status", "payor_urls", "notes"]
             _RPB_PROJ_WIDTHS = [8, 16, 14, 20, 14, 18, 14, 120, 50]
 
-            proj_path = RPB_ROOT / "projects.xlsx"
+            proj_path = RPB_DATA / "projects.xlsx"
             wb = _xl.load_workbook(str(proj_path)) if proj_path.exists() else _xl.Workbook()
             if not proj_path.exists() and wb.active:
                 wb.remove(wb.active)
@@ -17190,9 +17208,9 @@ def create_flask_app():
                     ws.column_dimensions[ws.cell(1, i).column_letter].width = w
                 wb.save(str(proj_path))
 
-            (RPB_ROOT / "projects" / app_name / "projects").mkdir(parents=True, exist_ok=True)
-            (RPB_ROOT / "projects" / app_name / "logs").mkdir(parents=True, exist_ok=True)
-            (RPB_ROOT / "projects" / app_name / "output").mkdir(parents=True, exist_ok=True)
+            (RPB_DATA / app_name / "projects").mkdir(parents=True, exist_ok=True)
+            (RPB_DATA / app_name / "logs").mkdir(parents=True, exist_ok=True)
+            (RPB_DATA / app_name / "output").mkdir(parents=True, exist_ok=True)
 
             wb2 = _xl.load_workbook(str(proj_path), read_only=True)
             apps_list = list(wb2.sheetnames)
@@ -17207,7 +17225,7 @@ def create_flask_app():
         if not app_name:
             return jsonify({"ok": False, "error": "App name required"})
         try:
-            proj_path = RPB_ROOT / "projects.xlsx"
+            proj_path = RPB_DATA / "projects.xlsx"
             if proj_path.exists():
                 wb = _xl.load_workbook(str(proj_path))
                 if app_name in wb.sheetnames:
@@ -27620,7 +27638,7 @@ def create_flask_app():
             if SPRINTS_DIR.exists():
                 for f in sorted(SPRINTS_DIR.glob("**/*.xlsx"), reverse=True):
                     sprints.append({"name": f.stem, "file": f.name})
-            prev_root = SPRINT_ROOT / "PreviousSprints"
+            prev_root = SPRINT_DATA / "PreviousSprints"
             if prev_root.exists():
                 for f in sorted(prev_root.glob("**/*.xlsx"), reverse=True):
                     sprints.append({"name": f.stem, "file": f.name, "previous": True})
@@ -27638,7 +27656,7 @@ def create_flask_app():
         _LIMIT = 60
         # Collect all sprint files: current Sprints/** + PreviousSprints/**
         _all_files = []
-        for _glob_root in (SPRINTS_DIR, SPRINT_ROOT / "PreviousSprints"):
+        for _glob_root in (SPRINTS_DIR, SPRINT_DATA / "PreviousSprints"):
             if _glob_root.exists():
                 _all_files.extend(sorted(_glob_root.glob("**/*.xlsx"), reverse=True))
         try:
@@ -27726,7 +27744,7 @@ def create_flask_app():
         safe_end   = _safe(sprint_end_date)
         safe_team  = _safe(team_name)
         safe_name  = _safe(sprint_name)
-        team_dir = SPRINT_ROOT / "Sprints" / safe_team
+        team_dir = SPRINT_DATA / "Sprints" / safe_team
         team_dir.mkdir(parents=True, exist_ok=True)
         dest = team_dir / f"{safe_team}_{safe_end}_{safe_name}.xlsx"
         if dest.exists():
@@ -28488,7 +28506,7 @@ def create_flask_app():
 
             # ── Move to PreviousSprints/{team} ──────────────────────────────
             team = _team_from_sprint_filename(filename)
-            prev_dir = SPRINT_ROOT / "PreviousSprints" / team if team else SPRINT_ROOT / "PreviousSprints"
+            prev_dir = SPRINT_DATA / "PreviousSprints" / team if team else SPRINT_DATA / "PreviousSprints"
             prev_dir.mkdir(parents=True, exist_ok=True)
             _shutil_sc.move(str(src), str(prev_dir / filename))
             sidecar = src.parent / f"{src.stem}.json"
@@ -28941,7 +28959,7 @@ def create_flask_app():
         release_date     = str(body.get("release_date")     or "").strip()
         if not jira_id or not branches:
             return jsonify({"ok": False, "error": "jira_id and at least one branch required"})
-        proj_team_dir = SPRINT_ROOT / "Projects" / team if team else SPRINT_ROOT / "Projects"
+        proj_team_dir = SPRINT_DATA / "Projects" / team if team else SPRINT_DATA / "Projects"
         proj_team_dir.mkdir(parents=True, exist_ok=True)
         dest = proj_team_dir / f"{jira_id}.xlsx"
         if dest.exists():
@@ -29054,7 +29072,7 @@ def create_flask_app():
                         _aws.cell(row=1, column=len(_ah_hdr)+1).value = "Date Added"
                 adhoc_ws_arg = _aws if freeze_dev else None
                 count = _apply_board_issues(wb["Sprint Board"], issues, creds["base_url"], creds,
-                                            freeze_dev=freeze_dev, team=_team_rb, sprint_root=SPRINT_ROOT,
+                                            freeze_dev=freeze_dev, team=_team_rb, sprint_root=SPRINT_DATA,
                                             adhoc_ws=adhoc_ws_arg)
             wb.save(str(target))
             wb.close()
@@ -29772,7 +29790,7 @@ def create_flask_app():
 
     def _tasks_path(filename):
         team = _team_from_sprint_filename(filename or "") or "_default"
-        d = SPRINT_ROOT / "Tasks"
+        d = SPRINT_DATA / "Tasks"
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{team}.json"
 
@@ -32029,7 +32047,7 @@ def create_flask_app():
         with _jreg_op_lock:
             _jreg_op["poll_interval_s"] = _poll
 
-        _proj_root = JR_ROOT / "projects"
+        _proj_root = JR_DATA / "projects"
         if not _proj_root.exists():
             return
         for _app_dir in _proj_root.iterdir():
@@ -32096,7 +32114,7 @@ def create_flask_app():
                 # Ensure the row exists in projects.xlsx (may be missing after a crash).
                 try:
                     _run_id = int(_files[0].stem.split("_")[0])
-                    _proj_xlsx = JR_ROOT / "projects.xlsx"
+                    _proj_xlsx = JR_DATA / "projects.xlsx"
                     _row_found = False
                     if _proj_xlsx.exists():
                         with _jreg_projects_lock, _jr_projects_filelock():
@@ -32168,7 +32186,7 @@ def create_flask_app():
             _jbaseline_op["poll_interval_s"] = _poll
 
         # Scan per-project xlsx files for any run with non-final job statuses
-        _proj_root = JB_ROOT / "projects"
+        _proj_root = JB_DATA / "projects"
         if not _proj_root.exists():
             return
         for _app_dir in _proj_root.iterdir():
@@ -32237,7 +32255,7 @@ def create_flask_app():
                     # called OUTSIDE the with-block to avoid deadlock (FileLock is non-reentrant).
                     try:
                         _run_id = int(_files[0].stem.split("_")[0])
-                        _proj_xlsx = JB_ROOT / "projects.xlsx"
+                        _proj_xlsx = JB_DATA / "projects.xlsx"
                         _row_found = False
                         if _proj_xlsx.exists():
                             with _jb_projects_filelock():
@@ -32433,7 +32451,7 @@ def create_flask_app():
                         _stale_hrs = max(1, int(_r[1]))
             except Exception:
                 pass
-        _proj_root = JCJ_ROOT / "projects"
+        _proj_root = JCJ_DATA / "projects"
         if not _proj_root.exists():
             return
         for _app_dir in _proj_root.iterdir():
@@ -32497,7 +32515,7 @@ def create_flask_app():
                        if str(_p.get("status", "") or "").lower() in _rvm._ACTIVE_STATUSES]
             if _active:
                 # Check if projects.xlsx is older than stale threshold
-                _proj_path_rs = RS_ROOT / "projects.xlsx"
+                _proj_path_rs = RS_DATA / "projects.xlsx"
                 _stale_pids = []
                 if _proj_path_rs.exists():
                     try:
@@ -32532,7 +32550,7 @@ def create_flask_app():
         """Check _mdl_run_procs for completed runs and sync status to projects.xlsx."""
         import openpyxl as _xl_mds
         try:
-            _path = MDL_ROOT / "projects.xlsx"
+            _path = MDL_DATA / "projects.xlsx"
             if not _path.exists():
                 return
             with _mdl_run_lock:
@@ -32614,7 +32632,7 @@ def create_flask_app():
             except Exception:
                 pass
 
-        _rpb_proj_xlsx = RPB_ROOT / "projects.xlsx"
+        _rpb_proj_xlsx = RPB_DATA / "projects.xlsx"
         if not _rpb_proj_xlsx.exists():
             return
 
@@ -32647,7 +32665,7 @@ def create_flask_app():
 
         def _rpb_recovery_thread_fn(pid, app, payor_version, gp_enabled):
             import subprocess as _sub_rec, os as _os_rec, sys as _sys_rec
-            log_dir     = RPB_ROOT / "projects" / app / "logs"
+            log_dir     = RPB_DATA / app / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path    = log_dir / f"{pid}_run.log"
             scripts_dir = RPB_ROOT / "projects" / app / "scripts"
@@ -32718,7 +32736,7 @@ def create_flask_app():
                     pass
 
             # Recovery file check
-            _rec_file = RPB_ROOT / "projects" / _app_i / "logs" / f"{_pid_i}_recovery.json"
+            _rec_file = RPB_DATA / _app_i / "logs" / f"{_pid_i}_recovery.json"
             if not _rec_file.exists():
                 # step2 hadn't started or already completed — can't safely resume
                 _rpb_update_status_in_xlsx(_pid_i, _app_i, status="Failed",
@@ -33056,6 +33074,24 @@ def create_flask_app():
                 pass
             os._exit(0)
         _th_stop.Thread(target=_die, daemon=True).start()
+        return jsonify({"ok": True})
+
+    @app.route("/api/setup/run-tool", methods=["POST"])
+    def api_setup_run_tool():
+        """Start ExportProjects.exe / ImportProjects.exe / CreateInstaller.exe from the DWB folder (they open their own window)."""
+        tool = (request.get_json() or {}).get("tool", "")
+        exe_name = {"export": "ExportProjects.exe", "import": "ImportProjects.exe", "installer": "CreateInstaller.exe"}.get(tool)
+        if not exe_name:
+            return jsonify({"ok": False, "error": "Unknown tool"}), 400
+        dwb = WORKFLOWS_ROOT.parent if WORKFLOWS_ROOT.name.lower() == "developerworkbench" else Path.home() / "DWB"
+        exe = dwb / exe_name
+        if not exe.is_file():
+            return jsonify({"ok": False, "error": f"{exe_name} was not found in {dwb}. Build it with build.ps1 in the Workspace and run Deploy.exe."})
+        try:
+            subprocess.Popen([str(exe)], cwd=str(dwb), close_fds=True,
+                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        except OSError as e:
+            return jsonify({"ok": False, "error": str(e)})
         return jsonify({"ok": True})
 
     @app.route("/api/setup/dwb-folders", methods=["GET"])

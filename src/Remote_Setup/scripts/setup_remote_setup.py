@@ -18,6 +18,10 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 SCRIPT_DIR   = Path(__file__).resolve().parent
 TOOL_ROOT    = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "Remote_Setup"        # project data: <DWB>\Projects\Remote_Setup
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CMD_DIR      = Path.home() / ".local" / "bin"
 SECRETS_PATH = TOOL_ROOT.parent / "secrets.xlsx"
 
@@ -337,7 +341,7 @@ def main():
     _ensure_config()
     _ensure_vms()
 
-    servers_dir = TOOL_ROOT / "configured_servers"
+    servers_dir = DATA_ROOT / "configured_servers"
     if not servers_dir.exists():
         servers_dir.mkdir(parents=True)
         print(f"  [create] configured_servers/")

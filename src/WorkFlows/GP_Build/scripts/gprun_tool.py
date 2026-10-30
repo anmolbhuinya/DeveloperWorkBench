@@ -28,13 +28,17 @@ from api_errors import atlassian_error, jenkins_error, connection_error, http
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
 TOOL_ROOT      = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "GP_Build"        # project data: <DWB>\Projects\WorkFlows\GP_Build
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 WORKFLOWS_ROOT = TOOL_ROOT.parent
 
 CONFIG_PATH    = TOOL_ROOT / "gp_job_config.xlsx"
 GP_PARAMS_PATH = TOOL_ROOT / "gp_params" / "payor_gp_params.xlsx"
 SECRETS_PATH   = WORKFLOWS_ROOT.parent / "secrets.xlsx"
-PROJECTS_PATH  = TOOL_ROOT / "projects.xlsx"
-PROJECTS_DIR   = TOOL_ROOT / "projects"
+PROJECTS_PATH  = DATA_ROOT / "projects.xlsx"
+PROJECTS_DIR   = DATA_ROOT / "projects"
 
 _PROJ_LEASE_SECONDS = 15 * 60
 

@@ -17,6 +17,10 @@ from pathlib import Path
 from datetime import datetime
 
 TOOL_ROOT  = Path(__file__).resolve().parent.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Local_Clone_Tool"        # project data: <DWB>\Projects\WorkFlows\Local_Clone_Tool
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 PAGE_SIZE  = 10
 
 # ANSI colour helpers
@@ -50,12 +54,12 @@ def _status_color(status):
 
 
 def _projects_path(ptype):
-    return TOOL_ROOT / "projects" / f"{ptype}_projects.xlsx"
+    return DATA_ROOT / "projects" / f"{ptype}_projects.xlsx"
 
 
 def _find_project_detail_file(project_id):
     """Locate per-project detail file by scanning projects/<pid>_*.xlsx."""
-    proj_dir = TOOL_ROOT / "projects"
+    proj_dir = DATA_ROOT / "projects"
     for f in sorted(proj_dir.glob(f"{project_id}_*.xlsx")):
         if not f.name.endswith("_projects.xlsx"):
             return str(f)

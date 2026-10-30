@@ -33,10 +33,13 @@ except ImportError:
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
 TOOL_ROOT      = SCRIPT_DIR.parent
-PROJECTS_ROOT  = TOOL_ROOT.parent.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+PROJECTS_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Remote_Regression_Jenkins_IT_Failure"        # project data: <DWB>\Projects\WorkFlows\Remote_Regression_Jenkins_IT_Failure
+PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
 PROJECTS_PATH  = PROJECTS_ROOT / "projects.xlsx"
 CONFIG_PATH    = TOOL_ROOT / "config.xlsx"
-PROJ_DETAIL_DIR = TOOL_ROOT / "projects"
+PROJ_DETAIL_DIR = PROJECTS_ROOT / TOOL_ROOT.name / "projects"
 
 _PROJ_LEASE_SECONDS = 15 * 60
 

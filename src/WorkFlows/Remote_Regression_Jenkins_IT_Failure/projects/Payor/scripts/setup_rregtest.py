@@ -54,7 +54,11 @@ def setup():
             print("  [skip] node not found -- config.xlsx not created. "
                   "Run  node scripts/create_config_xlsx.js  manually.")
 
-    projects = TOOL_ROOT.parent.parent / "projects.xlsx"
+    from pathlib import Path as _DwPath
+    import os as _dwos
+    _base = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Remote_Regression_Jenkins_IT_Failure"
+    _base.mkdir(parents=True, exist_ok=True)
+    projects = _base / "projects.xlsx"
     if projects.exists():
         print("  [skip] projects.xlsx already exists")
     else:

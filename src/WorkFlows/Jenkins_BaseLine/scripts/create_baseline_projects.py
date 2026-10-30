@@ -6,7 +6,11 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
 
 TOOL_ROOT = Path(__file__).resolve().parent.parent
-OUT_PATH  = TOOL_ROOT / "projects.xlsx"
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Jenkins_BaseLine"        # project data: <DWB>\Projects\WorkFlows\Jenkins_BaseLine
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+OUT_PATH  = DATA_ROOT / "projects.xlsx"
 
 COLUMNS = ["project_id", "payor_release_version", "job_name", "phase", "completed", "job_id", "triggered_at"]
 WIDTHS  = [12,           22,                      20,          14,      14,          10,        22]

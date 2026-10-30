@@ -16,6 +16,10 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TOOL_ROOT  = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Jenkins_Payor_Utils_Certification"        # project data: <DWB>\Projects\WorkFlows\Jenkins_Payor_Utils_Certification
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CMD_DIR    = Path.home() / ".local" / "bin"
 
 HEADER_FILL = PatternFill("solid", fgColor="1F3864")
@@ -99,7 +103,7 @@ def _ensure_config():
 
 
 def _ensure_projects():
-    path = TOOL_ROOT / "projects.xlsx"
+    path = DATA_ROOT / "projects.xlsx"
     if path.exists():
         print(f"  [ok]     projects.xlsx")
         return

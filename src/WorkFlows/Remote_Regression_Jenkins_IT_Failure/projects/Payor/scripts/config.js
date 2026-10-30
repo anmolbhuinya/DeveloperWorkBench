@@ -23,6 +23,19 @@ const APP_DIR = process.env.RPB_APP_DIR
 
 const CONFIG_XLSX = path.join(APP_DIR, 'config.xlsx');
 
+// Project data (projects.xlsx, <app>/projects, <app>/output, <app>/logs) lives in <DWB>\Projects\WorkFlows\Remote_Regression_Jenkins_IT_Failure
+const DATA_BASE = (() => {
+  let root = process.env.DWB_PROJECTS ? path.resolve(process.env.DWB_PROJECTS) : null;
+  if (!root) {
+    let d = __dirname;
+    while (path.basename(d).toLowerCase() !== 'developerworkbench' && path.dirname(d) !== d) d = path.dirname(d);
+    root = path.basename(d).toLowerCase() === 'developerworkbench' ? path.join(path.dirname(d), 'Projects') : path.join(require('os').homedir(), 'DWB', 'Projects');
+  }
+  return path.join(root, 'WorkFlows', 'Remote_Regression_Jenkins_IT_Failure');
+})();
+const DATA_APP = path.join(DATA_BASE, path.basename(APP_DIR));
+fs.mkdirSync(DATA_APP, { recursive: true });
+
 if (!fs.existsSync(CONFIG_XLSX)) {
   console.error('ERROR: config.xlsx not found at', CONFIG_XLSX);
   console.error('Run:  node create_config_xlsx.js  to generate it.');
@@ -113,8 +126,8 @@ const srcDirEnv  = general['srcDirEnv']  || 'SRCDIR';
 
 // Read baseline and GP URL from the latest per-project xlsx
 function findLatestProjectXlsx() {
-  const projectsXlsx = path.join(APP_DIR, '..', '..', 'projects.xlsx');
-  const projDir      = path.join(APP_DIR, 'projects');
+  const projectsXlsx = path.join(DATA_BASE, 'projects.xlsx');
+  const projDir      = path.join(DATA_APP, 'projects');
   if (!fs.existsSync(projectsXlsx) || !fs.existsSync(projDir)) return { xlsxPath: null, pid: null };
   // RPB_PID env var lets the IDP target a specific project when spawning scripts
   const targetPid = process.env.RPB_PID ? parseInt(process.env.RPB_PID, 10) : NaN;
@@ -237,6 +250,7 @@ module.exports = {
     const baselineFile    = `Baseline_${appName}_IT_Status_${pid}_${regVersion}.xlsx`;
     return {
       nodeModules,
+      dataAppDir:      DATA_APP,
       outputDir:       general['outputDir']      || null,
       outputFileName:  general['outputFileName'] || '',
       baselineDir:     general['baselineDir']    || path.join(APP_DIR, 'baseline'),

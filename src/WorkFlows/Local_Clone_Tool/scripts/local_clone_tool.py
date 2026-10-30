@@ -291,19 +291,29 @@ def _get_or_create_projects_wb(path):
     return wb
 
 
+def _projects_dir(tool_root):
+    """Project data (<type>_projects.xlsx and <pid>_<ticket>.xlsx) lives in <DWB>\\Projects\\Local_Clone, not in the tool folder."""
+    from pathlib import Path as _P
+    import os as _o
+    base = _o.environ.get("DWB_PROJECTS") or (next((q.parent for q in _P(__file__).resolve().parents if q.name.lower() == "developerworkbench"), _P.home() / "DWB") / "Projects")
+    d = _P(base) / "Local_Clone" / "projects"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
+
 def _projects_path(tool_root, ptype):
-    return os.path.join(tool_root, "projects", f"{ptype}_projects.xlsx")
+    return os.path.join(_projects_dir(tool_root), f"{ptype}_projects.xlsx")
 
 
 def _project_detail_path(tool_root, project_id, ticket_id):
     """Path for per-project detail xlsx: projects/<pid>_<ticket_id>.xlsx"""
     safe = str(ticket_id).replace("/", "_").replace("\\", "_")
-    return os.path.join(str(tool_root), "projects", f"{project_id}_{safe}.xlsx")
+    return os.path.join(_projects_dir(tool_root), f"{project_id}_{safe}.xlsx")
 
 
 def _find_project_detail_file(tool_root, project_id):
     """Locate per-project detail file by scanning projects/<pid>_*.xlsx."""
-    proj_dir = Path(tool_root) / "projects"
+    proj_dir = Path(_projects_dir(tool_root))
     for f in sorted(proj_dir.glob(f"{project_id}_*.xlsx")):
         if not f.name.endswith("_projects.xlsx"):
             return str(f)

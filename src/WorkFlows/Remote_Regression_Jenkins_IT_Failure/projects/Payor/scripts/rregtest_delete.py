@@ -13,7 +13,11 @@ import openpyxl
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
-PROJECTS_PATH = TOOL_ROOT.parent.parent / "projects.xlsx"
+from pathlib import Path as _DwPath
+import os as _dwos
+_PROJ_BASE = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Remote_Regression_Jenkins_IT_Failure"        # project data: <DWB>\Projects\WorkFlows\Remote_Regression_Jenkins_IT_Failure
+_PROJ_BASE.mkdir(parents=True, exist_ok=True)
+PROJECTS_PATH = _PROJ_BASE / "projects.xlsx"
 
 RESET = "\x1b[0m"
 def bold(s): return f"\x1b[1m{s}{RESET}"

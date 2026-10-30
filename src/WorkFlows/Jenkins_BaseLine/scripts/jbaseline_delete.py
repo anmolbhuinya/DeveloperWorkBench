@@ -15,14 +15,18 @@ import filelock as _filelock
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
-PROJECTS_PATH = TOOL_ROOT / "projects.xlsx"
-PROJECTS_DIR  = TOOL_ROOT / "projects"
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Jenkins_BaseLine"        # project data: <DWB>\Projects\WorkFlows\Jenkins_BaseLine
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+PROJECTS_PATH = DATA_ROOT / "projects.xlsx"
+PROJECTS_DIR  = DATA_ROOT / "projects"
 
 _JB_LEASE_SECONDS = 15 * 60
 
 def _projects_filelock():
     """Cross-process FileLock for projects.xlsx with 15-min lease eviction."""
-    _lp = TOOL_ROOT / "projects.xlsx.lock"
+    _lp = DATA_ROOT / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _time.time() - _lp.stat().st_mtime > _JB_LEASE_SECONDS:

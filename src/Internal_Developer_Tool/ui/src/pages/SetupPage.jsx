@@ -39,6 +39,18 @@ export default function SetupPage() {
       .then(r => r.json()).then(d => { if (!d.ok) setOpenErr(d.error || 'Could not open folder') })
       .catch(() => setOpenErr('Could not reach server'))
   }
+  const [toolMsg, setToolMsg] = useState('')
+  const runTool = (tool) => {
+    setToolMsg('')
+    fetch('/api/setup/run-tool', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool }) })
+      .then(r => r.json()).then(d => { if (!d.ok) setToolMsg(d.error || 'Could not start the tool') })
+      .catch(() => setToolMsg('Could not reach server'))
+  }
+  const TOOLS = [
+    { tool: 'export',    label: 'Export Projects',  icon: '/tool-export.png',    tip: 'ExportProjects.exe - save your projects, settings and run history as one zip' },
+    { tool: 'import',    label: 'Import Projects',  icon: '/tool-import.png',    tip: 'ImportProjects.exe - restore an export zip (a backup of replaced files is kept)' },
+    { tool: 'installer', label: 'Create Installer', icon: '/tool-installer.png', tip: 'CreateInstaller.exe - build DeveloperWorkbenchSetup.exe from this installation' },
+  ]
   const openBtn = {
     background: 'transparent', color: 'var(--primary)', border: '1px solid var(--border)', borderRadius: 4,
     padding: '4px 12px', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
@@ -214,6 +226,17 @@ export default function SetupPage() {
           {dwbSaveMsg && <span style={{ fontSize: 12, color: dwbSaveMsg === 'Saved' ? 'var(--success)' : 'var(--danger)' }}>{dwbSaveMsg}</span>}
         </div>
         {openErr && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>{openErr}</div>}
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 14 }}>
+          {TOOLS.map(t => (
+            <button key={t.tool} onClick={() => runTool(t.tool)} title={t.tip}
+              style={{ ...openBtn, color: 'var(--text)', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 14px 6px 8px', fontSize: 13, fontWeight: 600 }}>
+              <img src={t.icon} alt="" width={26} height={26} style={{ borderRadius: 6, display: 'block' }} />
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {toolMsg && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>{toolMsg}</div>}
 
         <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '14px 0 6px' }}>
           Folders in Developer Workbench ({dwbFolders.folders.length})

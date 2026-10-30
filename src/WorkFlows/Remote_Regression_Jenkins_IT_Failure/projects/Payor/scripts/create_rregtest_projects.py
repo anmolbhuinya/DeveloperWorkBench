@@ -6,7 +6,10 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
-PROJECTS_ROOT = TOOL_ROOT.parent.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+PROJECTS_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Remote_Regression_Jenkins_IT_Failure"        # project data: <DWB>\Projects\WorkFlows\Remote_Regression_Jenkins_IT_Failure
+PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
 OUT           = PROJECTS_ROOT / "projects.xlsx"
 
 HDR_FONT = Font(bold=True, color="FFFFFF", name="Calibri")

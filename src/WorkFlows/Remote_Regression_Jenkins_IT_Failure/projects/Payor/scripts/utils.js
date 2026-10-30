@@ -15,7 +15,7 @@ function makeReportSubdir() {
 }
 
 function resolveOutputDir() {
-  const baseDir = cfg.paths.outputDir || path.join(APP_DIR, 'output');
+  const baseDir = cfg.paths.outputDir || path.join(cfg.paths.dataAppDir || APP_DIR, 'output');
   const subdir  = process.env.RPRT_REPORT_SUBDIR || makeReportSubdir();
   const dir     = path.join(baseDir, subdir);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

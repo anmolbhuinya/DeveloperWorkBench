@@ -16,6 +16,10 @@ import openpyxl
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
 TOOL_ROOT      = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Jenkins_IT_Regression"        # project data: <DWB>\Projects\WorkFlows\Jenkins_IT_Regression
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 WORKFLOWS_ROOT = TOOL_ROOT.parent
 GP_SCRIPTS     = WORKFLOWS_ROOT / "GP_Build" / "scripts"
 
@@ -29,8 +33,8 @@ http = session()
 
 SECRETS_PATH  = WORKFLOWS_ROOT.parent / "secrets.xlsx"
 REG_CONFIG    = TOOL_ROOT / "reg_job_config.xlsx"
-PROJECTS_PATH = TOOL_ROOT / "projects.xlsx"
-PROJECTS_DIR  = TOOL_ROOT / "projects"
+PROJECTS_PATH = DATA_ROOT / "projects.xlsx"
+PROJECTS_DIR  = DATA_ROOT / "projects"
 
 # ── ANSI colours ──────────────────────────────────────────────
 RESET  = "\x1b[0m"

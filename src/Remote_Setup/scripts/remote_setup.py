@@ -21,13 +21,17 @@ from openpyxl.styles import Font, PatternFill
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "Remote_Setup"        # project data: <DWB>\Projects\Remote_Setup
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 SECRETS_PATH  = TOOL_ROOT.parent / "secrets.xlsx"
 
 _RS_LEASE_SECONDS = 15 * 60
 
 def _rs_projects_filelock():
     """Cross-process FileLock for projects.xlsx with 15-min lease eviction."""
-    _lp = TOOL_ROOT / "projects.xlsx.lock"
+    _lp = DATA_ROOT / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if time.time() - _lp.stat().st_mtime > _RS_LEASE_SECONDS:
@@ -399,8 +403,8 @@ def _resolve_build_url(queue_url, secrets, max_wait=20, poll_interval=4):
 # Projects log (projects.xlsx) + per-server config (configured_servers/)
 # ---------------------------------------------------------------------------
 
-PROJECTS_PATH      = TOOL_ROOT / "projects.xlsx"
-SERVERS_DIR        = TOOL_ROOT / "configured_servers"
+PROJECTS_PATH      = DATA_ROOT / "projects.xlsx"
+SERVERS_DIR        = DATA_ROOT / "configured_servers"
 PROJECTS_HEADERS   = ["pid", "timestamp", "vm_name", "vm_ip", "status", "jenkins_url", "queue_url", "config_file"]
 PROJECTS_WIDTHS    = [6, 20, 22, 18, 12, 80, 60, 40]
 

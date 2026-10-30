@@ -20,7 +20,11 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
-PROJECTS_PATH = TOOL_ROOT / "projects.xlsx"
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Clone_WorkFlow"        # project data: <DWB>\Projects\WorkFlows\Clone_WorkFlow
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+PROJECTS_PATH = DATA_ROOT / "projects.xlsx"
 STATUS_DIR    = TOOL_ROOT / "project_status"
 
 PROJ_HEADERS = ["pid", "ticket", "payor_version", "stages",

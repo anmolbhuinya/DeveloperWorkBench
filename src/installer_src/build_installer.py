@@ -1,4 +1,4 @@
-r"""Build DeveloperWorkbenchSetup.exe from an installed Developer Workbench  (self-contained: bundled Python, wrappers, icon).
+﻿r"""Build DeveloperWorkbenchSetup.exe from an installed Developer Workbench  (self-contained: bundled Python, wrappers, icon).
 
 Used two ways:
   * by  CreateInstaller.exe  (this file is embedded in it):
@@ -37,7 +37,7 @@ PY_SKIP_REL = {"python/Doc", "python/include", "python/libs", "python/Scripts", 
                "python/Lib/turtledemo", "python/Lib/ensurepip", "python/Lib/lib2to3", "python/Lib/tkinter", "python/tcl",
                "python/Lib/site-packages/pip"}
 # run history shipped as an empty template (header row only)
-TEMPLATE_XLSX = {"WorkFlows/GP_Build/projects.xlsx"}
+TEMPLATE_XLSX = set()      # project data now lives in <DWB>\Projects (not part of the program folder)
 
 START_BAT = r"""@echo off
 rem Starts the Developer Workbench with its bundled Python and opens the browser (the desktop shortcut does this without a terminal).
@@ -100,6 +100,7 @@ this installation, by default into your Downloads folder.
 ExportProjects.exe saves your projects, settings and run history as one zip (default: Downloads); ImportProjects.exe restores it.
 
 The folders next to this one (AI_Workspace, HE_UI_Clients, Projects, Workspace) are where the Workbench keeps its work.
+Project data (GP, Jenkins, Clone, Remote Setup/Regression, Melissa, Sprint, AI Analyzer ...) is stored in Projects\<type>, one sub-folder per project type.
 """
 
 

@@ -22,6 +22,10 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TOOL_ROOT  = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Local_Clone_Tool"        # project data: <DWB>\Projects\WorkFlows\Local_Clone_Tool
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 HEADER_FILL = PatternFill("solid", fgColor="1F3864")
 HEADER_FONT = Font(color="FFFFFF", bold=True, name="Calibri")
@@ -292,7 +296,7 @@ def _maybe_add_config_row_keys(path, jira_prefix=""):
 # ── projects/<type>_projects.xlsx ─────────────────────────────────────────────
 
 def _ensure_project_log(ptype):
-    dir_  = TOOL_ROOT / "projects"
+    dir_  = DATA_ROOT / "projects"
     dir_.mkdir(parents=True, exist_ok=True)
     path  = dir_ / f"{ptype}_projects.xlsx"
 

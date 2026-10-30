@@ -48,13 +48,64 @@ static class Program
 
 class Manifest
 {
-    public string Created = "", Machine = "", User = "", Home = "", DwbRoot = "";
+    public string Created = "", Machine = "", User = "", Home = "", DwbRoot = "", SrcRoot = "";
     public int Files; public bool Secrets;
 }
 
 static class Importer
 {
     static readonly string[] TextExt = { ".json", ".sql", ".xml", ".csv", ".txt", ".properties" };
+
+
+    // Project data used to live inside the program folder; it now lives in <DWB>\Projects\<type>.
+    // Returns the path below Projects\ for a legacy program-relative path, or null when it is not project data.
+    public static string MapLegacy(string rel)
+    {
+        string r = rel.Replace('/', '\\');
+        string[][] simple = {
+            new string[] { @"WorkFlows\GP_Build\", "GP_Build" }, new string[] { @"WorkFlows\Jenkins_BaseLine\", "Jenkins_BaseLine" },
+            new string[] { @"WorkFlows\Jenkins_IT_Regression\", "Jenkins_IT_Regression" }, new string[] { @"WorkFlows\Jenkins_Commit_Job\", "Jenkins_Commit_Job" },
+            new string[] { @"WorkFlows\Jenkins_Payor_Utils_Certification\", "Payor_Utils_Certification" }, new string[] { @"WorkFlows\Clone_WorkFlow\", "Clone_Workflow" } };
+        foreach (string[] p in simple)
+            if (r.StartsWith(p[0], StringComparison.OrdinalIgnoreCase))
+            {
+                string t = r.Substring(p[0].Length);
+                if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"projects\", StringComparison.OrdinalIgnoreCase)) return p[0] + t;
+            }
+        if (r.StartsWith(@"Remote_Setup\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(13);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"configured_servers\", StringComparison.OrdinalIgnoreCase)) return @"Remote_Setup\" + t;
+        }
+        if (r.StartsWith(@"WorkFlows\Remote_Melissa_Data_Update_License\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"WorkFlows\Remote_Melissa_Data_Update_License\".Length);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"remote_images\", StringComparison.OrdinalIgnoreCase)) return @"WorkFlows\Remote_Melissa_Data_Update_License\" + t;
+        }
+        if (r.StartsWith(@"WorkFlows\Local_Clone_Tool\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"WorkFlows\Local_Clone_Tool\".Length);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"projects\", StringComparison.OrdinalIgnoreCase)) return @"WorkFlows\Local_Clone_Tool\" + t;
+        }
+        if (r.StartsWith(@"WorkFlows\Remote_Regression_Jenkins_IT_Failure\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"WorkFlows\Remote_Regression_Jenkins_IT_Failure\".Length);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase)) return @"WorkFlows\Remote_Regression_Jenkins_IT_Failure\projects.xlsx";
+            if (t.StartsWith(@"projects\", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] q = t.Split('\\');                       // projects \ <app> \ (projects|output|logs) \ ...
+                if (q.Length > 3 && (q[2] == "projects" || q[2] == "output" || q[2] == "logs")) return @"WorkFlows\Remote_Regression_Jenkins_IT_Failure\" + string.Join("\\", q, 1, q.Length - 1);
+            }
+        }
+        if (r.StartsWith(@"Project_Management\Sprint\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"Project_Management\Sprint\".Length);
+            foreach (string d in new string[] { @"Sprints\", @"PreviousSprints\", @"Projects\", @"Tasks\" })
+                if (t.StartsWith(d, StringComparison.OrdinalIgnoreCase)) return @"Project_Management\Sprint\" + t;
+        }
+        if (r.Equals(@"Tools\AIAnalyzer\projects.xlsx", StringComparison.OrdinalIgnoreCase)) return @"Tools\AIAnalyzer\projects.xlsx";
+        return null;
+    }
 
     static string Field(string json, string name)
     {
@@ -69,7 +120,7 @@ static class Importer
             ZipArchiveEntry e = z.GetEntry("manifest.json");
             if (e == null) return null;
             string json; using (StreamReader r = new StreamReader(e.Open(), Encoding.UTF8)) json = r.ReadToEnd();
-            Manifest m = new Manifest { Created = Field(json, "created"), Machine = Field(json, "machine"), User = Field(json, "user"), Home = Field(json, "home"), DwbRoot = Field(json, "dwb_root") };
+            Manifest m = new Manifest { Created = Field(json, "created"), Machine = Field(json, "machine"), User = Field(json, "user"), Home = Field(json, "home"), DwbRoot = Field(json, "dwb_root"), SrcRoot = Field(json, "src_root") };
             Match f = Regex.Match(json, "\"files\"\\s*:\\s*(\\d+)"); if (f.Success) m.Files = int.Parse(f.Groups[1].Value);
             m.Secrets = Regex.IsMatch(json, "\"secrets\"\\s*:\\s*true");
             return m;
@@ -137,6 +188,8 @@ static class Importer
             // path rewrite rules (longest first)
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             List<string[]> pairs = new List<string[]>();
+            // the exported program folder (DeveloperWorkBench, or an old DeveloperPlatform) -> this installation's program folder
+            if (m.SrcRoot.Length > 0 && !m.SrcRoot.Equals(src, StringComparison.OrdinalIgnoreCase)) pairs.Add(new string[] { m.SrcRoot, src });
             if (m.DwbRoot.Length > 0 && !m.DwbRoot.Equals(dwbRoot, StringComparison.OrdinalIgnoreCase)) pairs.Add(new string[] { m.DwbRoot, dwbRoot });
             if (m.Home.Length > 0 && !m.Home.Equals(home, StringComparison.OrdinalIgnoreCase)) pairs.Add(new string[] { m.Home, home });
             if (pairs.Count > 0) log("Paths from the export will be rewritten: " + string.Join("  ", pairs.ConvertAll(delegate (string[] p) { return p[0] + " -> " + p[1]; }).ToArray()));
@@ -146,19 +199,25 @@ static class Importer
             if (wasUp) { log("Stopping the Workbench while the data is copied ..."); Launcher(src, "--stop"); Thread.Sleep(2500); }
 
             string backup = Path.Combine(dwbRoot, "import_backup", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            string projRoot = Path.Combine(dwbRoot, "Projects");
             int added = 0, replaced = 0, rewritten = 0;
             using (ZipArchive z = ZipFile.OpenRead(zipPath))
             {
                 foreach (ZipArchiveEntry e in z.Entries)
                 {
-                    if (!e.FullName.StartsWith("data/", StringComparison.Ordinal) || e.FullName.EndsWith("/")) continue;
-                    string rel = e.FullName.Substring(5).Replace('/', '\\');
-                    string dest = Path.GetFullPath(Path.Combine(src, rel));
-                    if (!dest.StartsWith(src + "\\", StringComparison.OrdinalIgnoreCase)) continue;      // never write outside the installation
+                    if (e.FullName.EndsWith("/")) continue;
+                    bool isProj = e.FullName.StartsWith("projects/", StringComparison.Ordinal);
+                    if (!isProj && !e.FullName.StartsWith("data/", StringComparison.Ordinal)) continue;
+                    string rel = e.FullName.Substring(isProj ? 9 : 5).Replace('/', '\\');
+                    string baseDir = src;
+                    if (isProj) baseDir = projRoot;                                     // <DWB>\Projects\<type>\...
+                    else { string mp = MapLegacy(rel); if (mp != null) { rel = mp; baseDir = projRoot; } }   // older exports kept project data inside the program folder
+                    string dest = Path.GetFullPath(Path.Combine(baseDir, rel));
+                    if (!dest.StartsWith(baseDir + "\\", StringComparison.OrdinalIgnoreCase)) continue;      // never write outside the installation
                     Directory.CreateDirectory(Path.GetDirectoryName(dest));
                     if (File.Exists(dest))
                     {
-                        string b = Path.Combine(backup, rel);
+                        string b = Path.Combine(backup, isProj || baseDir == projRoot ? "Projects" : "DeveloperWorkBench", rel);
                         Directory.CreateDirectory(Path.GetDirectoryName(b));
                         File.Copy(dest, b, true);
                         replaced++;

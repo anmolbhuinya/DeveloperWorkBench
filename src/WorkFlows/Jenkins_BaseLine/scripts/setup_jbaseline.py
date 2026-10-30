@@ -16,6 +16,10 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TOOL_ROOT  = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Jenkins_BaseLine"        # project data: <DWB>\Projects\WorkFlows\Jenkins_BaseLine
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 _SYSTEM_CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -148,7 +152,7 @@ def setup_skeleton():
     else:
         run_script(SCRIPT_DIR / "create_baseline_config.py")
 
-    projects = TOOL_ROOT / "projects.xlsx"
+    projects = DATA_ROOT / "projects.xlsx"
     if projects.exists():
         print("  [skip] projects.xlsx already exists")
     else:
@@ -167,7 +171,7 @@ def setup_skeleton():
     else:
         _create_git_config()
 
-    projects_dir = TOOL_ROOT / "projects"
+    projects_dir = DATA_ROOT / "projects"
     if projects_dir.is_dir():
         print("  [skip] projects/ folder already exists")
     else:

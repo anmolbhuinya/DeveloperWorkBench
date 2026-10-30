@@ -26,8 +26,12 @@ except ImportError:
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
 TOOL_ROOT      = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "GP_Build"        # project data: <DWB>\Projects\WorkFlows\GP_Build
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 WORKFLOWS_ROOT = TOOL_ROOT.parent
-PROJECTS_PATH  = TOOL_ROOT / "projects.xlsx"
+PROJECTS_PATH  = DATA_ROOT / "projects.xlsx"
 ETA_CACHE_PATH = TOOL_ROOT / "eta_cache.json"
 CONFIG_PATH    = TOOL_ROOT / "gp_job_config.xlsx"
 SECRETS_PATH   = WORKFLOWS_ROOT.parent / "secrets.xlsx"
@@ -678,7 +682,7 @@ def print_detail(row, ctx=None):
     am_raw     = str(row.get("auto_merge")     or "")
     sonar_raw  = str(row.get("sonar")          or "")
     cfg_name   = str(row.get("config_file")    or "")
-    cfg_raw    = str(TOOL_ROOT / "projects" / "Payor" / cfg_name) if cfg_name else ""
+    cfg_raw    = str(DATA_ROOT / "projects" / "Payor" / cfg_name) if cfg_name else ""
 
     repo_m   = re.match(r'(https://github\.com/[^/]+/[^/]+)/pull/\d+', pr_url_raw)
     repo_url = repo_m.group(1) if repo_m else ""

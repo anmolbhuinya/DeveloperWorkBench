@@ -13,8 +13,12 @@ from pathlib import Path
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
-PROJECTS_PATH = TOOL_ROOT / "projects.xlsx"
-PROJECTS_DIR  = TOOL_ROOT / "projects"
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Jenkins_IT_Regression"        # project data: <DWB>\Projects\WorkFlows\Jenkins_IT_Regression
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+PROJECTS_PATH = DATA_ROOT / "projects.xlsx"
+PROJECTS_DIR  = DATA_ROOT / "projects"
 
 R     = "\x1b[0m"
 BOLD  = lambda s: f"\x1b[1m{s}{R}"

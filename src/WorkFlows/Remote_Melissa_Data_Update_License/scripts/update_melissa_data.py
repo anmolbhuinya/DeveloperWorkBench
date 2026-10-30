@@ -33,9 +33,13 @@ except ImportError:
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Remote_Melissa_Data_Update_License"        # project data: <DWB>\Projects\WorkFlows\Remote_Melissa_Data_Update_License
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 VMS_PATH      = TOOL_ROOT.parent.parent / "vms.xlsx"
-PROJECTS_PATH = TOOL_ROOT / "projects.xlsx"
-IMAGES_DIR    = TOOL_ROOT / "remote_images"
+PROJECTS_PATH = DATA_ROOT / "projects.xlsx"
+IMAGES_DIR    = DATA_ROOT / "remote_images"
 STATS_DIR     = TOOL_ROOT / "stats"
 SECRETS_PATH  = TOOL_ROOT.parent.parent / "secrets.xlsx"
 
@@ -46,7 +50,7 @@ _PROJECTS_LEASE_SECS  = 15 * 60
 def _projects_filelock():
     """Cross-process FileLock for projects.xlsx with 15-min lease eviction."""
     import time as _t
-    _lp = TOOL_ROOT / "projects.xlsx.lock"
+    _lp = DATA_ROOT / "projects.xlsx.lock"
     if _lp.exists():
         try:
             if _t.time() - _lp.stat().st_mtime > _PROJECTS_LEASE_SECS:

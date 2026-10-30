@@ -11,6 +11,10 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
 TOOL_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Local_Clone_Tool"        # project data: <DWB>\Projects\WorkFlows\Local_Clone_Tool
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 HEADER_FILL = PatternFill("solid", fgColor="4472C4")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
@@ -124,7 +128,7 @@ def create_project_log(ptype):
         ws_prs.column_dimensions[ws_prs.cell(1, col).column_letter].width = width
         set_header(ws_prs.cell(1, col), header)
 
-    out = os.path.join(TOOL_ROOT, "projects", f"{ptype}_projects.xlsx")
+    out = os.path.join(DATA_ROOT, "projects", f"{ptype}_projects.xlsx")
     wb.save(out)
     print(f"  {ptype}_projects.xlsx -> {out}  (Projects + PRs sheets)")
 

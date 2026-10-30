@@ -16,8 +16,12 @@ import openpyxl
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
-SERVERS_DIR   = TOOL_ROOT / "configured_servers"
-PROJECTS_PATH = TOOL_ROOT / "projects.xlsx"
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "Remote_Setup"        # project data: <DWB>\Projects\Remote_Setup
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+SERVERS_DIR   = DATA_ROOT / "configured_servers"
+PROJECTS_PATH = DATA_ROOT / "projects.xlsx"
 
 RESET  = "\x1b[0m"
 def bold(s):   return f"\x1b[1m{s}{RESET}"

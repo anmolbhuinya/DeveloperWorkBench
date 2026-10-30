@@ -4,7 +4,8 @@
 // Result: one compressed zip (default ~\Downloads\DeveloperWorkbench_Export_<date>.zip) for ImportProjects.exe.
 //
 //   ExportProjects.exe                                 interactive
-//   ExportProjects.exe /S [/OUT=C:\folder] [/SECRETS]   silent  (/SECRETS also exports secrets.xlsx incl. passwords and tokens)
+//   ExportProjects.exe /S [/OUT=C:\folder] [/SECRETS] [/SRC=<folder>]   silent
+//        /SECRETS also exports secrets.xlsx (passwords and tokens);  /SRC exports ANOTHER installation, e.g. an old ...\DeveloperPlatform folder
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -27,14 +28,15 @@ static class Program
     {
         string dwb = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
         string outDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-        bool silent = false, secrets = false;
+        bool silent = false, secrets = false; string srcOverride = null;
         foreach (string a in args)
         {
             if (a.Equals("/S", StringComparison.OrdinalIgnoreCase)) silent = true;
             else if (a.Equals("/SECRETS", StringComparison.OrdinalIgnoreCase)) secrets = true;
             else if (a.StartsWith("/OUT=", StringComparison.OrdinalIgnoreCase)) outDir = Exporter.Expand(a.Substring(5));
+            else if (a.StartsWith("/SRC=", StringComparison.OrdinalIgnoreCase)) srcOverride = Exporter.Expand(a.Substring(5));
         }
-        if (silent) return Exporter.Run(dwb, outDir, secrets, Console.Out.WriteLine) != null ? 0 : 1;
+        if (silent) return Exporter.Run(dwb, outDir, secrets, Console.Out.WriteLine, srcOverride) != null ? 0 : 1;
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.Run(new MainForm(dwb, outDir));
@@ -54,6 +56,57 @@ static class Exporter
     static readonly string[] SkipExt = { ".log", ".pid", ".lock", ".tmp", ".exe", ".pyc" };
     static readonly string[] CodeExt = { ".js", ".jsx", ".py", ".ps1", ".sh", ".cmd", ".bat", ".cs", ".md", ".css", ".html", ".map", ".svg", ".png", ".ico", ".yaml", ".yml" };
     static readonly string[] SkipNames = { "README.txt", "install.txt", "package.json", "package-lock.json", ".secrets_path" };
+
+
+    // Project data used to live inside the program folder; it now lives in <DWB>\Projects\<type>.
+    // Returns the path below Projects\ for a legacy program-relative path, or null when it is not project data.
+    public static string MapLegacy(string rel)
+    {
+        string r = rel.Replace('/', '\\');
+        string[][] simple = {
+            new string[] { @"WorkFlows\GP_Build\", "GP_Build" }, new string[] { @"WorkFlows\Jenkins_BaseLine\", "Jenkins_BaseLine" },
+            new string[] { @"WorkFlows\Jenkins_IT_Regression\", "Jenkins_IT_Regression" }, new string[] { @"WorkFlows\Jenkins_Commit_Job\", "Jenkins_Commit_Job" },
+            new string[] { @"WorkFlows\Jenkins_Payor_Utils_Certification\", "Payor_Utils_Certification" }, new string[] { @"WorkFlows\Clone_WorkFlow\", "Clone_Workflow" } };
+        foreach (string[] p in simple)
+            if (r.StartsWith(p[0], StringComparison.OrdinalIgnoreCase))
+            {
+                string t = r.Substring(p[0].Length);
+                if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"projects\", StringComparison.OrdinalIgnoreCase)) return p[0] + t;
+            }
+        if (r.StartsWith(@"Remote_Setup\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(13);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"configured_servers\", StringComparison.OrdinalIgnoreCase)) return @"Remote_Setup\" + t;
+        }
+        if (r.StartsWith(@"WorkFlows\Remote_Melissa_Data_Update_License\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"WorkFlows\Remote_Melissa_Data_Update_License\".Length);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"remote_images\", StringComparison.OrdinalIgnoreCase)) return @"WorkFlows\Remote_Melissa_Data_Update_License\" + t;
+        }
+        if (r.StartsWith(@"WorkFlows\Local_Clone_Tool\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"WorkFlows\Local_Clone_Tool\".Length);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase) || t.StartsWith(@"projects\", StringComparison.OrdinalIgnoreCase)) return @"WorkFlows\Local_Clone_Tool\" + t;
+        }
+        if (r.StartsWith(@"WorkFlows\Remote_Regression_Jenkins_IT_Failure\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"WorkFlows\Remote_Regression_Jenkins_IT_Failure\".Length);
+            if (t.Equals("projects.xlsx", StringComparison.OrdinalIgnoreCase)) return @"WorkFlows\Remote_Regression_Jenkins_IT_Failure\projects.xlsx";
+            if (t.StartsWith(@"projects\", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] q = t.Split('\\');                       // projects \ <app> \ (projects|output|logs) \ ...
+                if (q.Length > 3 && (q[2] == "projects" || q[2] == "output" || q[2] == "logs")) return @"WorkFlows\Remote_Regression_Jenkins_IT_Failure\" + string.Join("\\", q, 1, q.Length - 1);
+            }
+        }
+        if (r.StartsWith(@"Project_Management\Sprint\", StringComparison.OrdinalIgnoreCase))
+        {
+            string t = r.Substring(@"Project_Management\Sprint\".Length);
+            foreach (string d in new string[] { @"Sprints\", @"PreviousSprints\", @"Projects\", @"Tasks\" })
+                if (t.StartsWith(d, StringComparison.OrdinalIgnoreCase)) return @"Project_Management\Sprint\" + t;
+        }
+        if (r.Equals(@"Tools\AIAnalyzer\projects.xlsx", StringComparison.OrdinalIgnoreCase)) return @"Tools\AIAnalyzer\projects.xlsx";
+        return null;
+    }
 
     public static string Expand(string p)
     {
@@ -82,9 +135,9 @@ static class Exporter
     }
 
     // returns the zip path, or null
-    public static string Run(string dwbRoot, string outDir, bool secrets, Action<string> log)
+    public static string Run(string dwbRoot, string outDir, bool secrets, Action<string> log, string srcOverride = null)
     {
-        string src = Path.Combine(dwbRoot, "DeveloperWorkBench");
+        string src = string.IsNullOrEmpty(srcOverride) ? Path.Combine(dwbRoot, "DeveloperWorkBench") : srcOverride.TrimEnd((char)92);
         if (!Directory.Exists(src)) { log("ERROR: " + src + " not found. ExportProjects.exe must sit in the DWB folder, next to DeveloperWorkBench\\."); return null; }
         outDir = Expand(outDir);
         if (outDir.Length == 0 || !Path.IsPathRooted(outDir)) { log("ERROR: enter a full output folder."); return null; }
@@ -95,19 +148,34 @@ static class Exporter
             if (File.Exists(zip)) File.Delete(zip);
             List<string> files = new List<string>();
             Collect(src, src, secrets, files);
-            log("Exporting " + files.Count + " files from " + src + " ...");
+            // project data: <DWB>\Projects (new layout) plus any legacy project files still inside the program folder (e.g. an old DeveloperPlatform)
+            List<string[]> entries = new List<string[]>();            // { zip entry, full path }
+            foreach (string rel in files)
+            {
+                string mapped = MapLegacy(rel);
+                entries.Add(new string[] { mapped != null ? "projects/" + mapped.Replace('\\', '/') : "data/" + rel.Replace('\\', '/'), Path.Combine(src, rel) });
+            }
+            string projRoot = Path.Combine(dwbRoot, "Projects");
+            if (string.IsNullOrEmpty(srcOverride) && Directory.Exists(projRoot))
+                foreach (string f in Directory.GetFiles(projRoot, "*", SearchOption.AllDirectories))
+                {
+                    string ext2 = Path.GetExtension(f).ToLowerInvariant();
+                    if (ext2 == ".lock" || ext2 == ".tmp") continue;
+                    entries.Add(new string[] { "projects/" + f.Substring(projRoot.Length + 1).Replace('\\', '/'), f });
+                }
+            log("Exporting " + entries.Count + " files from " + src + (string.IsNullOrEmpty(srcOverride) ? " and " + projRoot : "") + " ...");
             long total = 0;
             using (ZipArchive z = ZipFile.Open(zip, ZipArchiveMode.Create))
             {
-                foreach (string rel in files)
+                foreach (string[] en in entries)
                 {
-                    string full = Path.Combine(src, rel);
+                    string rel = en[0], full = en[1];
                     try
                     {
                         // read with sharing so a running Workbench does not block the export
                         using (FileStream fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                         {
-                            ZipArchiveEntry e = z.CreateEntry("data/" + rel.Replace('\\', '/'), CompressionLevel.Optimal);
+                            ZipArchiveEntry e = z.CreateEntry(rel, CompressionLevel.Optimal);
                             e.LastWriteTime = File.GetLastWriteTime(full);
                             using (Stream es = e.Open()) fs.CopyTo(es);
                             total += fs.Length;
@@ -116,9 +184,9 @@ static class Exporter
                     catch (IOException ex) { log("  skipped (in use): " + rel + " - " + ex.Message); }
                 }
                 string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                string manifest = "{\n  \"app\": \"DeveloperWorkbench\",\n  \"format\": 1,\n  \"created\": \"" + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + "\",\n" +
+                string manifest = "{\n  \"app\": \"DeveloperWorkbench\",\n  \"format\": 2,\n  \"created\": \"" + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + "\",\n" +
                     "  \"machine\": \"" + J(Environment.MachineName) + "\",\n  \"user\": \"" + J(Environment.UserName) + "\",\n" +
-                    "  \"home\": \"" + J(home) + "\",\n  \"dwb_root\": \"" + J(dwbRoot) + "\",\n  \"files\": " + files.Count + ",\n  \"secrets\": " + (secrets ? "true" : "false") + "\n}\n";
+                    "  \"home\": \"" + J(home) + "\",\n  \"dwb_root\": \"" + J(string.IsNullOrEmpty(srcOverride) ? dwbRoot : "") + "\",\n  \"src_root\": \"" + J(src) + "\",\n  \"files\": " + entries.Count + ",\n  \"secrets\": " + (secrets ? "true" : "false") + "\n}\n";
                 ZipArchiveEntry m = z.CreateEntry("manifest.json");
                 using (StreamWriter w = new StreamWriter(m.Open(), new UTF8Encoding(false))) w.Write(manifest);
             }

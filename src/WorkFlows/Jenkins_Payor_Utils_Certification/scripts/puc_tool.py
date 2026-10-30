@@ -42,10 +42,14 @@ def _puc_projects_filelock():
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
 TOOL_ROOT      = SCRIPT_DIR.parent
+from pathlib import Path as _DwPath
+import os as _dwos
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Jenkins_Payor_Utils_Certification"        # project data: <DWB>\Projects\WorkFlows\Jenkins_Payor_Utils_Certification
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 WORKFLOWS_ROOT = TOOL_ROOT.parent
 SECRETS_PATH   = WORKFLOWS_ROOT.parent / "secrets.xlsx"
 CONFIG_PATH    = TOOL_ROOT / "puc_config.xlsx"
-PROJECTS_PATH  = TOOL_ROOT / "projects.xlsx"
+PROJECTS_PATH  = DATA_ROOT / "projects.xlsx"
 
 PROJ_HEADERS = ["pid", "payor_version", "baseline_url", "job_name", "status",
                 "triggered_at", "build_url", "queue_url", "notes",
