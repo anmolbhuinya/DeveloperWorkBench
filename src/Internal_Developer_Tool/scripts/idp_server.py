@@ -137,6 +137,7 @@ def _bootstrap_environment():
         pass
 
 
+os.environ.setdefault("DWB_HOME", str(WORKFLOWS_ROOT.parent if WORKFLOWS_ROOT.name.lower() == "developerworkbench" else Path.home() / "DWB"))
 _bootstrap_environment()
 
 
@@ -260,7 +261,7 @@ UI_APPS_CONFIG              = WORKFLOWS_ROOT / "ui_apps_config.xlsx"
 REMOTE_PAYOR_UI_APPS_CONFIG = WORKFLOWS_ROOT / "remote_payor_ui_apps_config.xlsx"
 REMOTE_CACHE_CONFIG_FILE    = WORKFLOWS_ROOT / "remote_cache_config.json"
 HE_UI_CLIENT_XLSX         = WORKFLOWS_ROOT / "HE_UI_Client.xlsx"
-HE_UI_INSTALLERS_BASE = Path.home() / "Documents" / "Installers"        / "HE_UI_CLIENTS"
+HE_UI_INSTALLERS_BASE = (WORKFLOWS_ROOT.parent if WORKFLOWS_ROOT.name.lower() == "developerworkbench" else Path.home() / "DWB") / "HE_UI_Clients" / "Installers"
 # installed HealthEdge UI clients live in <DWB>\HE_UI_Clients (the DWB folder next to DeveloperWorkBench\; ~\DWB when run from elsewhere)
 HE_UI_INSTALLED_BASE  = (WORKFLOWS_ROOT.parent if WORKFLOWS_ROOT.name.lower() == "developerworkbench" else Path.home() / "DWB") / "HE_UI_Clients"
 
