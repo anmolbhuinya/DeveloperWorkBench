@@ -205,6 +205,12 @@ static class Importer
             {
                 foreach (ZipArchiveEntry e in z.Entries)
                 {
+                    if (e.FullName.StartsWith("skeleton/", StringComparison.Ordinal))
+                    {
+                        string sd = Path.GetFullPath(Path.Combine(dwbRoot, e.FullName.Substring(9).Replace('/', '\\')));
+                        if (sd.StartsWith(dwbRoot + "\\", StringComparison.OrdinalIgnoreCase)) Directory.CreateDirectory(sd);
+                        continue;
+                    }
                     if (e.FullName.EndsWith("/")) continue;
                     bool isProj = e.FullName.StartsWith("projects/", StringComparison.Ordinal);
                     if (!isProj && !e.FullName.StartsWith("data/", StringComparison.Ordinal)) continue;

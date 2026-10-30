@@ -173,6 +173,12 @@ def build_zip(src: Path, zpath: Path, launcher: Path, create_installer: Path | N
         z.write(launcher, "DeveloperWorkbench.exe")
         if create_installer and create_installer.exists():
             z.write(create_installer, "_root/CreateInstaller.exe")      # extracted next to DeveloperWorkBench\ (the DWB folder)
+        # HE_UI_Clients folder structure (folders only, no installed clients / installers): Local, Remote, Installers\Local ...
+        ui = src.parent / "HE_UI_Clients"
+        for d in sorted(ui.rglob("*")) if ui.is_dir() else []:
+            rel_d = d.relative_to(ui).parts
+            if d.is_dir() and len(rel_d) <= 2:
+                z.writestr("_root/HE_UI_Clients/" + "/".join(rel_d) + "/", "")
         for tool in ("ExportProjects.exe", "ImportProjects.exe"):       # data export / import tools live next to CreateInstaller.exe
             tp = src.parent / tool
             if tp.exists():

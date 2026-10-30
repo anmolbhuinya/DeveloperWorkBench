@@ -187,6 +187,14 @@ static class Exporter
                 string manifest = "{\n  \"app\": \"DeveloperWorkbench\",\n  \"format\": 2,\n  \"created\": \"" + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + "\",\n" +
                     "  \"machine\": \"" + J(Environment.MachineName) + "\",\n  \"user\": \"" + J(Environment.UserName) + "\",\n" +
                     "  \"home\": \"" + J(home) + "\",\n  \"dwb_root\": \"" + J(string.IsNullOrEmpty(srcOverride) ? dwbRoot : "") + "\",\n  \"src_root\": \"" + J(src) + "\",\n  \"files\": " + entries.Count + ",\n  \"secrets\": " + (secrets ? "true" : "false") + "\n}\n";
+                // HE_UI_Clients folder structure only (Local, Remote, Installers\...): no installed clients, no installers
+                string uiRoot = Path.Combine(dwbRoot, "HE_UI_Clients");
+                if (string.IsNullOrEmpty(srcOverride) && Directory.Exists(uiRoot))
+                    foreach (string d in Directory.GetDirectories(uiRoot, "*", SearchOption.AllDirectories))
+                    {
+                        string rd = d.Substring(uiRoot.Length + 1);
+                        if (rd.Split('\\').Length <= 2) z.CreateEntry("skeleton/HE_UI_Clients/" + rd.Replace('\\', '/') + "/");
+                    }
                 ZipArchiveEntry m = z.CreateEntry("manifest.json");
                 using (StreamWriter w = new StreamWriter(m.Open(), new UTF8Encoding(false))) w.Write(manifest);
             }

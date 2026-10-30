@@ -158,7 +158,7 @@ static class Installer
             bool onPath = false;
             foreach (string p in userPath.Split(';')) if (p.Trim().TrimEnd('\\').Equals(bin, StringComparison.OrdinalIgnoreCase)) onPath = true;
             // DWB_HOME = the DWB folder (parent of DeveloperWorkBench\); config paths such as {DWB_HOME}\HE_UI_Clients\Local resolve from it
-            string dwbHome = Path.GetDirectoryName(target.TrimEnd('\'));
+            string dwbHome = Path.GetDirectoryName(target.TrimEnd('\\'));
             if (!string.IsNullOrEmpty(dwbHome)) Environment.SetEnvironmentVariable("DWB_HOME", dwbHome, EnvironmentVariableTarget.User);
             if (!onPath) Environment.SetEnvironmentVariable("Path", (userPath.TrimEnd(';') + ";" + bin).TrimStart(';'), EnvironmentVariableTarget.User);
         }
