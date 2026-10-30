@@ -20,6 +20,16 @@ from pathlib import Path
 import openpyxl
 from pathlib import Path as _DwPath
 import os as _dwos
+def _dwb_home():
+    """<DWB> = the folder that contains DeveloperWorkBench\\ (DWB_HOME overrides)."""
+    return _DwPath(_dwos.environ.get("DWB_HOME") or next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB"))
+
+
+def _expand(v):
+    """%VAR%  ~  {DWB_HOME} in a configured path."""
+    return _dwos.path.expanduser(_dwos.path.expandvars(str(v or "").strip().replace("{DWB_HOME}", str(_dwb_home()))))
+
+
 def _dwb_projects(*kind):
     """<DWB>\\Projects\\<kind>  (DWB_PROJECTS overrides the Projects folder)."""
     base = _dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")
@@ -31,7 +41,7 @@ PROJECTS_FILE = _dwb_projects("Tools", "AIAnalyzer") / "projects.xlsx"        # 
 JOBS_DIR = HERE / "jobs"
 
 DEFAULT_CONFIG = {
-    "workspace_dir": "",   # blank = <DWB>\\Projects\\Tools\\AIAnalyzer
+    "workspace_dir": "",   # blank = {DWB_HOME}\\AI_Workspace
     "agent_command": "claude --dangerously-skip-permissions",
     "code_dirs": "",
 }
@@ -59,7 +69,8 @@ def load_config():
         except Exception:
             pass
     if not cfg["workspace_dir"].strip():
-        cfg["workspace_dir"] = str(_dwb_projects("Tools", "AIAnalyzer"))      # default: <DWB>\\Projects\\Tools\\AIAnalyzer
+        cfg["workspace_dir"] = str(_dwb_home() / "AI_Workspace")      # default: {DWB_HOME}\\AI_Workspace
+    cfg["workspace_dir"] = _expand(cfg["workspace_dir"])
     return cfg
 
 
@@ -157,7 +168,7 @@ def clean_folder_name(name):
 
 def create_project(jira_id, title, folder_name, jira_url=""):
     cfg = load_config()
-    ws_dir = cfg["workspace_dir"].strip() or str(_dwb_projects("Tools", "AIAnalyzer"))      # default: <DWB>\\Projects\\Tools\\AIAnalyzer
+    ws_dir = _expand(cfg["workspace_dir"]) or str(_dwb_home() / "AI_Workspace")      # default: {DWB_HOME}\\AI_Workspace
     folder_name = clean_folder_name(folder_name)
     if not folder_name or not folder_name.upper().startswith(jira_id.upper()):
         return None, f"The folder name must start with the JIRA ID ({jira_id})."
