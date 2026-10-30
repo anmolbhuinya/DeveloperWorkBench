@@ -198,6 +198,7 @@ export default function SetupPage() {
           Developer Workbench
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>DWB_HOME:</span>
           <input
             value={dwbInput}
             onChange={e => { setDwbInput(e.target.value); setDwbSaveMsg('') }}
