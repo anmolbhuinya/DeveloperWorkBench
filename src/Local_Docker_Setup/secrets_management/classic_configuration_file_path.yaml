@@ -1,0 +1,8 @@
+source: ~/.secrets_env
+targets:
+  - type: local
+    path: $C3SRCDIR/jar/target/classes/com/healthedge/customer/integration/config/iway/he_iway.properties
+  - type: local
+    path: $C3SRCDIR/jar/target/classes/com/healthedge/customer/common/healthedge_config.xml
+  - type: local
+    path: $C3SRCDIR/jar/target/classes/com/healthedge/customer/integration/config/iway/SFTPConfiguration.xml

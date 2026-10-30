@@ -1,0 +1,116 @@
+name: "HRP-Tomcat-Karaf-Oracle-2026"
+services:
+  payer261:
+    container_name: payer-tc-261
+    image: nexus.headquarters.healthedge.com:8124/payor-docker-tc:26.1-202508140912-d20f6e2
+    volumes:
+      - ${USERPROFILE}/shared/payor_env:/home/weblogic/shared
+      - ${USERPROFILE}/hebb/hrp.payer.core-master/distribution:/home/weblogic/payor_distribution
+      - ${USERPROFILE}/hebb/hrp.payer.core-master/datauniv:/home/weblogic/datauniv
+      - ${USERPROFILE}/hebb/hrp.connector.classic-master/distribution:/home/weblogic/classic_distribution
+      - ${USERPROFILE}/hebb/hrp.dev.tools:/home/weblogic/dev-tools
+    ports:
+      - "7575:7575"
+      - "7576:7576"
+      - "7001:7001"
+      - "7002:7002"
+      - "7003:7003"
+      - "8453:8453"
+      - "10001:10001"
+      - "8001:8001"
+      - "3011:3011"
+      - "3012:3012"
+      - "8161:8161"
+      - "61619:61619"
+      - "22"
+    environment:
+      - TZ=Asia/Kolkata
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: "6G"
+        reservations:
+          cpus: "1"
+          memory: "1G"
+    networks:
+      - sandbox-nw
+
+  connector261:
+    container_name: connector-261
+    image: nexus.headquarters.healthedge.com:8124/connector-docker:26.1-202508141306-1615a15
+    volumes:
+      - ${USERPROFILE}/shared/connector_env:/home/cprime/shared
+      - ${USERPROFILE}/hebb/hrp.connector-master/connector-distribution:/home/cprime/distribution/cprime-distribution
+      - ${USERPROFILE}/hebb/hrp.connector.enrollment-master/connector-enrollment-dist:/home/cprime/distribution/enrollment-distribution
+      - ${USERPROFILE}/shared/connector_env/bluecard-inbound-home:/home/cprime/cprime/healthrules-connector-server-4.4.3/bluecard-inbound-home
+      - ${USERPROFILE}/shared/connector_env/bluecard-inbound-host:/home/cprime/cprime/healthrules-connector-server-4.4.3/bluecard-inbound-host
+      - ${USERPROFILE}/shared/connector_env/bluecard-outbound:/home/cprime/cprime/healthrules-connector-server-4.4.3/bluecard-outbound
+    ports:
+      - "22"
+      - "9191:9191"
+      - "8181:8181"
+      - "9193:9193"
+      - "9200:9200"
+      - "5005:5005"
+    environment:
+      - TZ=Asia/Kolkata
+    entrypoint: ["/bin/sh", "-c", "tail -f /dev/null"]
+    deploy:
+      resources:
+        limits:
+          cpus: "3"
+          memory: "6G"
+        reservations:
+          cpus: "1"
+          memory: "1G"
+    networks:
+      - sandbox-nw
+
+  db261:
+    container_name: payer-db-261
+    image: nexus.headquarters.healthedge.com:8124/payer-db:db-oracle-26.1-202508281137-fc51f40
+    environment:
+      - TZ=Asia/Kolkata
+    volumes:
+      - ${USERPROFILE}/shared/payor_env:/home/oracle/shared
+    ports:
+      - "1521:1521"
+      - "5500:5500"
+      - "22"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: "4G"
+        reservations:
+          cpus: "1"
+          memory: "500M"
+    networks:
+      - sandbox-nw
+
+  pik261:
+    container_name: pik-tc-261
+    image: nexus.headquarters.healthedge.com:8124/hrp_docker_development/pik/tc/26.1-202601210458-8b84aa4:latest
+    volumes:
+      - ${USERPROFILE}/shared/payor_env:/home/weblogic/shared
+      - ${USERPROFILE}/hebb/hrp.dev.tools:/home/weblogic/dev-tools
+    ports:
+      - "8080:8080"
+    environment:
+      - TZ=Asia/Kolkata
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: "6G"
+        reservations:
+          cpus: "1"
+          memory: "1G"
+    networks:
+      - sandbox-nw
+
+
+networks:
+  sandbox-nw:
+    name: sandbox-nw

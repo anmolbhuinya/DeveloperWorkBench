@@ -1,0 +1,76 @@
+name: DEV-271-JDK-21
+services:
+  payer:
+    container_name: payer-tc-jdk21-271
+    image: nexus.headquarters.healthedge.com:7124/hrp.docker.dev/payor/tc/27.1-1125:latest
+    ports:
+      - "7575:7575"
+      - "7576:7576"
+      - "7001:7001"
+      - "7002:7002"
+      - "7003:7003"
+      - "8453:8453"
+      - "10001:10001"
+      - "8001:8001"
+      - "3011:3011"
+      - "3012:3012"
+      - "8161:8161"
+      - "61619:61619"
+      - "22"
+    environment:
+      - TZ=Asia/Kolkata
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: "6G"
+        reservations:
+          cpus: "1"
+          memory: "1G"
+    networks:
+      - sandbox-nw
+  connector:
+    container_name: connector-jdk21-271
+    image: nexus.headquarters.healthedge.com:7124/hrp.docker.dev/connector/27.1-4411-jdk21:latest
+    ports:
+      - "22"
+      - "9191:9191"
+      - "8181:8181"
+      - "9193:9193"
+      - "9200:9200"
+      - "5005:5005"
+    environment:
+      - TZ=Asia/Kolkata
+    entrypoint: ["/bin/sh", "-c", "tail -f /dev/null"]
+    deploy:
+      resources:
+        limits:
+          cpus: "6"
+          memory: "10G"
+        reservations:
+          cpus: "1"
+          memory: "1G"
+    networks:
+      - sandbox-nw
+  db:
+    container_name: payer-db-271
+    image: nexus.headquarters.healthedge.com:7124/hrp.docker.dev/db/oracle/27.1:latest
+    environment:
+      - TZ=Asia/Kolkata
+    ports:
+      - "1521:1521"
+      - "5500:5500"
+      - "22"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: "4G"
+        reservations:
+          cpus: "1"
+          memory: "500M"
+    networks:
+      - sandbox-nw
+networks:
+  sandbox-nw:
+    name: sandbox-nw-271

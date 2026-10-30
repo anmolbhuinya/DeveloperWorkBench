@@ -1,0 +1,56 @@
+# payor_configuration_file_path.yaml
+# Defines the secrets source and the target files to inject secrets into.
+#
+# source: path to the env file containing secret key=value pairs
+#   example:
+#     source: ~/.secrets_env
+#
+# targets: list of destination files where secrets will be applied
+#
+#   Local file:
+#     - type: local
+#       path: /path/to/runtime.properties
+#
+#   Remote VM (scp/ssh):
+#     - type: vm
+#       user: weblogic
+#       host: 10.22.124.100
+#       path: $DOMAIN_HOME/runtime.properties
+#
+#   Docker container:
+#     - type: docker
+#       user: weblogic
+#       container: payer-tc-261
+#       path: /home/weblogic/domains/healthedge/runtime.properties
+
+source: ~/.secrets_env
+
+targets:
+  - type: local
+    path: $DOMAIN_HOME/runtime.properties
+
+  - type: local
+    path: $DOMAIN_HOME/tools/runtime.properties
+
+  - type: docker
+    user: weblogic
+    container: payer-tc-261
+    path: /home/weblogic/domains/healthedge/runtime.properties
+
+  - type: docker
+    user: weblogic
+    container: payer-tc-261
+    path: /home/weblogic/domains/healthedge/tools/runtime.properties
+
+
+
+
+
+
+
+
+
+
+
+
+

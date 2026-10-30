@@ -1,0 +1,10 @@
+source: ~/.secrets_env
+
+targets:
+  - type: docker
+    user: cprime
+    container: connector-261
+    path: /home/cprime/cprime/healthrules-connector-server-4.4.3/etc/com.healthedge.connector.hmem.jms.cfg
+
+  - type: local
+    path: $CONNECTOR_SERVER/etc/com.healthedge.connector.hmem.jms.cfg

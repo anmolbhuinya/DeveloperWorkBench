@@ -1,0 +1,4 @@
+outputDirectory=__USERPROFILE__/shared/connector_env/redcardOutBound/output
+tempOutputDirectory=__USERPROFILE__/shared/connector_env/redcardOutBoundTemp/output
+onDemandTriggerDir=__USERPROFILE__/shared/connector_env/onDemandTriggerDir
+paymentCycleIds=COMMERCIAL SUPPLIER CLAIMS PAYMENT CYCLE,Default Payment Cycle For Subscriber,SUPPLIER_REVIEW_REQUIRED_PAYMENT_CYCLE

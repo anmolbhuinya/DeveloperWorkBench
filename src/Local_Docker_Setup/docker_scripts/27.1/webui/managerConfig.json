@@ -1,0 +1,49 @@
+{
+  "Servers": {},
+  "ShowRevisionMismatch": true,
+  "ShowServers": true,
+  "TestMode": true,
+  "MaximumPersistedSearchResultRows": 200,
+  "MaximumSearchHistoryEntries": 30,
+  "MaximumHistoryEntries": 30,
+  "MaximumPersistedBillRows": 2000,
+  "MaximumPersistedMemberIssueTrackingRows": 2000,
+  "MaximumSupplierLocationRowsForTrialClaim": 5000,
+  "MaxUnreconciledRosterLines": 500,
+  "ProviderFinderMaximumResults": 25,
+  "InstitutionalAllowNegativeCurrency": false,
+  "MaxmiumPersistedBillAllocationsRows": 500,
+  "MaximumPersistedBillPremiumPayableRows": 2000,
+  "InstitutionalLineAddLimit": 100,
+  "ProfessionalLineAddLimit": 100,
+  "DentalLineAddLimit": 100,
+  "FastTrackConfigurationFile": "FastTrack.config",
+  "CorrespondenceImageURL": "http",
+  "WebServiceTimeout": 900000,
+  "FailedCVCCountPullInterval": 3600000,
+  "AssignedCVCCountPullInterval": 3600000,
+  "PermissionPullInterval": 3600000,
+  "MaximumSubscriptionBatchRows": 5000,
+  "MaxExpandedCapitatedAdjustmentMemberRosterEntries": 5000,
+  "SSO": {
+    "Issuer": "https://thunderbolt-stage.oktapreview.com//oauth2/default",
+    "ManagerClientId": "0oanxvokljr7T7VJI1d7"
+  },
+  "webHelpURLs": {
+    "helpCenterURL": "https://helpcenter.healthedge.com/{0}hrp/Content/Home.htm",
+    "whatsNewURL": "https://helpcenter.healthedge.com/{0}hrp/Content/ReleaseNotes/whats-new.htm",
+    "managerHelpURL": "https://helpcenter.healthedge.com/{0}hrp/Content/ProductDocs/hr-manager.htm",
+    "adminConsoleHelpURL": "https://helpcenter.healthedge.com/{0}hrp/Content/ProductDocs/hr-adminconsole.htm",
+    "managerContextSensitiveHelpURL": "https://helpcenter.healthedge.com/{0}hrp/Content",
+    "managerContextSensitiveHelpMappingURL": "https://helpcenter.healthedge.com/{0}hrp/Content/Manager/Header/HRManagerHeaderFile.h"
+  },
+  "useWebHelp": true,
+  "aiEnabled": true,
+  "ai": {
+    "summarizerEnabled": true,
+    "chatEnabled": true
+  },
+  "telemetryEnabled": true,
+  "ssoEnabled": false,
+  "DEFAULT_PAYER_SERVER_URL": "http://heeng-bigair:7001"
+}

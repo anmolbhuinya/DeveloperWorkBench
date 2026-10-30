@@ -1,0 +1,3 @@
+
+# AWS Secrets Manager — local credential cache (never commit)
+.secrets_env

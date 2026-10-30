@@ -1,0 +1,576 @@
+# Healthedge Aetna Functions - Polyglot for PowerShell and Bash
+# Usage: PowerShell: . $PROFILE_DIR\Healthedge.Aetna_functions.polyglot
+#        Git Bash:   source "$(cygpath "$USERPROFILE")/Documents/WindowsPowerShell/Healthedge.Aetna_functions.polyglot"
+
+echo --% >/dev/null <<"out-null"
+<#
+out-null
+
+#============================= BASH SECTION =============================
+# This section runs only in Bash/Git Bash
+
+# Default values
+: "${GIT_HOME:=$HOME/hebb}"
+: "${REPO_CWLSRC:=hrp.cust.aetna.payer}"
+: "${REPO_AETNA_CONNECTOR:=hrp.cust.aetna.connector}"
+: "${REPO_AETNA_TEST:=hrp.cust.aetna.test}"
+: "${SEPARATE_BRANCH_DIRECTORIES:=true}"
+
+# Initialize directories from saved defaults
+_init_aetna_dirs() {
+    local git_home_unix="$(cygpath "$GIT_HOME" 2>/dev/null || echo "$GIT_HOME")"
+    
+    # Initialize CWLSRCDIR
+    if [ -z "$CWLSRCDIR" ]; then
+        if [ -f "$HOME/.default-cwlsrc-branch" ]; then
+            local branch=$(cat "$HOME/.default-cwlsrc-branch")
+            export CWLSRCDIR="$GIT_HOME\\$REPO_CWLSRC-$branch"
+        fi
+    fi
+    
+    # Initialize AETNA_CONNECTOR_DIR
+    if [ -z "$AETNA_CONNECTOR_DIR" ]; then
+        if [ -f "$HOME/.default-aetna-connector-branch" ]; then
+            local branch=$(cat "$HOME/.default-aetna-connector-branch")
+            export AETNA_CONNECTOR_DIR="$GIT_HOME\\$REPO_AETNA_CONNECTOR-$branch"
+        fi
+    fi
+    
+    # Initialize AETNA_TEST_DIR
+    if [ -z "$AETNA_TEST_DIR" ]; then
+        if [ -f "$HOME/.default-aetna-test-branch" ]; then
+            local branch=$(cat "$HOME/.default-aetna-test-branch")
+            export AETNA_TEST_DIR="$GIT_HOME\\$REPO_AETNA_TEST-$branch"
+        fi
+    fi
+}
+
+# Set CWL Source (Payer) branch
+setcwlsrc() {
+    local branch_name="$1"
+    local transient=false
+    local clone_repo=false
+    local create_env=false
+    
+    # Parse arguments
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -transient|--transient) transient=true ;;
+            -cloneRepo|--cloneRepo) clone_repo=true ;;
+            -createEnv|--createEnv) create_env=true ;;
+            -h|--help|-?)
+                echo "Usage: setcwlsrc [<branchname>] [-transient] [-cloneRepo] [-createEnv]"
+                echo "  -transient: Set branch transiently (don't save as default)"
+                echo "  -cloneRepo: Clone repository if not exists"
+                echo "  -createEnv: Create environment directory"
+                return 0
+                ;;
+        esac
+        shift
+    done
+    
+    if [ -z "$branch_name" ]; then
+        echo "Error: Branch name required. Usage: setcwlsrc <branch> [options]"
+        return 1
+    fi
+    
+    local br
+    if [ "$branch_name" = "master" ]; then
+        br="master"
+    else
+        br="release-$branch_name"
+    fi
+    
+    echo "Setting current CWL Source branch to: $branch_name"
+    
+    # Save as default unless transient
+    if [ "$transient" = false ]; then
+        echo "Setting as default for CWL Source"
+        echo "$branch_name" > "$HOME/.default-cwlsrc-branch"
+    fi
+    
+    # Update directory
+    if [ "$SEPARATE_BRANCH_DIRECTORIES" = "true" ]; then
+        export CWLSRCDIR="$GIT_HOME\\$REPO_CWLSRC-$branch_name"
+    else
+        export CWLSRCDIR="$GIT_HOME\\$REPO_CWLSRC"
+    fi
+    
+    local cwlsrc_unix="$(cygpath "$CWLSRCDIR" 2>/dev/null || echo "$CWLSRCDIR")"
+    
+    # Clone if needed
+    if [ ! -d "$cwlsrc_unix" ]; then
+        if [ "$clone_repo" = true ]; then
+            echo "Cloning $REPO_CWLSRC..."
+            local git_home_unix="$(cygpath "$GIT_HOME" 2>/dev/null || echo "$GIT_HOME")"
+            cd "$git_home_unix"
+            if [ "$SEPARATE_BRANCH_DIRECTORIES" = "true" ]; then
+                git clone -b "$br" "git@github.com:HE-Core/$REPO_CWLSRC.git" "$REPO_CWLSRC-$branch_name"
+            else
+                git clone "git@github.com:HE-Core/$REPO_CWLSRC.git"
+                cd "$REPO_CWLSRC"
+                git checkout "$br"
+            fi
+        else
+            echo "Warning: Directory does not exist: $cwlsrc_unix"
+            echo "Use -cloneRepo to clone it."
+        fi
+    fi
+    
+    # Navigate to directory
+    if [ -d "$cwlsrc_unix" ]; then
+        cd "$cwlsrc_unix"
+        echo "Successfully set CWL Source to branch: $branch_name"
+        echo "Current directory: $(pwd)"
+    fi
+}
+
+# Set Connector branch
+setckrsrc() {
+    local branch_name="$1"
+    local transient=false
+    local clone_repo=false
+    local create_env=false
+    
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -transient|--transient) transient=true ;;
+            -cloneRepo|--cloneRepo) clone_repo=true ;;
+            -createEnv|--createEnv) create_env=true ;;
+            -h|--help|-?)
+                echo "Usage: setckrsrc [<branchname>] [-transient] [-cloneRepo] [-createEnv]"
+                return 0
+                ;;
+        esac
+        shift
+    done
+    
+    if [ -z "$branch_name" ]; then
+        echo "Error: Branch name required. Usage: setckrsrc <branch> [options]"
+        return 1
+    fi
+    
+    local br
+    if [ "$branch_name" = "master" ]; then
+        br="master"
+    else
+        br="release-$branch_name"
+    fi
+    
+    echo "Setting current Aetna Connector branch to: $branch_name"
+    
+    if [ "$transient" = false ]; then
+        echo "Setting as default for Aetna Connector"
+        echo "$branch_name" > "$HOME/.default-aetna-connector-branch"
+    fi
+    
+    if [ "$SEPARATE_BRANCH_DIRECTORIES" = "true" ]; then
+        export AETNA_CONNECTOR_DIR="$GIT_HOME\\$REPO_AETNA_CONNECTOR-$branch_name"
+    else
+        export AETNA_CONNECTOR_DIR="$GIT_HOME\\$REPO_AETNA_CONNECTOR"
+    fi
+    
+    local connector_unix="$(cygpath "$AETNA_CONNECTOR_DIR" 2>/dev/null || echo "$AETNA_CONNECTOR_DIR")"
+    
+    if [ ! -d "$connector_unix" ]; then
+        if [ "$clone_repo" = true ]; then
+            echo "Cloning $REPO_AETNA_CONNECTOR..."
+            local git_home_unix="$(cygpath "$GIT_HOME" 2>/dev/null || echo "$GIT_HOME")"
+            cd "$git_home_unix"
+            if [ "$SEPARATE_BRANCH_DIRECTORIES" = "true" ]; then
+                git clone -b "$br" "git@github.com:HE-Core/$REPO_AETNA_CONNECTOR.git" "$REPO_AETNA_CONNECTOR-$branch_name"
+            else
+                git clone "git@github.com:HE-Core/$REPO_AETNA_CONNECTOR.git"
+                cd "$REPO_AETNA_CONNECTOR"
+                git checkout "$br"
+            fi
+        else
+            echo "Warning: Directory does not exist: $connector_unix"
+            echo "Use -cloneRepo to clone it."
+        fi
+    fi
+    
+    if [ -d "$connector_unix" ]; then
+        cd "$connector_unix"
+        echo "Successfully set Aetna Connector to branch: $branch_name"
+        echo "Current directory: $(pwd)"
+    fi
+}
+
+# Set Test branch
+setccisrc() {
+    local branch_name="$1"
+    local transient=false
+    local clone_repo=false
+    local create_env=false
+    
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -transient|--transient) transient=true ;;
+            -cloneRepo|--cloneRepo) clone_repo=true ;;
+            -createEnv|--createEnv) create_env=true ;;
+            -h|--help|-?)
+                echo "Usage: setccisrc [<branchname>] [-transient] [-cloneRepo] [-createEnv]"
+                return 0
+                ;;
+        esac
+        shift
+    done
+    
+    if [ -z "$branch_name" ]; then
+        echo "Error: Branch name required. Usage: setccisrc <branch> [options]"
+        return 1
+    fi
+    
+    local br
+    if [ "$branch_name" = "master" ]; then
+        br="master"
+    else
+        br="release-$branch_name"
+    fi
+    
+    echo "Setting current Aetna Test branch to: $branch_name"
+    
+    if [ "$transient" = false ]; then
+        echo "Setting as default for Aetna Test"
+        echo "$branch_name" > "$HOME/.default-aetna-test-branch"
+    fi
+    
+    if [ "$SEPARATE_BRANCH_DIRECTORIES" = "true" ]; then
+        export AETNA_TEST_DIR="$GIT_HOME\\$REPO_AETNA_TEST-$branch_name"
+    else
+        export AETNA_TEST_DIR="$GIT_HOME\\$REPO_AETNA_TEST"
+    fi
+    
+    local test_unix="$(cygpath "$AETNA_TEST_DIR" 2>/dev/null || echo "$AETNA_TEST_DIR")"
+    
+    if [ ! -d "$test_unix" ]; then
+        if [ "$clone_repo" = true ]; then
+            echo "Cloning $REPO_AETNA_TEST..."
+            local git_home_unix="$(cygpath "$GIT_HOME" 2>/dev/null || echo "$GIT_HOME")"
+            cd "$git_home_unix"
+            if [ "$SEPARATE_BRANCH_DIRECTORIES" = "true" ]; then
+                git clone -b "$br" "git@github.com:HE-Core/$REPO_AETNA_TEST.git" "$REPO_AETNA_TEST-$branch_name"
+            else
+                git clone "git@github.com:HE-Core/$REPO_AETNA_TEST.git"
+                cd "$REPO_AETNA_TEST"
+                git checkout "$br"
+            fi
+        else
+            echo "Warning: Directory does not exist: $test_unix"
+            echo "Use -cloneRepo to clone it."
+        fi
+    fi
+    
+    if [ -d "$test_unix" ]; then
+        cd "$test_unix"
+        echo "Successfully set Aetna Test to branch: $branch_name"
+        echo "Current directory: $(pwd)"
+    fi
+}
+
+# Navigation functions
+tocwlsrc() {
+    if [ -n "$CWLSRCDIR" ]; then
+        local dir_unix="$(cygpath "$CWLSRCDIR" 2>/dev/null || echo "$CWLSRCDIR")"
+        if [ -d "$dir_unix" ]; then
+            cd "$dir_unix"
+        else
+            echo "CWLSRCDIR does not exist: $CWLSRCDIR"
+        fi
+    else
+        echo "CWLSRCDIR is not set. Run setcwlsrc <branch> first."
+    fi
+}
+
+tockrsrc() {
+    if [ -n "$AETNA_CONNECTOR_DIR" ]; then
+        local dir_unix="$(cygpath "$AETNA_CONNECTOR_DIR" 2>/dev/null || echo "$AETNA_CONNECTOR_DIR")"
+        if [ -d "$dir_unix" ]; then
+            cd "$dir_unix"
+        else
+            echo "AETNA_CONNECTOR_DIR does not exist: $AETNA_CONNECTOR_DIR"
+        fi
+    else
+        echo "AETNA_CONNECTOR_DIR is not set. Run setckrsrc <branch> first."
+    fi
+}
+
+toccisrc() {
+    if [ -n "$AETNA_TEST_DIR" ]; then
+        local dir_unix="$(cygpath "$AETNA_TEST_DIR" 2>/dev/null || echo "$AETNA_TEST_DIR")"
+        if [ -d "$dir_unix" ]; then
+            cd "$dir_unix"
+        else
+            echo "AETNA_TEST_DIR does not exist: $AETNA_TEST_DIR"
+        fi
+    else
+        echo "AETNA_TEST_DIR is not set. Run setccisrc <branch> first."
+    fi
+}
+
+# Initialize on source
+_init_aetna_dirs
+
+# Export functions for subshells
+export -f setcwlsrc setckrsrc setccisrc tocwlsrc tockrsrc toccisrc _init_aetna_dirs 2>/dev/null || true
+
+return 0 2>/dev/null || true
+: <<"out-null"
+#>
+
+#============================= POWERSHELL SECTION =============================
+# This section runs only in PowerShell
+
+# Initialize Aetna environment variables
+if (-not $env:REPO_CWLSRC) { $env:REPO_CWLSRC = "hrp.cust.aetna.payer" }
+if (-not $env:CWLSRC_GIT) { $env:CWLSRC_GIT = "true" }
+if (-not $env:REPO_AETNA_CONNECTOR) { $env:REPO_AETNA_CONNECTOR = "hrp.cust.aetna.connector" }
+if (-not $env:AETNA_CONNECTOR_GIT) { $env:AETNA_CONNECTOR_GIT = "true" }
+if (-not $env:REPO_AETNA_TEST) { $env:REPO_AETNA_TEST = "hrp.cust.aetna.test" }
+if (-not $env:AETNA_TEST_GIT) { $env:AETNA_TEST_GIT = "true" }
+
+# Initialize CWLSRCDIR from saved default
+if ($env:CWLSRC_GIT -eq 'true' -and -not $env:CWLSRCDIR) {
+    if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+        if (Test-Path "$env:USERPROFILE\.default-cwlsrc-branch") {
+            $CWLSRC_BRANCH = Get-Content "$env:USERPROFILE\.default-cwlsrc-branch"
+            $env:CWLSRCDIR = "$env:GIT_HOME\$env:REPO_CWLSRC-$CWLSRC_BRANCH"
+        } else {
+            $existingDirs = Get-ChildItem -Path $env:GIT_HOME -Directory -Filter "$env:REPO_CWLSRC-*" -ErrorAction SilentlyContinue
+            if ($existingDirs) { $env:CWLSRCDIR = $existingDirs[0].FullName }
+            else { $env:CWLSRCDIR = "$env:GIT_HOME\$env:REPO_CWLSRC" }
+        }
+    } else {
+        $env:CWLSRCDIR = "$env:GIT_HOME\$env:REPO_CWLSRC"
+    }
+}
+
+# Initialize AETNA_CONNECTOR_DIR from saved default
+if ($env:AETNA_CONNECTOR_GIT -eq 'true' -and -not $env:AETNA_CONNECTOR_DIR) {
+    if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+        if (Test-Path "$env:USERPROFILE\.default-aetna-connector-branch") {
+            $CONNECTOR_BRANCH = Get-Content "$env:USERPROFILE\.default-aetna-connector-branch"
+            $env:AETNA_CONNECTOR_DIR = "$env:GIT_HOME\$env:REPO_AETNA_CONNECTOR-$CONNECTOR_BRANCH"
+        } else {
+            $existingDirs = Get-ChildItem -Path $env:GIT_HOME -Directory -Filter "$env:REPO_AETNA_CONNECTOR-*" -ErrorAction SilentlyContinue
+            if ($existingDirs) { $env:AETNA_CONNECTOR_DIR = $existingDirs[0].FullName }
+            else { $env:AETNA_CONNECTOR_DIR = "$env:GIT_HOME\$env:REPO_AETNA_CONNECTOR" }
+        }
+    } else {
+        $env:AETNA_CONNECTOR_DIR = "$env:GIT_HOME\$env:REPO_AETNA_CONNECTOR"
+    }
+}
+
+# Initialize AETNA_TEST_DIR from saved default
+if ($env:AETNA_TEST_GIT -eq 'true' -and -not $env:AETNA_TEST_DIR) {
+    if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+        if (Test-Path "$env:USERPROFILE\.default-aetna-test-branch") {
+            $TEST_BRANCH = Get-Content "$env:USERPROFILE\.default-aetna-test-branch"
+            $env:AETNA_TEST_DIR = "$env:GIT_HOME\$env:REPO_AETNA_TEST-$TEST_BRANCH"
+        } else {
+            $existingDirs = Get-ChildItem -Path $env:GIT_HOME -Directory -Filter "$env:REPO_AETNA_TEST-*" -ErrorAction SilentlyContinue
+            if ($existingDirs) { $env:AETNA_TEST_DIR = $existingDirs[0].FullName }
+            else { $env:AETNA_TEST_DIR = "$env:GIT_HOME\$env:REPO_AETNA_TEST" }
+        }
+    } else {
+        $env:AETNA_TEST_DIR = "$env:GIT_HOME\$env:REPO_AETNA_TEST"
+    }
+}
+
+function setcwlsrc {
+    param (
+        [string]$branchName,
+        [switch]$transient,
+        [switch]$cloneRepo,
+        [switch]$createEnv
+    )
+
+    if ($branchName -eq "-?" -or $branchName -eq "--help") {
+        Write-Output "Usage: setcwlsrc [<branchname>] [-transient] [-cloneRepo] [-createEnv]"
+        return
+    }
+
+    if (-not $branchName) {
+        Write-Output "Error: Branch name required. Usage: setcwlsrc <branch> [options]"
+        return
+    }
+
+    $CURRENT_BRANCH = $branchName
+    if ($CURRENT_BRANCH -eq 'master') { $BR = 'master' } else { $BR = "release-$CURRENT_BRANCH" }
+
+    Write-Output "Setting current CWL Source branch to: $CURRENT_BRANCH"
+    
+    if (-not $transient) {
+        Write-Output "Setting as default for CWL Source"
+        Set-Content -Path "$HOME\.default-cwlsrc-branch" -Value $CURRENT_BRANCH
+    }
+
+    if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+        $env:CWLSRCDIR = "$env:GIT_HOME\$env:REPO_CWLSRC-$CURRENT_BRANCH"
+    } else {
+        $env:CWLSRCDIR = "$env:GIT_HOME\$env:REPO_CWLSRC"
+    }
+
+    if (-not (Test-Path $env:CWLSRCDIR)) {
+        if ($cloneRepo) {
+            Write-Output "Cloning $env:REPO_CWLSRC"
+            Push-Location $env:GIT_HOME
+            if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+                git clone -b $BR "git@github.com:HE-Core/$env:REPO_CWLSRC.git" "$env:REPO_CWLSRC-$CURRENT_BRANCH"
+            } else {
+                git clone "git@github.com:HE-Core/$env:REPO_CWLSRC.git"
+                Set-Location $env:REPO_CWLSRC
+                git checkout $BR
+            }
+            Pop-Location
+        } else {
+            Write-Warning "Directory does not exist: $env:CWLSRCDIR"
+            Write-Output "Use -cloneRepo to clone it."
+        }
+    }
+
+    if (Test-Path $env:CWLSRCDIR) {
+        [System.Environment]::SetEnvironmentVariable('CWLSRCDIR', $env:CWLSRCDIR, [System.EnvironmentVariableTarget]::User)
+        Set-Location $env:CWLSRCDIR
+        Write-Output "Successfully set CWL Source to branch: $CURRENT_BRANCH"
+        Write-Output "Current directory: $env:CWLSRCDIR"
+    }
+}
+
+function setckrsrc {
+    param (
+        [string]$branchName,
+        [switch]$transient,
+        [switch]$cloneRepo,
+        [switch]$createEnv
+    )
+
+    if ($branchName -eq "-?" -or $branchName -eq "--help") {
+        Write-Output "Usage: setckrsrc [<branchname>] [-transient] [-cloneRepo] [-createEnv]"
+        return
+    }
+
+    if (-not $branchName) {
+        Write-Output "Error: Branch name required. Usage: setckrsrc <branch> [options]"
+        return
+    }
+
+    $CURRENT_BRANCH = $branchName
+    if ($CURRENT_BRANCH -eq 'master') { $BR = 'master' } else { $BR = "release-$CURRENT_BRANCH" }
+
+    Write-Output "Setting current Aetna Connector branch to: $CURRENT_BRANCH"
+    
+    if (-not $transient) {
+        Write-Output "Setting as default for Aetna Connector"
+        Set-Content -Path "$HOME\.default-aetna-connector-branch" -Value $CURRENT_BRANCH
+    }
+
+    if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+        $env:AETNA_CONNECTOR_DIR = "$env:GIT_HOME\$env:REPO_AETNA_CONNECTOR-$CURRENT_BRANCH"
+    } else {
+        $env:AETNA_CONNECTOR_DIR = "$env:GIT_HOME\$env:REPO_AETNA_CONNECTOR"
+    }
+
+    if (-not (Test-Path $env:AETNA_CONNECTOR_DIR)) {
+        if ($cloneRepo) {
+            Write-Output "Cloning $env:REPO_AETNA_CONNECTOR"
+            Push-Location $env:GIT_HOME
+            if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+                git clone -b $BR "git@github.com:HE-Core/$env:REPO_AETNA_CONNECTOR.git" "$env:REPO_AETNA_CONNECTOR-$CURRENT_BRANCH"
+            } else {
+                git clone "git@github.com:HE-Core/$env:REPO_AETNA_CONNECTOR.git"
+                Set-Location $env:REPO_AETNA_CONNECTOR
+                git checkout $BR
+            }
+            Pop-Location
+        } else {
+            Write-Warning "Directory does not exist: $env:AETNA_CONNECTOR_DIR"
+            Write-Output "Use -cloneRepo to clone it."
+        }
+    }
+
+    if (Test-Path $env:AETNA_CONNECTOR_DIR) {
+        [System.Environment]::SetEnvironmentVariable('AETNA_CONNECTOR_DIR', $env:AETNA_CONNECTOR_DIR, [System.EnvironmentVariableTarget]::User)
+        Set-Location $env:AETNA_CONNECTOR_DIR
+        Write-Output "Successfully set Aetna Connector to branch: $CURRENT_BRANCH"
+        Write-Output "Current directory: $env:AETNA_CONNECTOR_DIR"
+    }
+}
+
+function setccisrc {
+    param (
+        [string]$branchName,
+        [switch]$transient,
+        [switch]$cloneRepo,
+        [switch]$createEnv
+    )
+
+    if ($branchName -eq "-?" -or $branchName -eq "--help") {
+        Write-Output "Usage: setccisrc [<branchname>] [-transient] [-cloneRepo] [-createEnv]"
+        return
+    }
+
+    if (-not $branchName) {
+        Write-Output "Error: Branch name required. Usage: setccisrc <branch> [options]"
+        return
+    }
+
+    $CURRENT_BRANCH = $branchName
+    if ($CURRENT_BRANCH -eq 'master') { $BR = 'master' } else { $BR = "release-$CURRENT_BRANCH" }
+
+    Write-Output "Setting current Aetna Test branch to: $CURRENT_BRANCH"
+    
+    if (-not $transient) {
+        Write-Output "Setting as default for Aetna Test"
+        Set-Content -Path "$HOME\.default-aetna-test-branch" -Value $CURRENT_BRANCH
+    }
+
+    if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+        $env:AETNA_TEST_DIR = "$env:GIT_HOME\$env:REPO_AETNA_TEST-$CURRENT_BRANCH"
+    } else {
+        $env:AETNA_TEST_DIR = "$env:GIT_HOME\$env:REPO_AETNA_TEST"
+    }
+
+    if (-not (Test-Path $env:AETNA_TEST_DIR)) {
+        if ($cloneRepo) {
+            Write-Output "Cloning $env:REPO_AETNA_TEST"
+            Push-Location $env:GIT_HOME
+            if ($env:SEPARATE_BRANCH_DIRECTORIES -eq 'true') {
+                git clone -b $BR "git@github.com:HE-Core/$env:REPO_AETNA_TEST.git" "$env:REPO_AETNA_TEST-$CURRENT_BRANCH"
+            } else {
+                git clone "git@github.com:HE-Core/$env:REPO_AETNA_TEST.git"
+                Set-Location $env:REPO_AETNA_TEST
+                git checkout $BR
+            }
+            Pop-Location
+        } else {
+            Write-Warning "Directory does not exist: $env:AETNA_TEST_DIR"
+            Write-Output "Use -cloneRepo to clone it."
+        }
+    }
+
+    if (Test-Path $env:AETNA_TEST_DIR) {
+        [System.Environment]::SetEnvironmentVariable('AETNA_TEST_DIR', $env:AETNA_TEST_DIR, [System.EnvironmentVariableTarget]::User)
+        Set-Location $env:AETNA_TEST_DIR
+        Write-Output "Successfully set Aetna Test to branch: $CURRENT_BRANCH"
+        Write-Output "Current directory: $env:AETNA_TEST_DIR"
+    }
+}
+
+function GoToCWLSRCDIR { Set-Location -Path $env:CWLSRCDIR }
+function GoToAetnaConnectorDir { Set-Location -Path $env:AETNA_CONNECTOR_DIR }
+function GoToAetnaTestDir { Set-Location -Path $env:AETNA_TEST_DIR }
+
+Set-Alias -Name tocwlsrc -Value GoToCWLSRCDIR
+Set-Alias -Name tockrsrc -Value GoToAetnaConnectorDir
+Set-Alias -Name toccisrc -Value GoToAetnaTestDir
+
+return
+
+<#
+out-null
+#>

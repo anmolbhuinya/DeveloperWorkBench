@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copy to %USERPROFILE%\.m2\settings.xml and replace __NEXUS_USER__ / __NEXUS_PASSWORD__.
+  Required to resolve com.healthedge.* dependencies when running RedCard integration tests.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+  <servers>
+    <server>
+      <id>nexus</id>
+      <username>__NEXUS_USER__</username>
+      <password>__NEXUS_PASSWORD__</password>
+    </server>
+  </servers>
+  <mirrors>
+    <mirror>
+      <id>nexus</id>
+      <mirrorOf>*</mirrorOf>
+      <url>https://nexus.headquarters.healthedge.com/repository/maven-public/</url>
+    </mirror>
+  </mirrors>
+</settings>

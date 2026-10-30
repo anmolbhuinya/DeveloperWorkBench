@@ -1,0 +1,78 @@
+# ── dependencies: restored by build.ps1 (npm ci reads package-lock.json, which IS committed) ──
+**/node_modules/
+
+# ── portable Node.js (103 MB): downloaded by build.ps1 (tools/get-node.ps1) ──
+/tools/node/
+
+# ── build output: rebuilt by build.ps1 / Deploy.exe ──
+/Deploy.exe
+/src/Internal_Developer_Tool/static/
+*.exe
+*.obj
+*.pdb
+
+# ── python ──
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.ipynb_checkpoints/
+.python-version
+# the bundled interpreter lives in the installation, not in the workspace
+/python/
+
+# ── editor / OS noise ──
+.idea/
+.vscode/
+.vs/
+Thumbs.db
+desktop.ini
+*.log
+*.bak
+*.bak_*
+*.pathbak
+*.tmp
+*.pid
+
+# ── credentials and personal data: NEVER commit ──
+secrets.xlsx
+vms.xlsx
+.env
+*.pem
+*.key
+
+# ── run history / generated work of the Workbench (per machine) ──
+/src/Local_Build_And_Deployment/Applications/*/Data/
+/src/Local_Build_And_Deployment/Applications/*/deployed_info.json
+/src/Local_Build_And_Deployment/Applications/*/module_deploy_overrides.json
+/src/Project_Management/Sprint/Tasks/
+/src/Local_Docker_Setup/secrets_management/.secrets_path
+/src/Project_Management/Sprint/Sprints/
+/src/Project_Management/Sprint/PreviousSprints/
+/src/Project_Management/Sprint/Projects/
+/src/Remote_Setup/configured_servers/
+/src/WorkFlows/Remote_Melissa_Data_Update_License/remote_images/
+/src/WorkFlows/Remote_Regression_Jenkins_IT_Failure/projects/*/output/
+/src/WorkFlows/GP_Build/projects/
+/src/Tools/AIAnalyzer/jobs/
+/src/Tools/AIAnalyzer/projects.xlsx
+/src/Tools/Sonar_Report_Generator/Sonar_Report/
+/src/Tools/Sonar_Report_Generator/ai_jobs/
+/src/**/run_logs/
+/src/**/merge_jobs/
+/src/**/stats/
+**/sonar_cache.json
+**/eta_cache.json
+**/projects.xlsx
+!/src/WorkFlows/GP_Build/projects.xlsx

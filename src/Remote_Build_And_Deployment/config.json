@@ -1,0 +1,7 @@
+{
+  "default_vm_ip": "10.192.251.19",
+  "ssh_user": "ec2-user",
+  "ssh_key_path": "",
+  "overview_build_poll_ms": 600000,
+  "description": "Remote development VM configuration for HealthEdge application management"
+}

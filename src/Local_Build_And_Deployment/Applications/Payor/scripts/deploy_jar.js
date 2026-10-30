@@ -1,0 +1,224 @@
+// ============================================================
+// deploy_jar.js — Deploy a payor module jar to the local docker container.
+//
+// USAGE:
+//   node scripts/deploy_jar.js <module-name>
+//
+// EXAMPLE:
+//   node scripts/deploy_jar.js core-cvc
+//
+// WHAT IT DOES:
+//   1. Resolve source jar path (from setBranch + module target/, or config.xlsx override)
+//   2. Copy jar to Windows shared folder (mounted in docker at /home/weblogic/shared)
+//   3. Inside docker: stopServer, wait for server to stop
+//   4. Inside docker: copy jar from shared → deploy dir, rename to strip version
+//   5. Inside docker: ensure Artemis queue is running (startArtemis if not)
+//   6. Inside docker: startServer
+// ============================================================
+
+'use strict';
+
+const fs   = require('fs');
+const path = require('path');
+
+const cfg             = require('./config');
+const { resolveJar }  = require('./jar_resolver');
+const { dockerExec, dockerCp, assertContainerRunning } = require('./docker_helpers');
+
+// ── helpers ──────────────────────────────────────────────────
+
+function log(msg) {
+  const ts = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  console.log(`[${ts}] ${msg}`);
+}
+
+function banner(text) {
+  const line = '─'.repeat(60);
+  console.log('\n' + line);
+  console.log(' ' + text);
+  console.log(line);
+}
+
+// Convert Windows path to POSIX (for docker cp source argument on Windows host)
+function toPosix(winPath) {
+  return winPath.replace(/\\/g, '/');
+}
+
+// Wait until stopServer has finished: poll for server process to disappear.
+// We check if the weblogic admin server process is still running by looking
+// for the presence of the pid file or the server state via a simple pattern.
+function waitForServerStop(timeoutMs = 5 * 60 * 1000) {
+  log('Waiting for Tomcat to stop...');
+  const interval = 5000;
+  const start    = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      // Tomcat runs as a java process with catalina or Bootstrap in the command line
+      const out = dockerExec(
+        "ps aux | grep -E 'catalina|Bootstrap' | grep -v grep || true",
+        { throwOnError: false }
+      );
+
+      if (!out.trim()) {
+        log('Tomcat appears stopped.');
+        return;
+      }
+
+      log(`Tomcat still running... retrying in ${interval / 1000}s`);
+    } catch (_) {
+      return;
+    }
+
+    const deadline = Date.now() + interval;
+    while (Date.now() < deadline) { /* busy-wait */ }
+  }
+
+  log('WARNING: Timed out waiting for Tomcat to stop. Proceeding anyway.');
+}
+
+// Check whether Artemis is running inside the container; start it if not.
+function ensureArtemisRunning() {
+  log('Checking Artemis queue status...');
+  try {
+    const out = dockerExec(
+      "ps aux | grep -E '[Aa]rtemis' | grep -v grep || true",
+      { throwOnError: false }
+    );
+
+    if (out.trim()) {
+      log('Artemis is already running.');
+      return;
+    }
+
+    log('Artemis not running — starting Artemis...');
+    const startOut = dockerExec(
+      'startArtemis 2>&1 || echo "startArtemis done"',
+      { timeoutMs: 60000, throwOnError: false }
+    );
+    if (startOut) log(startOut);
+    log('startArtemis command issued.');
+  } catch (e) {
+    log(`WARNING: Could not verify/start Artemis: ${e.message}`);
+  }
+}
+
+// ── main ─────────────────────────────────────────────────────
+
+async function main() {
+  const moduleName = process.argv[2];
+  if (!moduleName) {
+    console.error('ERROR: No module name provided.');
+    console.error('USAGE: node scripts/deploy_jar.js <module-name>');
+    console.error('       e.g. node scripts/deploy_jar.js core-cvc');
+    process.exit(1);
+  }
+
+  banner(`Deploying module: ${moduleName}`);
+
+  // ── Step 1: Resolve jar ───────────────────────────────────
+  log('Resolving jar path...');
+  let sourcePath, deployName, sharedFolder;
+  try {
+    ({ sourcePath, deployName, sharedFolder } = resolveJar(moduleName));
+  } catch (e) {
+    console.error('\nERROR resolving jar:', e.message);
+    process.exit(1);
+  }
+
+  log(`Source jar   : ${sourcePath}`);
+  log(`Deploy name  : ${deployName}`);
+  log(`Shared folder: ${sharedFolder}`);
+
+  if (!fs.existsSync(sourcePath)) {
+    console.error(`\nERROR: Source jar not found: ${sourcePath}`);
+    process.exit(1);
+  }
+
+  // ── Step 2: Verify docker container ──────────────────────
+  banner('Step 1/4 — Verify docker container');
+  try {
+    assertContainerRunning();
+    log(`Container "${cfg.docker.containerName}" is running.`);
+  } catch (e) {
+    console.error('\nERROR:', e.message);
+    process.exit(1);
+  }
+
+  // ── Step 3: Copy jar to shared folder ────────────────────
+  banner('Step 2/4 — Copy jar to shared folder');
+  if (!fs.existsSync(sharedFolder)) {
+    log(`Shared folder does not exist, creating: ${sharedFolder}`);
+    fs.mkdirSync(sharedFolder, { recursive: true });
+  }
+
+  const sharedDest = path.join(sharedFolder, deployName);
+  log(`Copying "${path.basename(sourcePath)}" → "${sharedDest}"`);
+  fs.copyFileSync(sourcePath, sharedDest);
+  log('Copy to shared folder complete.');
+
+  // ── Step 4: Stop server ───────────────────────────────────
+  banner('Step 3/4 — Stop Tomcat server in docker');
+  log('Running stop_tomcat_instances.sh...');
+  try {
+    const stopOut = dockerExec(
+      'cd /home/weblogic/environments/healthedge/claimserver/install/tools/bin && chmod +x stop_tomcat_instances.sh && ./stop_tomcat_instances.sh 2>&1',
+      { timeoutMs: 60000, throwOnError: false }
+    );
+    if (stopOut) log(stopOut);
+  } catch (e) {
+    log(`stop output: ${e.message}`);
+  }
+
+  waitForServerStop();
+
+  // ── Step 5: Deploy jar inside docker ─────────────────────
+  banner('Step 4/4 — Deploy jar and start server');
+  const sharedInDocker = `/home/weblogic/shared/${deployName}`;
+  const deployTarget   = `${cfg.docker.deployDir}/${deployName}`;
+
+  log(`Copying jar inside docker: ${sharedInDocker} → ${deployTarget}`);
+  try {
+    dockerExec(`cp "${sharedInDocker}" "${deployTarget}"`);
+    log('Jar copied to deploy directory.');
+  } catch (e) {
+    console.error('\nERROR copying jar inside docker:', e.message);
+    process.exit(1);
+  }
+
+  // Remove jar from shared folder after successful deployment
+  const sharedDestPath = path.join(sharedFolder, deployName);
+  try {
+    fs.unlinkSync(sharedDestPath);
+    log(`Removed jar from shared folder: ${sharedDestPath}`);
+  } catch (e) {
+    log(`WARNING: Could not remove jar from shared folder: ${e.message}`);
+  }
+
+  // ── Step 5b: Ensure Artemis queue is running ─────────────
+  banner('Step 4b/4 — Ensure Artemis queue is running');
+  ensureArtemisRunning();
+
+  // ── Step 6: Start server ──────────────────────────────────
+  log('Running start_tomcat_instances.sh...');
+  try {
+    dockerExec(
+      'cd /home/weblogic/environments/healthedge/claimserver/install/tools/bin && chmod +x start_tomcat_instances.sh && nohup ./start_tomcat_instances.sh -d > /tmp/startTomcat.log 2>&1 &',
+      { timeoutMs: 30000, throwOnError: false }
+    );
+  } catch (e) {
+    log(`start output: ${e.message}`);
+  }
+  log('Tomcat start command issued. Server is starting in the background.');
+
+  banner('DEPLOYMENT COMPLETE');
+  log(`Module    : ${moduleName}`);
+  log(`Source jar: ${sourcePath}`);
+  log(`Deployed  : ${deployTarget}`);
+  log('Monitor startup: docker exec payer-tc-261 tail -f /tmp/startTomcat.log');
+}
+
+main().catch(e => {
+  console.error('\nUnhandled error:', e.message);
+  process.exit(1);
+});

@@ -1,0 +1,6 @@
+source: ~/.secrets_env
+targets:
+  - type: local
+    path: $HOME/Workspace/Projects/Backend/hrp.payer.hub.connect/target/classes/environments/application-local.yml
+  - type: local
+    path: $HOME/Workspace/Projects/Backend/hrp.payer.hub.connect/target/classes/environments/application-int.yml    

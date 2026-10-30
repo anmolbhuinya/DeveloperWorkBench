@@ -1,0 +1,15 @@
+{
+  "repositories": [
+    {"name": "Maven Central",            "url": "https://repo1.maven.org/maven2/"},
+    {"name": "Eclipse GlassFish Group",  "url": "https://repo.eclipse.org/content/groups/glassfish/"},
+    {"name": "Eclipse Releases",         "url": "https://repo.eclipse.org/content/repositories/releases/"},
+    {"name": "Sonatype OSS Releases",    "url": "https://oss.sonatype.org/content/repositories/releases/"},
+    {"name": "Java.net Releases",        "url": "https://maven.java.net/content/repositories/releases/"},
+    {"name": "Java.net Public",          "url": "https://maven.java.net/content/repositories/public/"},
+    {"name": "Download Java.net Maven2", "url": "https://download.java.net/maven/2/"},
+    {"name": "JBoss Public",             "url": "https://repository.jboss.org/nexus/content/repositories/public/"}
+  ],
+  "consecutive_failures_before_fix": 0,
+  "download_timeout_seconds": 30,
+  "retry_delay_seconds": 2
+}

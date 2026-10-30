@@ -1,0 +1,46 @@
+name: DEV-${VERSION}-WebUI-Adapter-Websocket-Nginx
+services:
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.26.2-alpine
+    ports:
+      - "80:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - webui
+      - adapter
+      - websocket
+    networks:
+      - webui-network
+    restart: always
+
+  webui:
+    restart: always
+    image: nexus.headquarters.healthedge.com:8124/payor-ui-react:${WEBUI_VERSION}
+    networks:
+      - webui-network
+  
+  adapter: 
+    image: nexus.headquarters.healthedge.com:8124/payor-rest-adaptor:${ADAPTOR_VERSION}
+    volumes:
+      - ./managerConfig.json:/app/config/managerConfig.json
+    environment:
+      DEFAULT_PAYER_SERVER_URL: http://heeng-bigair:7001
+      MANAGER_CONFIG_PATH: /app/config
+      ELASTICSEARCH_ENABLED: DISABLED
+      REDIS_ENABLED: DISABLE	
+      LOGGING_LEVEL_ROOT: DEBUG
+    networks:
+      - webui-network
+  
+  websocket:
+    restart: always
+    image: nexus.headquarters.healthedge.com:8124/payor-adaptor-websocket:${WEBSOCKET_VERSION}
+    environment:
+      ADAPTOR_HOST_URL: http://adapter:3030
+    networks:
+      - webui-network
+
+networks:
+  webui-network:
+    name: webui-network-${VERSION}

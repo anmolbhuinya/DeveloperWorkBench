@@ -1,0 +1,11 @@
+source: ~/.secrets_env
+
+targets:
+  - type: local
+    path: $HOME/pikAppServer/pik_$PIK_VERSION/portal-rti/app/application.properties
+
+  - type: local
+    path: $HOME/pikAppServer/pik_$PIK_VERSION/portal-rti/app/runtime.properties
+
+  - type: local
+    path: $HOME/pikAppServer/pik_$PIK_VERSION/portal-rti/portal-rti.properties

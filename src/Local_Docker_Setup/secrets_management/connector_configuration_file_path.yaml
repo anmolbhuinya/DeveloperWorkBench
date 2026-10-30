@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  connector_configuration_file_path.yaml
+#
+#  Configuration mapping file for the HRP Connector service.
+#  Used by updateConfigurationFiles.sh via --config flag:
+#
+#    ./updateConfigurationFiles.sh --config ~/connector_configuration_file_path.yaml
+#
+#  Secret path : hrp-connector-dev/config-creds
+#  Vault refs  :
+#    burgess-acc-token      → BURGESS_ACCESS_TOKEN        (wl.properties L106)
+#    burgess-client-token   → BURGESS_CLIENT_SECRET       (wl.properties L112)
+#    connector-password     → ibm.mq.password             (connector.ibm.mq.client.cfg L5)
+#    connector-password     → password                    (connector-jms.cfg L10)
+#    hcc-admin-password     → integration.password        (connector-payor.cfg L11)
+#    hcc-admin-password     → integration.password        (com.healthedge.connector.payor.cfg L11)
+#    hcc-admin-password     → DEFAULT_MBEAN_PASSWORD      (wl.properties L31)
+#
+#  Repo root   : $C4SRCDIR  (e.g. C:\Users\nsattikar\hebb\hrp.connector-26.1)
+#  OS          : Windows (Git Bash) → only "local" targets are processed
+# ─────────────────────────────────────────────────────────────────────────────
+
+source: ~/.secrets_env
+targets:
+
+  # ── cvc-event-listener-route.xml ────────────────────────────────────────────
+  #   L32 : artemis.password → vault:hrp-connector-dev/connector-creds:admin-password
+  - type: local
+    path: $C4SRCDIR/connector-cvc-event-listener/connector-cvc-event-listener-bundle/target/classes/OSGI-INF/blueprint/cvc-event-listener-route.xml
+  # ── wl.properties.bc.installer.template ─────────────────────────────────────
+  #   Injected at deploy time inside the container by _deployConnectorInsideContainer.sh
+  #   (kept out of build-time injection to avoid dirtying git-tracked source files)
+
+  # ── connector.ibm.mq.client.cfg ─────────────────────────────────────────────
+  #   L5 : ibm.mq.password → vault:hrp-connector-dev/config-creds:connector-password
+  - type: local
+    path: $C4SRCDIR/connector-bluecard-claimpricing/connector-bluecard-claimpricing-bundle/target/classes/connector.ibm.mq.client.cfg
+
+  # ── connector-jms.cfg ────────────────────────────────────────────────────────
+  #   L10 : password → vault:hrp-connector-dev/config-creds:connector-password
+  - type: local
+    path: $C4SRCDIR/connector-jms/connector-jms-bundle/target/classes/connector-jms.cfg
+
+  # ── connector-payor.cfg ──────────────────────────────────────────────────────
+  #   L11 : integration.password → vault:hrp-connector-dev/config-creds:hcc-admin-password
+  - type: local
+    path: $C4SRCDIR/connector-payor/connector-payor-bundle/target/classes/connector-payor.cfg
+
+  # ── com.healthedge.connector.payor.cfg ──────────────────────────────────────
+  #   Injected at deploy time inside the container by _deployConnectorInsideContainer.sh
+  #   (kept out of build-time injection to avoid dirtying git-tracked source files)

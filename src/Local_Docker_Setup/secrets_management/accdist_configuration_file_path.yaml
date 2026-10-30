@@ -1,0 +1,6 @@
+source: ~/.secrets_env
+targets:
+  - type: local
+    path: $HOME/accelerator-projects/hrp.corr.accelerator.distribution/target/dist/properties/correspondence-api.properties
+  - type: local
+    path: $HOME/accelerator-projects/hrp.corr.accelerator.distribution/target/dist/properties/correspondence-gateway.properties

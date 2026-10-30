@@ -1,0 +1,4 @@
+source: ~/.secrets_env
+targets:
+  - type: local
+    path: $HOME/payer-ui/hrp.payer.ui/retools/UpdatePortalNoCaptcha.bat

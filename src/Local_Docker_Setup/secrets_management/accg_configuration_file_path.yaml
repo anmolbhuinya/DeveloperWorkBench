@@ -1,0 +1,8 @@
+source: ~/.secrets_env
+targets:
+  - type: local
+    path: $HOME/accelerator-projects/hrp.corr.accelerator.gateway/target/classes/application.properties
+  - type: local
+    path: $HOME/accelerator-projects/hrp.corr.accelerator.gateway/target/classes/data/data.sql
+  - type: local
+    path: $HOME/accelerator-projects/hrp.corr.accelerator.gateway/target/classes/db/changelog/dml/changelog-dml-v1.sql
