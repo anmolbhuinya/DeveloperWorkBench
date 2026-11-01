@@ -138,6 +138,7 @@ def _bootstrap_environment():
 
 
 os.environ.setdefault("DWB_HOME", str(WORKFLOWS_ROOT.parent if WORKFLOWS_ROOT.name.lower() == "developerworkbench" else Path.home() / "DWB"))
+INSTALLED_SOFTWARES = Path(os.environ["DWB_HOME"]) / "Installed_Softwares"      # Dev Softwares and Version Managers install here
 _bootstrap_environment()
 
 
@@ -32841,7 +32842,7 @@ def create_flask_app():
         out = {}
 
         # SDKMAN is a bash tool: detect via its install dir (works with Git Bash / WSL-shared home)
-        sd = Path(os.environ.get("SDKMAN_DIR") or (home / ".sdkman"))
+        sd = Path(os.environ.get("SDKMAN_DIR") or (INSTALLED_SOFTWARES / "sdkman" if (INSTALLED_SOFTWARES / "sdkman").is_dir() else home / ".sdkman"))
         cur = sd / "candidates" / "java" / "current"
         out["sdkman"] = {
             "installed": sd.is_dir(), "path": str(sd) if sd.is_dir() else "",
@@ -32851,7 +32852,7 @@ def create_flask_app():
         }
 
         # pyenv-win: ~/.pyenv/pyenv-win/{bin/pyenv.bat, version (global), versions/<x.y.z>}
-        pw = home / ".pyenv" / "pyenv-win"
+        pw = (INSTALLED_SOFTWARES / "pyenv" / "pyenv-win") if (INSTALLED_SOFTWARES / "pyenv" / "pyenv-win").is_dir() else (home / ".pyenv" / "pyenv-win")
         pe = next((p for p in (str(pw / "bin" / "pyenv.bat"), shutil.which("pyenv")) if p and Path(p).exists()), "")
         gv = pw / "version"
         out["pyenv"] = {
@@ -32861,10 +32862,10 @@ def create_flask_app():
         }
 
         # nvm-windows: %NVM_HOME%\{nvm.exe, v<x.y.z>\}; the active version is where the %NVM_SYMLINK% link (nodejs) points
-        nvm_home = Path(os.environ.get("NVM_HOME") or (home / "AppData" / "Roaming" / "nvm"))
+        nvm_home = Path((INSTALLED_SOFTWARES / "nvm") if (INSTALLED_SOFTWARES / "nvm").is_dir() else (os.environ.get("NVM_HOME") or (home / "AppData" / "Roaming" / "nvm")))
         nvm_exe = nvm_home / "nvm.exe"
         nvv = sorted((d.name for d in nvm_home.glob("v*") if d.is_dir()), key=_ver_key) if nvm_home.is_dir() else []
-        link = Path(os.environ.get("NVM_SYMLINK") or r"C:\Program Files\nodejs")
+        link = (INSTALLED_SOFTWARES / "nodejs") if (INSTALLED_SOFTWARES / "nvm").is_dir() else Path(os.environ.get("NVM_SYMLINK") or r"C:\Program Files\nodejs")
         out["nvm"] = {
             "installed": nvm_exe.is_file() or bool(nvv), "path": str(nvm_home) if (nvm_exe.is_file() or nvv) else "",
             "version": "", "versions": nvv, "active": _target_name(link) if link.exists() else "",
@@ -32886,11 +32887,23 @@ def create_flask_app():
 
     _vm_jobs = {}
 
+    def _vm_env():
+        """Environment for version-manager commands: managers living in Installed_Softwares get their home variables."""
+        e = dict(os.environ)
+        if (INSTALLED_SOFTWARES / "sdkman").is_dir():
+            e["SDKMAN_DIR"] = str(INSTALLED_SOFTWARES / "sdkman")
+        if (INSTALLED_SOFTWARES / "pyenv").is_dir():
+            e["PYENV"] = e["PYENV_ROOT"] = e["PYENV_HOME"] = str(INSTALLED_SOFTWARES / "pyenv" / "pyenv-win")
+        if (INSTALLED_SOFTWARES / "nvm").is_dir():
+            e["NVM_HOME"] = str(INSTALLED_SOFTWARES / "nvm")
+            e["NVM_SYMLINK"] = str(INSTALLED_SOFTWARES / "nodejs")
+        return e
+
     def _vm_command(mgr, action, ver):
         """Build the argv for a version-manager action, or (None, error)."""
         home = Path.home()
         if mgr == "sdkman":
-            sd = Path(os.environ.get("SDKMAN_DIR") or (home / ".sdkman"))
+            sd = Path(os.environ.get("SDKMAN_DIR") or (INSTALLED_SOFTWARES / "sdkman" if (INSTALLED_SOFTWARES / "sdkman").is_dir() else home / ".sdkman"))
             bash = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
             if not Path(bash).exists():
                 return None, "bash not found (install Git for Windows or WSL)"
@@ -32902,12 +32915,12 @@ def create_flask_app():
                 script = 'source "$1/bin/sdkman-init.sh" && yes n | sdk install java "$2"'
             return [bash, "-c", script, "_", sd.as_posix(), ver], None
         if mgr == "pyenv":
-            pe = next((p for p in (shutil.which("pyenv"), str(home / ".pyenv" / "pyenv-win" / "bin" / "pyenv.bat")) if p and Path(p).exists()), "")
+            pe = next((p for p in (shutil.which("pyenv"), str(INSTALLED_SOFTWARES / "pyenv" / "pyenv-win" / "bin" / "pyenv.bat"), str(home / ".pyenv" / "pyenv-win" / "bin" / "pyenv.bat")) if p and Path(p).exists()), "")
             if not pe:
                 return None, "pyenv is not installed"
             return [pe] + {"install": ["install", ver], "use": ["global", ver], "uninstall": ["uninstall", "-f", ver]}[action], None
         if mgr == "nvm":
-            nv = shutil.which("nvm")
+            nv = str(INSTALLED_SOFTWARES / "nvm" / "nvm.exe") if (INSTALLED_SOFTWARES / "nvm" / "nvm.exe").is_file() else shutil.which("nvm")
             if not nv:
                 return None, "nvm is not installed"
             return [nv, action, ver], None
@@ -32936,7 +32949,7 @@ def create_flask_app():
 
         def _stream(argv):
             job["output"] += "$ " + " ".join(argv) + "\n"
-            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=_vm_env())
             for line in p.stdout:
                 job["output"] += line
             p.wait()
@@ -32976,7 +32989,7 @@ def create_flask_app():
                     job["status"] = "success" if _go_steps() else "failed"
                     return
                 job["output"] += "$ " + " ".join(cmd) + "\n"
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=_vm_env())
                 for line in p.stdout:
                     job["output"] += line
                 p.wait()
@@ -32986,6 +32999,149 @@ def create_flask_app():
                 job["status"] = "failed"
         _th.Thread(target=_go, daemon=True).start()
         return jsonify({"ok": True, "key": key})
+
+    # ── Dev Softwares: winget packages installed into <DWB_HOME>\Installed_Softwares\<name> ─────────────────────────
+    _DEV_SOFTWARES = [
+        {"key": "intellij", "title": "IntelliJ IDEA", "sub": "IntelliJ", "winget": "JetBrains.IntelliJIDEA.Community",
+         "desc": "Java IDE (Community Edition)", "exe": ["bin/idea64.exe"],
+         "known": [r"C:\Program Files\JetBrains\IntelliJ IDEA Community Edition*\bin\idea64.exe"]},
+        {"key": "postman", "title": "Postman", "sub": "Postman", "winget": "Postman.Postman",
+         "desc": "API client", "exe": ["Postman.exe"], "known": ["%LOCALAPPDATA%\\Postman\\Postman.exe"]},
+        {"key": "soapui", "title": "SoapUI", "sub": "SoapUI", "winget": "SmartBear.SoapUI",
+         "desc": "SOAP / REST API testing", "exe": ["bin/soapui.bat"], "known": [r"C:\Program Files\SmartBear\SoapUI-*\bin\soapui.bat"]},
+        {"key": "fiddler", "title": "Fiddler", "sub": "Fiddler", "winget": "Telerik.Fiddler.Classic",
+         "desc": "HTTP debugging proxy (Fiddler Classic)", "exe": ["Fiddler.exe"], "known": ["%LOCALAPPDATA%\\Programs\\Fiddler\\Fiddler.exe", r"C:\Program Files (x86)\Fiddler2\Fiddler.exe"]},
+        {"key": "docker", "title": "Docker Desktop", "sub": "Docker", "winget": "Docker.DockerDesktop",
+         "desc": "Containers (needs administrator rights and WSL 2)", "exe": ["Docker Desktop.exe"], "known": [r"C:\Program Files\Docker\Docker\Docker Desktop.exe"]},
+    ]
+
+    # Version managers that can be installed by the Workbench, into Installed_Softwares\<sub>
+    _VM_INSTALL = {"sdkman": "sdkman", "pyenv": "pyenv", "nvm": "nvm", "go": "go"}
+
+    def _ds_state(d):
+        import glob as _glob
+        base = INSTALLED_SOFTWARES / d["sub"]
+        here = base.is_dir() and any(base.iterdir())
+        there = ""
+        if not here:
+            for pat in d["known"]:
+                hit = sorted(_glob.glob(os.path.expandvars(pat)))
+                if hit:
+                    there = hit[-1]
+                    break
+        return {"key": d["key"], "title": d["title"], "desc": d["desc"], "winget": d["winget"],
+                "target": str(base), "installed_here": bool(here), "installed_elsewhere": there}
+
+    @app.route("/api/setup/dev-softwares")
+    def api_setup_dev_softwares():
+        return jsonify({"ok": True, "root": str(INSTALLED_SOFTWARES), "items": [_ds_state(d) for d in _DEV_SOFTWARES],
+                        "winget": bool(shutil.which("winget"))})
+
+    @app.route("/api/setup/dev-softwares/install", methods=["POST"])
+    def api_setup_dev_software_install():
+        import threading as _th, uuid as _uuid
+        key = (request.get_json(silent=True) or {}).get("key", "")
+        d = next((x for x in _DEV_SOFTWARES if x["key"] == key), None)
+        if not d:
+            return jsonify({"ok": False, "error": "Unknown software"}), 400
+        winget = shutil.which("winget")
+        if not winget:
+            return jsonify({"ok": False, "error": "winget is not available on this machine (install App Installer from the Microsoft Store)"}), 400
+        target = INSTALLED_SOFTWARES / d["sub"]
+        jid = _uuid.uuid4().hex[:10]
+        job = _vm_jobs[jid] = {"status": "running", "output": ""}
+
+        def _run():
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+                argv = [winget, "install", "-e", "--id", d["winget"], "--accept-package-agreements", "--accept-source-agreements", "--silent"]
+                if d["key"] == "docker":
+                    argv += ["--override", 'install --quiet --accept-license --installation-dir="%s"' % target]
+                else:
+                    argv += ["--location", str(target)]
+                job["output"] += "$ " + " ".join(argv) + "\n"
+                p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+                for line in p.stdout:
+                    job["output"] += line
+                p.wait()
+                st = _ds_state(d)
+                if p.returncode == 0 and not st["installed_here"]:
+                    job["output"] += "\nInstalled, but this installer ignores the target folder%s.\n" % (
+                        (": found at " + st["installed_elsewhere"]) if st["installed_elsewhere"] else "")
+                job["status"] = "success" if p.returncode == 0 else "failed"
+            except Exception as e:
+                job["output"] += str(e)
+                job["status"] = "failed"
+        _th.Thread(target=_run, daemon=True).start()
+        return jsonify({"ok": True, "key": jid})
+
+    @app.route("/api/setup/version-managers/install", methods=["POST"])
+    def api_setup_vm_install():
+        """Install a version manager itself into Installed_Softwares/<name>."""
+        import threading as _th, uuid as _uuid
+        mgr = (request.get_json(silent=True) or {}).get("manager", "")
+        if mgr not in _VM_INSTALL:
+            return jsonify({"ok": False, "error": "Unknown manager"}), 400
+        target = INSTALLED_SOFTWARES / _VM_INSTALL[mgr]
+        jid = _uuid.uuid4().hex[:10]
+        job = _vm_jobs[jid] = {"status": "running", "output": ""}
+
+        def _stream(argv, env=None, cwd=None):
+            job["output"] += "$ " + " ".join(str(a) for a in argv) + "\n"
+            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env, cwd=cwd)
+            for line in p.stdout:
+                job["output"] += line
+            p.wait()
+            return p.returncode
+
+        def _download(url, dest):
+            import urllib.request as _ur
+            job["output"] += "Downloading %s\n" % url
+            with _ur.urlopen(url, timeout=120) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+
+        def _run():
+            try:
+                INSTALLED_SOFTWARES.mkdir(parents=True, exist_ok=True)
+                if mgr == "sdkman":
+                    bash = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
+                    if not Path(bash).exists():
+                        raise RuntimeError("bash not found (install Git for Windows)")
+                    env = dict(os.environ, SDKMAN_DIR=target.as_posix())
+                    ok = _stream([bash, "-c", "curl -s https://get.sdkman.io | bash"], env=env) == 0
+                elif mgr == "pyenv":
+                    git = shutil.which("git")
+                    if not git:
+                        raise RuntimeError("git not found")
+                    ok = target.is_dir() and any(target.iterdir()) or _stream([git, "clone", "--depth", "1", "https://github.com/pyenv-win/pyenv-win.git", str(target)]) == 0
+                elif mgr == "nvm":
+                    import zipfile as _zf, json as _json, urllib.request as _ur
+                    rel = _json.load(_ur.urlopen("https://api.github.com/repos/coreybutler/nvm-windows/releases/tags/1.2.2", timeout=60))
+                    asset = next(a for a in rel["assets"] if a["name"].lower() == "nvm-noinstall.zip")
+                    tmp = Path(os.environ.get("TEMP") or str(Path.home())) / "nvm-noinstall.zip"
+                    _download(asset["browser_download_url"], tmp)
+                    target.mkdir(parents=True, exist_ok=True)
+                    with _zf.ZipFile(tmp) as z:
+                        z.extractall(target)
+                    tmp.unlink(missing_ok=True)
+                    (target / "settings.txt").write_text("root: %s\npath: %s\n" % (target, INSTALLED_SOFTWARES / "nodejs"))
+                    job["output"] += "nvm-windows %s extracted to %s\n" % (rel.get("tag_name", ""), target)
+                    ok = (target / "nvm.exe").is_file()
+                else:   # go
+                    winget = shutil.which("winget")
+                    if not winget:
+                        raise RuntimeError("winget is not available")
+                    target.mkdir(parents=True, exist_ok=True)
+                    ok = _stream([winget, "install", "-e", "--id", "GoLang.Go", "--accept-package-agreements", "--accept-source-agreements", "--silent", "--location", str(target)]) == 0
+                if ok and mgr in ("pyenv", "nvm"):
+                    job["output"] += "\nThe Workbench uses this copy automatically. To use it in your own shell, set %s and add it to PATH.\n" % (
+                        "PYENV / PYENV_ROOT = " + str(target / "pyenv-win") if mgr == "pyenv" else "NVM_HOME = " + str(target) + ", NVM_SYMLINK = " + str(INSTALLED_SOFTWARES / "nodejs"))
+                job["status"] = "success" if ok else "failed"
+            except Exception as e:
+                job["output"] += (str(e) or repr(e)) + "\n"
+                job["status"] = "failed"
+        _th.Thread(target=_run, daemon=True).start()
+        return jsonify({"ok": True, "key": jid})
 
     @app.route("/api/setup/version-managers/status")
     def api_setup_vm_status():

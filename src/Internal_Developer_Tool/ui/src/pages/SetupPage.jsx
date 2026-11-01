@@ -3,6 +3,12 @@ import { useNavigate } from 'react-router-dom'
 
 const CARDS = [
   {
+    path: '/setup/dev-softwares',
+    icon: '💾',
+    title: 'Dev Softwares',
+    desc: 'IntelliJ IDEA, Postman, SoapUI, Fiddler, Docker Desktop',
+  },
+  {
     path: '/setup/dev-tools',
     icon: '🛠',
     title: 'Dev Tools',

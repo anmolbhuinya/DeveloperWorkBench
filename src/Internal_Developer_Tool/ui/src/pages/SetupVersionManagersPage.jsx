@@ -51,6 +51,20 @@ export default function SetupVersionManagersPage() {
       })
       .catch(() => setJob(j => ({ ...j, status: 'failed', output: 'Request failed' })))
   }
+  const installManager = (m) => {
+    if (job?.status === 'running') return
+    setJob({ mgr: m.key, action: 'install', version: m.title, status: 'running', output: '' })
+    fetch('/api/setup/version-managers/install', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ manager: m.key }),
+    }).then(r => r.json()).then(d => {
+      if (!d.ok) { setJob(j => ({ ...j, status: 'failed', output: d.error || 'Failed' })); return }
+      const iv = setInterval(() => {
+        fetch(`/api/setup/version-managers/status?key=${encodeURIComponent(d.key)}`).then(r => r.json())
+          .then(s => { setJob(j => ({ ...j, status: s.status, output: s.output })); if (s.status !== 'running') { clearInterval(iv); load() } })
+          .catch(() => {})
+      }, 1500)
+    }).catch(() => setJob(j => ({ ...j, status: 'failed', output: 'Request failed' })))
+  }
   const busy = job?.status === 'running'
   const btn = { fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.5 : 1 }
 
@@ -110,6 +124,9 @@ export default function SetupVersionManagersPage() {
               ) : (
                 <>
                   <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>○ Not installed</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', margin: '6px 0' }}>Installs into {'{DWB_HOME}'}\Installed_Softwares</div>
+                  <button className="btn btn-primary" disabled={busy} onClick={() => installManager(m)}>{busy && job?.mgr === m.key ? 'Installing…' : `Install ${m.title}`}</button>
+                  <br />
                   <a href={m.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--primary)', display: 'inline-block', marginTop: 8 }}>Install instructions ↗</a>
                 </>
               )}

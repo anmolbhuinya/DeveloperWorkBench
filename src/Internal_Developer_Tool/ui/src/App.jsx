@@ -52,6 +52,7 @@ const SetupPage            = lazy(() => import('./pages/SetupPage'))
 const HelpPage             = lazy(() => import('./pages/HelpPage'))
 const HelpIndexPage        = lazy(() => import('./pages/HelpIndexPage'))
 const SetupDevToolsPage    = lazy(() => import('./pages/SetupDevToolsPage'))
+const SetupDevSoftwaresPage = lazy(() => import('./pages/SetupDevSoftwaresPage'))
 const SetupVersionManagersPage = lazy(() => import('./pages/SetupVersionManagersPage'))
 
 function useNewBuildDetector() {
@@ -191,6 +192,7 @@ export default function App() {
               <Route path="/help"                              element={<HelpIndexPage />} />
               <Route path="/help/erd"                          element={<HelpPage />} />
               <Route path="/setup/dev-tools"                  element={<SetupDevToolsPage />} />
+              <Route path="/setup/dev-softwares"              element={<SetupDevSoftwaresPage />} />
               <Route path="/setup/version-managers"           element={<SetupVersionManagersPage />} />
             </Routes>
             </Suspense>

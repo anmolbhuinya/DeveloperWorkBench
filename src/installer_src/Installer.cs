@@ -23,7 +23,7 @@ using Microsoft.Win32;
 
 static class Program
 {
-    public static readonly string[] Folders = { "AI_Workspace", "DeveloperWorkBench", "HE_UI_Clients", "Projects", "Workspace" };
+    public static readonly string[] Folders = { "AI_Workspace", "DeveloperWorkBench", "HE_UI_Clients", "Installed_Softwares", "Projects", "Workspace" };
 
     [STAThread]
     static int Main(string[] args)

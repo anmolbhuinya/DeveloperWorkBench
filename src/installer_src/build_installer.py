@@ -51,7 +51,7 @@ set "PATH=%~dp0python;%PATH%"
 "%~dp0python\python.exe" "%~dp0Internal_Developer_Tool\scripts\idp_server.py" --stop
 """
 UNINSTALL_BAT = r"""@echo off
-rem Removes the Developer Workbench program files. AI_Workspace, HE_UI_Clients, Projects and Workspace are left alone.
+rem Removes the Developer Workbench program files. AI_Workspace, HE_UI_Clients, Installed_Softwares, Projects and Workspace are left alone.
 setlocal
 if /I "%~1"=="/run" goto run
 copy /y "%~f0" "%TEMP%\dwb_uninstall.bat" >nul
@@ -62,7 +62,7 @@ set "APP=%~2"
 if "%APP:~-1%"=="\" set "APP=%APP:~0,-1%"
 echo This removes the Developer Workbench program from:
 echo   %APP%
-echo Your AI_Workspace, HE_UI_Clients, Projects and Workspace folders are NOT touched.
+echo Your AI_Workspace, HE_UI_Clients, Installed_Softwares, Projects and Workspace folders are NOT touched.
 echo (secrets.xlsx and other settings inside that folder are deleted with it.)
 echo The command wrappers in %USERPROFILE%\.local\bin are left as they are.
 echo.
@@ -99,7 +99,7 @@ CreateInstaller.exe (in the folder above this one) builds a new DeveloperWorkben
 this installation, by default into your Downloads folder.
 ExportProjects.exe saves your projects, settings and run history as one zip (default: Downloads); ImportProjects.exe restores it.
 
-The folders next to this one (AI_Workspace, HE_UI_Clients, Projects, Workspace) are where the Workbench keeps its work.
+The folders next to this one (AI_Workspace, HE_UI_Clients, Installed_Softwares, Projects, Workspace) are where the Workbench keeps its work.
 Project data (GP, Jenkins, Clone, Remote Setup/Regression, Melissa, Sprint, AI Analyzer ...) is stored in Projects\<type>, one sub-folder per project type.
 """
 
