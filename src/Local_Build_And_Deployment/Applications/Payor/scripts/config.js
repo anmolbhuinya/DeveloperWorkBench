@@ -73,6 +73,20 @@ const general    = parseKeyValueSheet(wb.Sheets['General']);
 const docker     = parseKeyValueSheet(wb.Sheets['Docker_VM']);
 const jarLocMap  = wb.Sheets['jar_location'] ? parseJarLocation(wb.Sheets['jar_location']) : {};
 
+// The configured container may not exist (e.g. payer-tc-261 while payer-tc-jdk21-271 is running): when it is not running,
+// use the running payer-/payor- container of the same kind (tc = Tomcat, wl = WebLogic).
+function resolveContainer(configured, kind) {
+  try {
+    const out = require('child_process').execFileSync('docker', ['ps', '--filter', 'status=running', '--format', '{{.Names}}'],
+      { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const names = out.split('\n').map(s => s.trim()).filter(Boolean);
+    if (names.includes(configured)) return configured;
+    const hit = names.find(n => new RegExp('^pay[eo]r-' + kind).test(n));
+    if (hit) return hit;
+  } catch (e) { /* docker not available: keep the configured name */ }
+  return configured;
+}
+
 const nodeModules = general['nodeModules'] || '' + require('os').homedir().replace(/\\/g, '/') + '/node_modules';
 
 module.exports = {
@@ -85,8 +99,8 @@ module.exports = {
   },
 
   docker: {
-    containerName:         docker['containerName']         || 'payer-tc-261',
-    weblogicContainerName: docker['weblogicContainerName'] || 'payer-wl-261',
+    containerName:         resolveContainer(docker['containerName']         || 'payer-tc-261', 'tc'),
+    weblogicContainerName: resolveContainer(docker['weblogicContainerName'] || 'payer-wl-261', 'wl'),
     user:                  docker['dockerUser']            || 'weblogic',
     password:              docker['dockerPassword']        || '',
     deployDir:             docker['deployDir']             || '/home/weblogic/domains/healthedge/jars',

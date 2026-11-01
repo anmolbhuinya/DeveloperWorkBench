@@ -1152,6 +1152,18 @@ export function ModulePanel({ appName, displayName, srcdir }) {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
   }, [output])
 
+  function abortOp() {
+    if (!window.confirm('Abort the running ' + (opKind === 'build' ? 'build' : 'deploy') + '?')) return
+    fetch(`/api/local-app/${appName}/module-op-abort`, { method: 'POST' }).catch(() => {})
+  }
+
+  // A build / deploy keeps running when the Workbench restarts or this page is left: pick it up again
+  useEffect(() => {
+    fetch(`/api/local-app/${appName}/module-op-status`).then(r => r.json()).then(d => {
+      if (d.status === 'running') { setOpKind(d.op); setOutput(d.output || ''); setOpStatus('running') }
+    }).catch(() => {})
+  }, [appName])
+
   function startOp(op) {
     if (!selected || opStatus === 'running') return
     setOpKind(op); setOpStatus('running'); setOutput(''); setOpErr(null)
@@ -1367,7 +1379,12 @@ export function ModulePanel({ appName, displayName, srcdir }) {
             {opStatus === 'running' && <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />}
             {opStatus === 'success' && <span style={{ color: '#4caf50' }}>✓ Done</span>}
             {opStatus === 'failed'  && <span style={{ color: '#f44336' }}>✗ Failed</span>}
+            {opStatus === 'aborted' && <span style={{ color: '#ff9800' }}>⏹ Aborted</span>}
             <CopyButton text={output} />
+            {opStatus === 'running' && (
+              <button className="btn btn-sm" onClick={abortOp}
+                style={{ marginLeft: 8, color: '#f44336', borderColor: '#f44336' }}>Abort</button>
+            )}
             {opStatus !== 'running' && (
               <button
                 onClick={() => { setOpStatus(null); setOutput(''); setOpKind(null) }}

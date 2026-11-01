@@ -65,7 +65,7 @@ static class Deployer
     static readonly string[] CodeExt = { ".py", ".js", ".jsx", ".mjs", ".css", ".html", ".svg", ".ico", ".png", ".json", ".ps1", ".sh", ".bat", ".cmd", ".cs", ".md", ".txt", ".map", ".woff", ".woff2" };
     static readonly string[] DataExt = { ".xlsx", ".docx", ".xls" };
     static readonly string[] SkipDirs = { "node_modules", "__pycache__", ".git", "tests" };
-    static readonly string[] NeverOverwrite = { "idp_config.json", "secrets.xlsx", "vms.xlsx", "katalon_params.xlsx", "fetch_build_params.py" };   // local copies are kept if they exist
+    static readonly string[] NeverOverwrite = { "idp_config.json", "secrets.xlsx", "vms.xlsx", "katalon_params.xlsx", "fetch_build_params.py", "module_deploy_overrides.json" };   // local copies are kept if they exist
 
     public static bool Run(Options o, Action<string> log)
     {

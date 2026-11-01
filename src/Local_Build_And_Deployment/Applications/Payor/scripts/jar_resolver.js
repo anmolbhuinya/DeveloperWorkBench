@@ -114,6 +114,15 @@ function resolveSrcDir() {
   );
 }
 
+// Per-module settings saved by the Workbench (Local App > module > deploy settings): target_artifact_name (the file in target/),
+// targets [{deploy_dir, deployment_artifact_name}].
+function readModuleOverride(moduleName) {
+  try {
+    const f = path.join(__dirname, '..', 'module_deploy_overrides.json');
+    return JSON.parse(fs.readFileSync(f, 'utf8'))[moduleName] || {};
+  } catch (e) { return {}; }
+}
+
 // Given a module name and the srcdir, find the SNAPSHOT jar in target/.
 function findSourceJar(moduleName, srcdir) {
   const moduleDir = path.join(srcdir, moduleName);
@@ -130,6 +139,18 @@ function findSourceJar(moduleName, srcdir) {
     throw new Error(
       `target/ directory missing for module "${moduleName}" at: ${targetDir}\n` +
       `Run  mvn clean install  (or  mvn package)  for this module first.`
+    );
+  }
+
+  // An artifact name configured for this module (e.g. web-services.war) wins over the naming convention
+  const wanted = (readModuleOverride(moduleName).target_artifact_name || '').trim();
+  if (wanted) {
+    const p = path.join(targetDir, wanted);
+    if (fs.existsSync(p)) return p;
+    throw new Error(
+      `Configured artifact "${wanted}" not found for module "${moduleName}" in ${targetDir}
+` +
+      `Files in target/: ${fs.readdirSync(targetDir).join(', ')}`
     );
   }
 
@@ -158,8 +179,9 @@ function findSourceJar(moduleName, srcdir) {
 // Matches the logic in deployPayorWithNexusDist.sh:
 //   cp $SRCDIR/${1}/target/${1}-${release_ver}-SNAPSHOT.jar  ${dest}/${1}.jar
 function stripVersion(jarFilename) {
-  const base = path.basename(jarFilename, '.jar');
-  return base.replace(/-\d.*$/, '') + '.jar';
+  const ext  = path.extname(jarFilename) || '.jar';
+  const base = path.basename(jarFilename, ext);
+  return base.replace(/-\d.*$/, '') + ext;
 }
 
 // Main entry point. Returns { sourcePath, deployName, sharedFolder, srcdir }.
@@ -183,9 +205,21 @@ function resolveJar(moduleName) {
     sourcePath = findSourceJar(moduleName, srcdir);
   }
 
-  const deployName = override.to || stripVersion(path.basename(sourcePath));
+  // Deploy targets from the module's deploy settings: one or more { dir, name }; default = configured deploy dir + stripped name
+  const mo = readModuleOverride(moduleName);
+  let targets = (Array.isArray(mo.targets) ? mo.targets : [])
+    .map(t => ({ dir: (t.deploy_dir || '').trim(), name: (t.deployment_artifact_name || '').trim() }))
+    .filter(t => t.dir || t.name);
+  if (!targets.length && (mo.deploy_dir || mo.deployment_artifact_name)) {
+    targets = [{ dir: (mo.deploy_dir || '').trim(), name: (mo.deployment_artifact_name || '').trim() }];
+  }
+  const defName = override.to || stripVersion(path.basename(sourcePath));
+  targets = targets.map(t => ({ dir: t.dir || cfg.docker.deployDir, name: t.name || defName }));
+  if (!targets.length) targets = [{ dir: cfg.docker.deployDir, name: defName }];
 
-  return { sourcePath, deployName, sharedFolder, srcdir };
+  const deployName = targets[0].name;
+
+  return { sourcePath, deployName, sharedFolder, srcdir, targets };
 }
 
 module.exports = { resolveJar, resolveSrcDir, stripVersion };

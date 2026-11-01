@@ -118,9 +118,9 @@ async function main() {
 
   // ── Step 1: Resolve jar ───────────────────────────────────
   log('Resolving jar path...');
-  let sourcePath, deployName, sharedFolder;
+  let sourcePath, deployName, sharedFolder, targets;
   try {
-    ({ sourcePath, deployName, sharedFolder } = resolveJar(moduleName));
+    ({ sourcePath, deployName, sharedFolder, targets } = resolveJar(moduleName));
   } catch (e) {
     console.error('\nERROR resolving jar:', e.message);
     process.exit(1);
@@ -175,15 +175,29 @@ async function main() {
   // ── Step 5: Deploy jar inside docker ─────────────────────
   banner('Step 4/4 — Deploy jar and start server');
   const sharedInDocker = `/home/weblogic/shared/${deployName}`;
-  const deployTarget   = `${cfg.docker.deployDir}/${deployName}`;
+  const deployTarget   = `${targets[0].dir}/${targets[0].name}`;
 
-  log(`Copying jar inside docker: ${sharedInDocker} → ${deployTarget}`);
-  try {
-    dockerExec(`cp "${sharedInDocker}" "${deployTarget}"`);
-    log('Jar copied to deploy directory.');
-  } catch (e) {
-    console.error('\nERROR copying jar inside docker:', e.message);
-    process.exit(1);
+  // The host shared folder is only visible inside some containers (bind mount); otherwise copy straight from the host with docker cp.
+  let sharedVisible = false;
+  try { sharedVisible = dockerExec(`test -f "${sharedInDocker}" && echo yes || echo no`, { throwOnError: false }) === 'yes'; } catch (e) { /* use docker cp */ }
+
+  for (const t of targets) {
+    const dest = `${t.dir}/${t.name}`;
+    try {
+      if (sharedVisible) {
+        log(`Copying inside docker: ${sharedInDocker} → ${dest}`);
+        dockerExec(`cp "${sharedInDocker}" "${dest}"`);
+      } else {
+        log(`Shared folder is not mounted in "${cfg.docker.containerName}" — docker cp: ${sourcePath} → ${dest}`);
+        dockerCp(sourcePath, dest);
+        // docker cp creates the file as root: hand it to the server user (best effort)
+        require('child_process').spawnSync('docker', ['exec', '-u', 'root', cfg.docker.containerName, 'chown', cfg.docker.user, dest], { timeout: 30000 });
+      }
+      log('Copied to deploy directory.');
+    } catch (e) {
+      console.error('\nERROR copying inside docker:', e.message);
+      process.exit(1);
+    }
   }
 
   // Remove jar from shared folder after successful deployment
@@ -215,7 +229,7 @@ async function main() {
   log(`Module    : ${moduleName}`);
   log(`Source jar: ${sourcePath}`);
   log(`Deployed  : ${deployTarget}`);
-  log('Monitor startup: docker exec payer-tc-261 tail -f /tmp/startTomcat.log');
+  log(`Monitor startup: docker exec ${cfg.docker.containerName} tail -f /tmp/startTomcat.log`);
 }
 
 main().catch(e => {

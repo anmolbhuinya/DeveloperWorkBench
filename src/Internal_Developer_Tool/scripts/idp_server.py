@@ -809,6 +809,123 @@ def _save_build_stats(module, params_key, duration_ms, status):
             pass
 
 
+# ── Detached build jobs ──────────────────────────────────────────────────────────────────────────
+# Builds / deploys run as detached processes writing to a log file, so restarting the Workbench never kills them.
+# _DetachedProc looks like the Popen the build loops already use (stdout.readline / wait / returncode / pid / kill),
+# but reads the log file; only the Abort endpoints kill the process tree.
+_DET_DIR = Path(os.environ.get("DWB_RUN_STATE") or (Path(__file__).resolve().parent.parent / "run_logs"))
+_DET_LAUNCHER = ("import subprocess,sys;"
+                 "rc=subprocess.call(sys.argv[2:],stdin=subprocess.DEVNULL,stdout=sys.stdout,stderr=sys.stdout,creationflags=0x08000000);"
+                 "open(sys.argv[1],'w').write(str(rc))")
+
+
+def _pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
+                                 capture_output=True, text=True, creationflags=0x08000000, timeout=15).stdout
+            return f'"{int(pid)}"' in out
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+class _DetachedProc:
+    def __init__(self, pid, log, code, offset=0):
+        self.pid, self.log, self.code = pid, Path(log), Path(code)
+        self._pos = offset
+        self._buf = ""
+        self.returncode = None
+        self.stdout = self
+
+    def _rc(self):
+        try:
+            return int(self.code.read_text().strip())
+        except Exception:
+            return None
+
+    def poll(self):
+        rc = self._rc()
+        if rc is None and not _pid_alive(self.pid):
+            rc = self._rc()
+            if rc is None:
+                rc = -1                      # killed (abort) or died without recording an exit code
+        if rc is not None:
+            self.returncode = rc
+        return self.returncode
+
+    def _read_more(self):
+        try:
+            with open(self.log, "rb") as f:
+                f.seek(self._pos)
+                data = f.read()
+            self._pos += len(data)
+            self._buf += data.decode("utf-8", errors="replace")
+        except OSError:
+            pass
+
+    def readline(self):
+        import time as _t
+        while True:
+            if "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                return line.rstrip("\r") + "\n"
+            self._read_more()
+            if "\n" in self._buf:
+                continue
+            if self.poll() is not None:        # finished: drain what is left, then EOF
+                self._read_more()
+                if "\n" in self._buf:
+                    continue
+                rest, self._buf = self._buf, ""
+                return rest
+            _t.sleep(0.3)
+
+    def wait(self, timeout=None):
+        import time as _t
+        end = _t.time() + timeout if timeout else None
+        while self.poll() is None:
+            if end and _t.time() > end:
+                raise subprocess.TimeoutExpired("detached", timeout)
+            _t.sleep(0.3)
+        return self.returncode
+
+    def kill(self):
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.pid)], capture_output=True, creationflags=0x08000000)
+        except Exception:
+            pass
+
+
+def _detached_popen(kind, argv, cwd=None, env=None, meta=None):
+    """Start argv detached; returns a _DetachedProc. Job info is saved so a restarted Workbench can re-attach (_adopt_detached_jobs)."""
+    import json as _j, time as _t, uuid as _u
+    _DET_DIR.mkdir(parents=True, exist_ok=True)
+    jid = f"{kind}_{_t.strftime('%Y%m%d_%H%M%S')}_{_u.uuid4().hex[:4]}"
+    log, code, info = _DET_DIR / f"{jid}.log", _DET_DIR / f"{jid}.code", _DET_DIR / f"{jid}.json"
+    flags = 0
+    if sys.platform == "win32":
+        flags = 0x00000008 | 0x00000200            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    with open(log, "wb") as lf:
+        p = subprocess.Popen([sys.executable, "-c", _DET_LAUNCHER, str(code)] + [str(a) for a in argv],
+                             cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT, creationflags=flags)
+    info.write_text(_j.dumps({"kind": kind, "pid": p.pid, "log": str(log), "code": str(code), "started": _t.time(), "meta": meta or {}}), encoding="utf-8")
+    return _DetachedProc(p.pid, log, code)
+
+
+def _prune_detached_logs(keep=30):
+    try:
+        files = sorted(_DET_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for f in files[keep:]:
+            for ext in (".json", ".log", ".code"):
+                f.with_suffix(ext).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _run_module_op(op, module, payor_root, extra_args):
     """Run build_module.js or deploy_jar.js, streaming output into _module_op."""
     import subprocess as _sub, time as _time
@@ -821,19 +938,16 @@ def _run_module_op(op, module, payor_root, extra_args):
     params_key = _build_params_key(extra_args) if op == "build" else "(none)"
     final_status = "failed"
     try:
-        flags = 0x08000000 if sys.platform == "win32" else 0
-        proc = _sub.Popen(
-            cmd, cwd=str(payor_root),
-            stdout=_sub.PIPE, stderr=_sub.STDOUT,
-            text=True, encoding="utf-8", errors="replace",
-            creationflags=flags,
-        )
+        proc = _detached_popen("module_op", cmd, cwd=str(payor_root), meta={"op": op, "module": module})   # survives a Workbench restart
+        with _module_op_lock:
+            _module_op["proc"] = proc
         for line in iter(proc.stdout.readline, ""):
             with _module_op_lock:
                 _module_op["output"] += line
         proc.wait()
-        final_status = "success" if proc.returncode == 0 else "failed"
         with _module_op_lock:
+            _module_op["proc"] = None
+            final_status = "aborted" if _module_op["status"] == "aborted" else ("success" if proc.returncode == 0 else "failed")
             _module_op["status"] = final_status
     except Exception as e:
         with _module_op_lock:
@@ -1089,13 +1203,7 @@ def _run_payor_build_local(srcdir, cmd_parts, p1_key="(none)", p2_key="(none)",
 
     while True:  # retry loop
         try:
-            proc = _sub.Popen(
-                current_full_cmd,
-                env=_payor_env,
-                stdout=_sub.PIPE, stderr=_sub.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                creationflags=0x08000000,
-            )
+            proc = _detached_popen("payor_build", current_full_cmd, env=_payor_env)   # survives a Workbench restart
             with _payor_build_lock:
                 _payor_build["proc"] = proc
 
@@ -1343,6 +1451,22 @@ def _get_payor_container():
     except Exception:
         pass
     return None
+
+
+def _resolve_payor_container(configured):
+    """The configured container if it is running, else the running payer-tc / payor-tc container, else the configured name."""
+    try:
+        r = subprocess.run(["docker", "ps", "--filter", "status=running", "--format", "{{.Names}}"],
+                           capture_output=True, text=True, creationflags=0x08000000, timeout=10)
+        names = [n.strip() for n in r.stdout.splitlines() if n.strip()]
+        if configured in names:
+            return configured
+        for n in names:
+            if n.startswith(("payer-tc", "payor-tc")):
+                return n
+    except Exception:
+        pass
+    return configured
 
 
 def _check_payor_server_running(srcdir):
@@ -17958,7 +18082,7 @@ def create_flask_app():
                     if k in body:
                         _payor_db_config[k] = int(body[k]) if k == "port" else body[k]
         else:
-            container = _read_payor_docker_key("containerName") or "payer-tc-261"
+            container = _resolve_payor_container(_read_payor_docker_key("containerName") or "payer-tc-261")
             detected = _db_read_container_config(container)
             if detected:
                 with _payor_db_config_lock:
@@ -18233,6 +18357,17 @@ def create_flask_app():
         _threading.Thread(target=_run_module_op, args=("deploy", module, PAYOR_ROOT, []), daemon=True).start()
         return jsonify({"ok": True})
 
+    @app.route("/api/local-app/payor/module-op-abort", methods=["POST"])
+    def api_local_app_payor_module_op_abort():
+        with _module_op_lock:
+            if _module_op["status"] != "running":
+                return jsonify({"ok": False, "error": "Nothing is running"}), 400
+            _module_op["status"] = "aborted"
+            proc = _module_op.get("proc")
+        if proc:
+            proc.kill()
+        return jsonify({"ok": True})
+
     @app.route("/api/local-app/payor/module-op-status", methods=["GET"])
     def api_local_app_payor_module_op_status():
         with _module_op_lock:
@@ -18321,7 +18456,7 @@ def create_flask_app():
                     container = val
             configured = bool(deploy_dir)
             return jsonify({"ok": True, "configured": configured, "deploy_dir": deploy_dir,
-                            "container": container, "module_overrides": module_overrides})
+                            "container": _resolve_payor_container(container) if container else container, "module_overrides": module_overrides})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
@@ -25238,14 +25373,7 @@ def create_flask_app():
         except Exception:
             pass
         try:
-            proc = _sub.Popen(
-                ["cmd.exe", "/c", cmd_str],
-                cwd=srcdir,
-                env=_env,
-                stdout=_sub.PIPE, stderr=_sub.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                creationflags=cf,
-            )
+            proc = _detached_popen("gbuild", ["cmd.exe", "/c", cmd_str], cwd=srcdir, env=_env, meta={"app": app_name})   # survives a Workbench restart
             with lock:
                 build["proc"] = proc
                 build["phase"] = "building"
@@ -25291,6 +25419,78 @@ def create_flask_app():
                 build["proc"] = None
             _save_generic_build_stats(app_name, params_key, 0, "failed")
 
+    def _adopt_detached_jobs():
+        """After a Workbench restart: re-attach to builds / deploys still running (and pick up the result of ones that finished meanwhile)."""
+        import json as _j, time as _t
+        for info in sorted(_DET_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime) if _DET_DIR.is_dir() else []:
+            try:
+                d = _j.loads(info.read_text(encoding="utf-8"))
+                kind, meta = d.get("kind"), d.get("meta") or {}
+                proc = _DetachedProc(d["pid"], d["log"], d["code"])
+                alive = proc.poll() is None
+                if kind == "payor_build":
+                    lock, st = _payor_build_lock, _payor_build
+                elif kind == "module_op":
+                    lock, st = _module_op_lock, _module_op
+                elif kind == "gmodule_op":
+                    lock, st = _get_generic_module_op_state(meta.get("app", ""))
+                elif kind == "gbuild":
+                    lock, st = _get_generic_build_state(meta.get("app", ""))
+                else:
+                    continue
+                with lock:
+                    if st.get("status") == "running":
+                        continue                                 # a newer job is already tracked
+                    if not alive and st.get("status") not in (None, "idle"):
+                        continue                                 # result already known
+                    st.update({"status": "running", "output": "", "proc": proc if alive else None})
+                    if kind in ("module_op", "gmodule_op"):
+                        st.update({"op": meta.get("op"), "module": meta.get("module")})
+                    else:
+                        st.update({"phase": "building", "current_module": None, "module_num": None, "start_ms": int(d.get("started", _t.time()) * 1000)})
+                    if kind == "payor_build":
+                        st["total_modules"] = None
+                _th_a = _threading.Thread(target=_follow_adopted, args=(kind, proc, lock, st), daemon=True)
+                _th_a.start()
+            except Exception:
+                continue
+
+    def _follow_adopted(kind, proc, lock, st):
+        import re as _r
+        mod_pat = _r.compile(r'\[INFO\] Building (.+)\[(\d+)/(\d+)\]')
+        schema  = _r.compile(r'creat.*schema|schema.*creat|running.*ddl|create\s+table|schema.*script', _r.I)
+        boot    = _r.compile(r'starting.*tomcat|starting.*server|bootstrap|starting.*application|jvm.*start|server.*start', _r.I)
+        for line in iter(proc.stdout.readline, ""):
+            with lock:
+                if st.get("status") == "aborted":
+                    break
+                st["output"] += line
+                if kind in ("payor_build", "gbuild"):
+                    m = mod_pat.search(line)
+                    if m:
+                        st["current_module"], st["module_num"], st["total_modules"] = _mvn_artifact_id(m.group(1)), int(m.group(2)), int(m.group(3))
+                    if "[INFO] BUILD SUCCESS" in line:
+                        st["phase"], st["current_module"], st["module_num"] = "deploying", None, None
+                    elif st.get("phase") in ("deploying", "creating_schema") and boot.search(line):
+                        st["phase"] = "bootstrapping"
+                    elif st.get("phase") == "deploying" and schema.search(line):
+                        st["phase"] = "creating_schema"
+        proc.wait()
+        with lock:
+            st["proc"] = None
+            if st.get("status") != "aborted":
+                st["status"] = "success" if proc.returncode == 0 else "failed"
+            if kind in ("payor_build", "gbuild"):
+                st["phase"], st["current_module"] = None, None
+        if kind == "payor_build":
+            try:
+                _restore_cfgviewer_pom(_payor_srcdir()[1])
+            except Exception:
+                pass
+
+    _adopt_detached_jobs()
+    _prune_detached_logs()
+
     def _run_generic_module_op(app_name, op, module, extra_args):
         import subprocess as _sub
         lock, mop = _get_generic_module_op_state(app_name)
@@ -25320,16 +25520,16 @@ def create_flask_app():
         with lock:
             mop["output"] += f"$ {' '.join(cmd)}\n\n"
         try:
-            proc = _sub.Popen(
-                cmd, cwd=cwd, stdout=_sub.PIPE, stderr=_sub.STDOUT,
-                text=True, encoding="utf-8", errors="replace", creationflags=cf,
-            )
+            proc = _detached_popen("gmodule_op", cmd, cwd=cwd, meta={"app": app_name, "op": op, "module": module})   # survives a Workbench restart
+            with lock:
+                mop["proc"] = proc
             for line in iter(proc.stdout.readline, ""):
                 with lock:
                     mop["output"] += line
             proc.wait()
             with lock:
-                mop["status"] = "success" if proc.returncode == 0 else "failed"
+                mop["proc"] = None
+                mop["status"] = "aborted" if mop["status"] == "aborted" else ("success" if proc.returncode == 0 else "failed")
         except Exception as e:
             with lock:
                 mop["status"] = "failed"
@@ -25492,6 +25692,20 @@ def create_flask_app():
         _threading.Thread(
             target=_run_generic_module_op, args=(app_name, "deploy", module, []), daemon=True,
         ).start()
+        return jsonify({"ok": True})
+
+    @app.route("/api/local-app/<app_name>/module-op-abort", methods=["POST"])
+    def api_generic_local_module_op_abort(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
+        lock, mop = _get_generic_module_op_state(app_name)
+        with lock:
+            if mop["status"] != "running":
+                return jsonify({"ok": False, "error": "Nothing is running"}), 400
+            mop["status"] = "aborted"
+            proc = mop.get("proc")
+        if proc:
+            proc.kill()
         return jsonify({"ok": True})
 
     @app.route("/api/local-app/<app_name>/module-op-status", methods=["GET"])
@@ -33231,6 +33445,26 @@ def create_flask_app():
                 pass
             os._exit(0)
         _th_stop.Thread(target=_die, daemon=True).start()
+        return jsonify({"ok": True})
+
+    @app.route("/api/system/restart", methods=["POST"])
+    def api_system_restart():
+        """Restart the Developer WorkBench server (the green button in the header). Detached jobs keep running."""
+        import threading as _th_re
+        port = request.host.rsplit(":", 1)[-1] if ":" in request.host else "5556"
+        helper = ("import subprocess,sys,time,pathlib\n"
+                  "time.sleep(3)\n"
+                  "p=subprocess.Popen([sys.argv[1],sys.argv[2],'--server','--port',sys.argv[3]],creationflags=0x208,"
+                  "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)\n"
+                  "pathlib.Path(sys.argv[4]).write_text(str(p.pid))\n")
+        subprocess.Popen([sys.executable, "-c", helper, sys.executable, str(Path(__file__).resolve()), port, str(PID_FILE)],
+                         creationflags=0x208, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+
+        def _die():
+            import time as _t_re
+            _t_re.sleep(0.8)
+            os._exit(0)
+        _th_re.Thread(target=_die, daemon=True).start()
         return jsonify({"ok": True})
 
     @app.route("/api/setup/run-tool", methods=["POST"])

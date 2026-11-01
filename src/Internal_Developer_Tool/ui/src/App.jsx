@@ -78,6 +78,18 @@ function useNewBuildDetector() {
 export default function App() {
   const [confirmStop, setConfirmStop] = useState(false)
   const [stopped, setStopped] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+  const [confirmRestart, setConfirmRestart] = useState(false)
+  const restartWorkbench = () => {
+    setRestarting(true)
+    fetch('/api/system/restart', { method: 'POST' }).catch(() => {})
+    const t0 = Date.now()
+    const iv = setInterval(() => {
+      if (Date.now() - t0 < 4000) return                       // let the old server go away first
+      fetch('/api/setup/config', { cache: 'no-store' }).then(r => { if (r.ok) { clearInterval(iv); window.location.reload() } }).catch(() => {})
+      if (Date.now() - t0 > 90000) { clearInterval(iv); setRestarting(false) }
+    }, 1500)
+  }
   const newBuild = useNewBuildDetector()
   return (
     <Router>
@@ -115,18 +127,40 @@ export default function App() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <UserMenu name="Anmol" />
+            <button onClick={() => setConfirmRestart(true)} title="Restart Developer WorkBench" aria-label="Restart Developer WorkBench"
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: '50%',
+                background: 'rgba(76,175,80,0.10)', border: '1px solid #4caf50', color: '#4caf50', cursor: 'pointer', padding: 0,
+                transition: 'background 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(76,175,80,0.25)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(76,175,80,0.10)' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" />
+              </svg>
+            </button>
             <button onClick={() => setConfirmStop(true)} title="Stop Developer WorkBench" aria-label="Stop Developer WorkBench"
               style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: '50%',
-                background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', padding: 0,
-                transition: 'color 0.15s, border-color 0.15s, background 0.15s' }}
-              onMouseEnter={e => { e.currentTarget.style.color = '#f44336'; e.currentTarget.style.borderColor = '#f44336'; e.currentTarget.style.background = 'rgba(244,67,54,0.10)' }}
-              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'transparent' }}>
+                background: 'rgba(244,67,54,0.10)', border: '1px solid #f44336', color: '#f44336', cursor: 'pointer', padding: 0,
+                transition: 'background 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(244,67,54,0.25)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(244,67,54,0.10)' }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 3v9" /><path d="M6.3 6.6a8 8 0 1 0 11.4 0" />
               </svg>
             </button>
           </div>
         </header>
+        {confirmRestart && (
+          <ConfirmDialog title="Restart Developer WorkBench" variant="warning" confirmLabel="Restart"
+            message="This restarts the Developer WorkBench server and reloads this page. Builds, deploys and other background jobs keep running."
+            onCancel={() => setConfirmRestart(false)}
+            onConfirm={() => { setConfirmRestart(false); restartWorkbench() }} />
+        )}
+        {restarting && (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 5000, background: 'var(--bg, #0d1117)', color: 'var(--text)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+            <span className="spinner" style={{ width: 28, height: 28 }} />
+            <div style={{ fontSize: 18, fontWeight: 700 }}>Restarting Developer WorkBench…</div>
+          </div>
+        )}
         {confirmStop && (
           <ConfirmDialog title="Stop Developer WorkBench" variant="warning" confirmLabel="Stop"
             message="This stops the Developer WorkBench server. Builds and tasks started from it may be interrupted; background jobs such as AI agents, merges and GP runs keep running. Start it again from the Developer WorkBench shortcut."
