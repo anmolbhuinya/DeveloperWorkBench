@@ -824,9 +824,20 @@ def _pid_alive(pid):
         return False
     try:
         if sys.platform == "win32":
-            out = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
-                                 capture_output=True, text=True, creationflags=0x08000000, timeout=15).stdout
-            return f'"{int(pid)}"' in out
+            import ctypes as _ct               # direct API call: spawning tasklist per job made every start take over a minute
+            from ctypes import wintypes as _wt
+            k32 = _ct.windll.kernel32
+            k32.OpenProcess.restype = _wt.HANDLE
+            k32.OpenProcess.argtypes = [_wt.DWORD, _wt.BOOL, _wt.DWORD]
+            k32.GetExitCodeProcess.argtypes = [_wt.HANDLE, _ct.POINTER(_wt.DWORD)]
+            k32.CloseHandle.argtypes = [_wt.HANDLE]
+            h = k32.OpenProcess(0x1000, False, int(pid))            # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return False
+            code = _wt.DWORD()
+            ok = k32.GetExitCodeProcess(h, _ct.byref(code))
+            k32.CloseHandle(h)
+            return bool(ok) and code.value == 259                    # STILL_ACTIVE
         os.kill(int(pid), 0)
         return True
     except Exception:
@@ -838,6 +849,8 @@ class _DetachedProc:
         self.pid, self.log, self.code = pid, Path(log), Path(code)
         self._pos = offset
         self._buf = ""
+        import collections as _co
+        self._lines = _co.deque()
         self.returncode = None
         self.stdout = self
 
@@ -863,22 +876,24 @@ class _DetachedProc:
                 f.seek(self._pos)
                 data = f.read()
             self._pos += len(data)
-            self._buf += data.decode("utf-8", errors="replace")
+            if data:
+                parts = (self._buf + data.decode("utf-8", errors="replace")).split("\n")   # split once; never re-split a big buffer per line
+                self._buf = parts.pop()                                                      # the unfinished last line
+                self._lines.extend(p.rstrip("\r") + "\n" for p in parts)
         except OSError:
             pass
 
     def readline(self):
         import time as _t
         while True:
-            if "\n" in self._buf:
-                line, self._buf = self._buf.split("\n", 1)
-                return line.rstrip("\r") + "\n"
+            if self._lines:
+                return self._lines.popleft()
             self._read_more()
-            if "\n" in self._buf:
+            if self._lines:
                 continue
             if self.poll() is not None:        # finished: drain what is left, then EOF
                 self._read_more()
-                if "\n" in self._buf:
+                if self._lines:
                     continue
                 rest, self._buf = self._buf, ""
                 return rest
@@ -1373,7 +1388,8 @@ def _run_payor_build_local(srcdir, cmd_parts, p1_key="(none)", p2_key="(none)",
             now = int(_time.time() * 1000)
             with _payor_build_lock:
                 _payor_build["status"]              = "failed"
-                _payor_build["failed_module"]        = failed_mod
+                # Resume From only makes sense when Maven itself failed; a failure after BUILD SUCCESS (deploy, schema, start) re-runs from the start anyway
+                _payor_build["failed_module"]        = None if build_phase_done else failed_mod
                 _payor_build["failed_at_module_num"] = _payor_build.get("module_num")
                 _payor_build["proc"]                 = None
             if build_phase_done and phase1_end_ms:
@@ -25426,7 +25442,9 @@ def create_flask_app():
     def _adopt_detached_jobs():
         """After a Workbench restart: re-attach to builds / deploys still running (and pick up the result of ones that finished meanwhile)."""
         import json as _j, time as _t
-        for info in sorted(_DET_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime) if _DET_DIR.is_dir() else []:
+        _adopted = set()
+        # newest first: only the latest job of each kind / app is shown, so older logs are never read
+        for info in sorted(_DET_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True) if _DET_DIR.is_dir() else []:
             try:
                 d = _j.loads(info.read_text(encoding="utf-8"))
                 kind, meta = d.get("kind"), d.get("meta") or {}
@@ -25442,6 +25460,8 @@ def create_flask_app():
                     lock, st = _get_generic_build_state(meta.get("app", ""))
                 else:
                     continue
+                if id(st) in _adopted:
+                    continue                                     # newer job of this kind / app already adopted
                 with lock:
                     if st.get("status") == "running":
                         continue                                 # a newer job is already tracked
@@ -25454,6 +25474,7 @@ def create_flask_app():
                         st.update({"phase": "building", "current_module": None, "module_num": None, "start_ms": int(d.get("started", _t.time()) * 1000)})
                     if kind == "payor_build":
                         st["total_modules"] = None
+                _adopted.add(id(st))
                 _th_a = _threading.Thread(target=_follow_adopted, args=(kind, proc, lock, st), daemon=True)
                 _th_a.start()
             except Exception:
@@ -25464,6 +25485,20 @@ def create_flask_app():
         mod_pat = _r.compile(r'\[INFO\] Building (.+)\[(\d+)/(\d+)\]')
         schema  = _r.compile(r'creat.*schema|schema.*creat|running.*ddl|create\s+table|schema.*script', _r.I)
         boot    = _r.compile(r'starting.*tomcat|starting.*server|bootstrap|starting.*application|jvm.*start|server.*start', _r.I)
+        # what is already in the log goes in as one block (replaying a multi-MB log line by line starved the whole server for a minute)
+        proc._read_more()
+        _pre = list(proc._lines)
+        proc._lines.clear()
+        if _pre:
+            with lock:
+                st["output"] += "".join(_pre)
+                if kind in ("payor_build", "gbuild"):
+                    for line in _pre:
+                        m = mod_pat.search(line) if "[INFO] Building" in line else None
+                        if m:
+                            st["current_module"], st["module_num"], st["total_modules"] = _mvn_artifact_id(m.group(1)), int(m.group(2)), int(m.group(3))
+                        if "[INFO] BUILD SUCCESS" in line:
+                            st["phase"], st["current_module"], st["module_num"] = "deploying", None, None
         for line in iter(proc.stdout.readline, ""):
             with lock:
                 if st.get("status") == "aborted":
@@ -25487,7 +25522,10 @@ def create_flask_app():
                 if st["status"] == "failed" and kind in ("payor_build", "gbuild"):      # so Resume From still works after a restart
                     _h = _MVN_RF_HINT.findall(st.get("output") or "")
                     _fp = _r.findall(r"Failed to execute goal on project\s+(\S+?):", st.get("output") or "")
-                    st["failed_module"] = (_h[-1] if _h else (_fp[0] if _fp else None)) or st.get("current_module")
+                    _out = st.get("output") or ""
+                    _after = _out.rsplit("[INFO] BUILD SUCCESS", 1)[1] if "[INFO] BUILD SUCCESS" in _out else None
+                    _failed_in_maven = _after is None or "[INFO] BUILD FAILURE" in _after
+                    st["failed_module"] = ((_h[-1] if _h else (_fp[0] if _fp else None)) or st.get("current_module")) if _failed_in_maven else None
             if kind in ("payor_build", "gbuild"):
                 st["phase"], st["current_module"] = None, None
         if kind == "payor_build":
@@ -33464,6 +33502,49 @@ def create_flask_app():
             os._exit(0)
         _th_stop.Thread(target=_die, daemon=True).start()
         return jsonify({"ok": True})
+
+    # ── DWB Cleaner: build / deploy run logs (Internal_Developer_Tool/run_logs) ──
+    def _runlog_scan():
+        import json as _j
+        jobs, active_ids = [], set()
+        if _DET_DIR.is_dir():
+            for info in _DET_DIR.glob("*.json"):
+                try:
+                    d = _j.loads(info.read_text(encoding="utf-8"))
+                except Exception:
+                    d = {}
+                running = bool(d.get("pid")) and not (_DET_DIR / (info.stem + ".code")).exists() and _pid_alive(d.get("pid"))
+                size = sum(f.stat().st_size for f in _DET_DIR.glob(info.stem + ".*") if f.is_file())
+                if running:
+                    active_ids.add(info.stem)
+                jobs.append({"id": info.stem, "kind": d.get("kind"), "started": d.get("started"), "size": size, "running": running})
+        known = {j["id"] for j in jobs}
+        other = [f for f in (_DET_DIR.iterdir() if _DET_DIR.is_dir() else []) if f.is_file() and f.stem not in known]
+        jobs.sort(key=lambda j: j.get("started") or 0, reverse=True)
+        return jobs, other, active_ids
+
+    @app.route("/api/tools/dwb-cleaner/scan", methods=["GET"])
+    def api_dwb_cleaner_scan():
+        jobs, other, _a = _runlog_scan()
+        total = sum(j["size"] for j in jobs) + sum(f.stat().st_size for f in other)
+        return jsonify({"ok": True, "path": str(_DET_DIR), "total_bytes": total, "count": len(jobs) + len(other),
+                        "running": sum(1 for j in jobs if j["running"]), "jobs": jobs[:200]})
+
+    @app.route("/api/tools/dwb-cleaner/run-logs/clear", methods=["POST"])
+    def api_dwb_cleaner_clear_run_logs():
+        """Delete run logs of finished builds / deploys. Jobs still running are never touched."""
+        jobs, other, active = _runlog_scan()
+        freed = removed = 0
+        for f in list(_DET_DIR.iterdir()) if _DET_DIR.is_dir() else []:
+            if not f.is_file() or f.stem in active:
+                continue
+            try:
+                n = f.stat().st_size
+                f.unlink()
+                freed += n; removed += 1
+            except OSError:
+                pass
+        return jsonify({"ok": True, "removed": removed, "freed_bytes": freed, "kept_running": len(active)})
 
     _res_prev = {"t": 0.0, "cpu": {}}
 

@@ -688,6 +688,9 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
             if (d.failed_module) {
               setFailedModule(d.failed_module)
               setChecked(p => ({ ...p, '-rf': true }))
+            } else if (d.status === 'failed') {
+              setFailedModule(null)                 // failed after the Maven build (deploy / start): nothing to resume from
+              setChecked(p => ({ ...p, '-rf': false }))
             }
           }
         }
@@ -716,6 +719,9 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
             if (d.failed_module) {
               setFailedModule(d.failed_module)
               setChecked(p => ({ ...p, '-rf': true }))
+            } else if (d.status === 'failed') {
+              setFailedModule(null)                 // failed after the Maven build (deploy / start): nothing to resume from
+              setChecked(p => ({ ...p, '-rf': false }))
             }
           }
         })

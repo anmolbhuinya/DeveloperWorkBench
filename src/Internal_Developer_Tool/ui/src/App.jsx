@@ -47,6 +47,7 @@ const SonarReportPage      = lazy(() => import('./pages/SonarReportPage'))
 const AIAnalyzerPage      = lazy(() => import('./pages/AIAnalyzerPage'))
 const CoPilotReviewPage    = lazy(() => import('./pages/CoPilotReviewPage'))
 const M2RepoCleanerPage    = lazy(() => import('./pages/M2RepoCleanerPage'))
+const DwbCleanerPage       = lazy(() => import('./pages/DwbCleanerPage'))
 const ProjectCleanerPage   = lazy(() => import('./pages/ProjectCleanerPage'))
 const SetupPage            = lazy(() => import('./pages/SetupPage'))
 const HelpPage             = lazy(() => import('./pages/HelpPage'))
@@ -224,6 +225,7 @@ export default function App() {
               <Route path="/developer-tools/ai-analyzer"      element={<AIAnalyzerPage />} />
               <Route path="/developer-tools/copilot-review"   element={<CoPilotReviewPage />} />
               <Route path="/developer-tools/m2-repo-cleaner"    element={<M2RepoCleanerPage />} />
+              <Route path="/developer-tools/dwb-cleaner"        element={<DwbCleanerPage />} />
               <Route path="/developer-tools/project-cleaner"    element={<ProjectCleanerPage />} />
               <Route path="/setup"                             element={<SetupPage />} />
               <Route path="/help"                              element={<HelpIndexPage />} />

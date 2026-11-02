@@ -79,6 +79,7 @@ const SECTIONS = [
       { label: 'AI Analyzer',   path: '/developer-tools/ai-analyzer'    },
       { label: 'M2 Repo Cleaner',   path: '/developer-tools/m2-repo-cleaner' },
       { label: 'Project Cleaner',   path: '/developer-tools/project-cleaner' },
+      { label: 'DWB Cleaner',       path: '/developer-tools/dwb-cleaner'     },
     ],
   },
   {

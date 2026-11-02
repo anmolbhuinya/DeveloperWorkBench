@@ -37,6 +37,13 @@ const CARDS = [
     title: 'Project Cleaner',
     desc: 'View and delete local project workspaces to reclaim disk space',
   },
+  {
+    id: 'dwb-cleaner',
+    path: '/developer-tools/dwb-cleaner',
+    icon: '🧹',
+    title: 'DWB Cleaner',
+    desc: 'Clean up Developer WorkBench housekeeping files, such as build and deploy run logs',
+  },
 ]
 
 function fmtGb(bytes) {
