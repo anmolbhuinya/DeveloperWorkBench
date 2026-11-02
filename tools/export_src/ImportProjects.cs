@@ -212,6 +212,27 @@ static class Importer
                         continue;
                     }
                     if (e.FullName.EndsWith("/")) continue;
+                    bool isSql = e.FullName.StartsWith("sqlqueries/", StringComparison.Ordinal), isApi = e.FullName.StartsWith("apicontracts/", StringComparison.Ordinal);
+                    if (isSql || isApi)                                                   // <DWB>\SQL_Queries and <DWB>\API_Contracts: restored as they are
+                    {
+                        string dname = isSql ? "SQL_Queries" : "API_Contracts";
+                        string droot = Path.Combine(dwbRoot, dname);
+                        string drel = e.FullName.Substring(e.FullName.IndexOf('/') + 1).Replace('/', '\\');
+                        string ddest = Path.GetFullPath(Path.Combine(droot, drel));
+                        if (!ddest.StartsWith(droot + "\\", StringComparison.OrdinalIgnoreCase)) continue;
+                        Directory.CreateDirectory(Path.GetDirectoryName(ddest));
+                        if (File.Exists(ddest))
+                        {
+                            string db = Path.Combine(backup, dname, drel);
+                            Directory.CreateDirectory(Path.GetDirectoryName(db));
+                            File.Copy(ddest, db, true);
+                            replaced++;
+                        }
+                        else added++;
+                        e.ExtractToFile(ddest, true);
+                        File.SetLastWriteTime(ddest, e.LastWriteTime.LocalDateTime);
+                        continue;
+                    }
                     bool isProj = e.FullName.StartsWith("projects/", StringComparison.Ordinal);
                     if (!isProj && !e.FullName.StartsWith("data/", StringComparison.Ordinal)) continue;
                     string rel = e.FullName.Substring(isProj ? 9 : 5).Replace('/', '\\');

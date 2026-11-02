@@ -163,6 +163,18 @@ static class Exporter
                     if (ext2 == ".lock" || ext2 == ".tmp") continue;
                     entries.Add(new string[] { "projects/" + f.Substring(projRoot.Length + 1).Replace('\\', '/'), f });
                 }
+            // saved SQL query workbooks and API payloads: <DWB>\SQL_Queries and <DWB>\API_Contracts (Local + Remote)
+            foreach (string[] dn in new string[][] { new string[] { "SQL_Queries", "sqlqueries" }, new string[] { "API_Contracts", "apicontracts" } })
+            {
+                string dr = Path.Combine(dwbRoot, dn[0]);
+                if (!string.IsNullOrEmpty(srcOverride) || !Directory.Exists(dr)) continue;
+                foreach (string f in Directory.GetFiles(dr, "*", SearchOption.AllDirectories))
+                {
+                    string fn = Path.GetFileName(f);
+                    if (fn.StartsWith("~$") || fn.EndsWith(".tmp.xlsx", StringComparison.OrdinalIgnoreCase)) continue;      // Excel lock / half-written files
+                    entries.Add(new string[] { dn[1] + "/" + f.Substring(dr.Length + 1).Replace('\\', '/'), f });
+                }
+            }
             log("Exporting " + entries.Count + " files from " + src + (string.IsNullOrEmpty(srcOverride) ? " and " + projRoot : "") + " ...");
             long total = 0;
             using (ZipArchive z = ZipFile.Open(zip, ZipArchiveMode.Create))

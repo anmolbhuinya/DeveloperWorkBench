@@ -23,7 +23,7 @@ using Microsoft.Win32;
 
 static class Program
 {
-    public static readonly string[] Folders = { "AI_Workspace", "DeveloperWorkBench", "HE_UI_Clients", "Installed_Softwares", "Projects", "Workspace" };
+    public static readonly string[] Folders = { "AI_Workspace", "DeveloperWorkBench", "HE_UI_Clients", "Installed_Softwares", "Projects", "Workspace", "SQL_Queries", "API_Contracts" };
 
     [STAThread]
     static int Main(string[] args)
@@ -77,6 +77,9 @@ static class Installer
             Directory.CreateDirectory(Path.Combine(dir, f));
             if (progress != null) progress(0, "Created " + f);
         }
+        foreach (string f in new string[] { "SQL_Queries", "API_Contracts" })      // saved SQL query workbooks / API payloads, split by Local and Remote apps
+            foreach (string sub in new string[] { "Local", "Remote" })
+                Directory.CreateDirectory(Path.Combine(dir, f, sub));
 
         string target = Path.Combine(dir, "DeveloperWorkBench");
         StopRunning(target);

@@ -157,6 +157,57 @@ async function main() {
   fs.copyFileSync(sourcePath, sharedDest);
   log('Copy to shared folder complete.');
 
+  // ── WAR: deploy through Tomcat Manager (like the Manager page's "WAR file to deploy") ──
+  // Hot deploy: no server stop/start. Falls back to the stop/copy/start flow below if the Manager is unavailable.
+  if (/\.war$/i.test(deployName)) {
+    banner('WAR — deploy with Tomcat Manager');
+    try {
+      const ctxName  = deployName.replace(/\.war$/i, '');
+      const ctxPath  = ctxName === 'ROOT' ? '' : `/${ctxName}`;
+      const mgrUser  = process.env.DWB_TOMCAT_MGR_USER || 'admin';
+      const mgrPass  = process.env.DWB_TOMCAT_MGR_PASS || 'admin';
+      const mgrPort  = process.env.DWB_TOMCAT_MGR_PORT || '7001';
+      // 1. copy into the deploy directory(ies)
+      for (const t of targets) {
+        const dest = `${t.dir}/${t.name}`;
+        log(`Copying ${path.basename(sourcePath)} → ${dest}`);
+        dockerCp(sourcePath, dest);
+        require('child_process').spawnSync('docker', ['exec', '-u', 'root', cfg.docker.containerName, 'chown', cfg.docker.user, dest], { timeout: 30000 });
+      }
+      // 2. deploy it with Tomcat Manager, the same call the Manager page makes for a WAR
+      const warOnServer = `${targets[0].dir}/${targets[0].name}`;
+      log(`Deploying ${warOnServer} to context "${ctxPath || '/'}" via Tomcat Manager (port ${mgrPort})`);
+      const out = dockerExec(
+        `curl -s -u ${mgrUser}:${mgrPass} -G "http://localhost:${mgrPort}/manager/text/deploy" --data-urlencode "path=${ctxPath}" --data-urlencode "war=file:${warOnServer}" --data-urlencode "update=true" 2>&1`,
+        { timeoutMs: 300000, throwOnError: false }
+      );
+      log(out);
+      let deployed = out.startsWith('OK');
+      if (!deployed && /already being serviced/i.test(out)) {
+        // The deploy directory is Tomcat's webapps: copying the WAR there already triggered Tomcat's own auto-deploy,
+        // which holds the lock. Wait for that deployment to finish and confirm the context is running.
+        log('Tomcat is already deploying this WAR (auto-deploy) — waiting for it to finish...');
+        const deadline = Date.now() + 5 * 60 * 1000;
+        while (Date.now() < deadline && !deployed) {
+          const t0 = Date.now(); while (Date.now() - t0 < 3000) { /* wait */ }
+          const lst = dockerExec(`curl -s -u ${mgrUser}:${mgrPass} "http://localhost:${mgrPort}/manager/text/list" 2>&1`, { throwOnError: false });
+          const line = lst.split('\n').find(l => l.startsWith(`${ctxPath || '/'}:`));
+          if (line && line.split(':')[1] === 'running') { deployed = true; log(`Context is running: ${line}`); }
+        }
+      }
+      if (deployed) {
+        try { fs.unlinkSync(sharedDest); } catch (e) { /* ignore */ }
+        banner('DEPLOYMENT COMPLETE');
+        log(`Module   : ${moduleName}`);
+        log(`Deployed : ${deployName} → context ${ctxPath || '/'} (Tomcat Manager)`);
+        return;
+      }
+      log('Tomcat Manager deploy did not succeed — falling back to copying into the deploy directory with a server restart.');
+    } catch (e) {
+      log(`Tomcat Manager deploy failed (${e.message}) — falling back to copying into the deploy directory with a server restart.`);
+    }
+  }
+
   // ── Step 4: Stop server ───────────────────────────────────
   banner('Step 3/4 — Stop Tomcat server in docker');
   log('Running stop_tomcat_instances.sh...');

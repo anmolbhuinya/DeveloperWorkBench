@@ -941,6 +941,31 @@ def _prune_detached_logs(keep=30):
         pass
 
 
+def _tomcat_mgr_env(app_root):
+    """Environment for deploy_jar.js with tomcat_manager_user/pass/port from the Deploy sheet of build_deploy_config.xlsx."""
+    import os as _os
+    env = dict(_os.environ)
+    try:
+        import openpyxl as _xl
+        xlsx = Path(app_root) / "build_deploy_config.xlsx"
+        if xlsx.exists():
+            wb = _xl.load_workbook(str(xlsx), data_only=True)
+            wsn = next((s for s in wb.sheetnames if s.lower() == "deploy"), None)
+            if wsn:
+                names = {"tomcat_manager_user": "DWB_TOMCAT_MGR_USER", "tomcat_manager_pass": "DWB_TOMCAT_MGR_PASS",
+                         "tomcat_manager_port": "DWB_TOMCAT_MGR_PORT"}
+                for row in wb[wsn].iter_rows(min_row=2, values_only=True):
+                    if row and row[0] and str(row[0]).strip() in names and row[1] is not None and str(row[1]).strip():
+                        env.setdefault(names[str(row[0]).strip()] + "_CFG", str(row[1]).strip())
+                for k, v in list(env.items()):
+                    if k.endswith("_CFG"):
+                        env[k[:-4]] = v
+                        del env[k]
+    except Exception:
+        pass
+    return env
+
+
 def _run_module_op(op, module, payor_root, extra_args):
     """Run build_module.js or deploy_jar.js, streaming output into _module_op."""
     import subprocess as _sub, time as _time
@@ -953,7 +978,7 @@ def _run_module_op(op, module, payor_root, extra_args):
     params_key = _build_params_key(extra_args) if op == "build" else "(none)"
     final_status = "failed"
     try:
-        proc = _detached_popen("module_op", cmd, cwd=str(payor_root), meta={"op": op, "module": module})   # survives a Workbench restart
+        proc = _detached_popen("module_op", cmd, cwd=str(payor_root), env=_tomcat_mgr_env(payor_root), meta={"op": op, "module": module})   # survives a Workbench restart
         with _module_op_lock:
             _module_op["proc"] = proc
         for line in iter(proc.stdout.readline, ""):
@@ -1608,7 +1633,7 @@ def _run_payor_server_op(srcdir, flag):
             _payor_server_op["status"] = "success" if ok else "failed"
 
     # ── Start in debug mode: export DEBUG=true; startServer -d inside the container ──
-    if flag == "-dbg":
+    if flag in ("-dbg", "-os"):          # Start / Start in Debug Mode: startServer [-d] in the container; output goes to /tmp/payor_start.log
         with _payor_server_op_lock:
             _payor_server_op["output"] = ""
         container = _get_payor_container()
@@ -1616,7 +1641,7 @@ def _run_payor_server_op(srcdir, flag):
             _append("[ERROR] Payor Docker container is not running.\n")
             _finish(False)
             return
-        ok, out = _local_tomcat_start(container, "payor", debug=True)
+        ok, out = _local_tomcat_start(container, "payor", debug=(flag == "-dbg"))
         _append(out + "\n")
         _finish(ok)
         return
@@ -1630,6 +1655,15 @@ def _run_payor_server_op(srcdir, flag):
         ]
         with _payor_server_op_lock:
             _payor_server_op["output"] = f"$ {ps_cmd}\n"
+        try:
+            # the live Tomcat log shows /tmp/payor_start.log while it has content; a stale file from an earlier
+            # start would hide the real server log, so empty it (the live view then follows the newest server log)
+            _ctr = _get_payor_container()
+            if _ctr:
+                _sub.run(["docker", "exec", _ctr, "sh", "-c", ": > /tmp/payor_start.log"],
+                         capture_output=True, timeout=20, creationflags=0x08000000)
+        except Exception:
+            pass
         try:
             proc = _sub.Popen(
                 full_cmd,
@@ -18625,43 +18659,239 @@ def create_flask_app():
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
-    # ── API Request Persistence ──────────────────────────────────────────────
-    _API_REQ_BASE = str(PAYOR_ROOT / "Data" / "API")
+    # ── DWB_HOME data folders: SQL_Queries and API_Contracts, each split into Local and Remote ──────────────
+    def _dwb_data_dir(kind, scope, app_name, version):
+        """<DWB_HOME>\\<kind>\\<Local|Remote>\\<App>\\<Version>  (created on demand)."""
+        import re as _rq
+        app_dir = _APP_DIR_NAMES.get(app_name, app_name.capitalize())
+        ver = _rq.sub(r'[\\/:*?"<>|]', "_", str(version or "").strip()) or "default"
+        d = Path(os.environ["DWB_HOME"]) / kind / ("Remote" if scope == "remote" else "Local") / app_dir / ver
+        d.mkdir(parents=True, exist_ok=True)
+        return d, app_dir, ver
 
-    @app.route("/api/local-app/payor/api-requests", methods=["GET"])
-    def api_requests_list():
-        import pathlib as _pl, re as _re3
+    # ── SQL query workbooks: SQL_Queries\<Local|Remote>\<App>\<Version>\<App>_<Version>_Queries.xlsx ────────
+    # One sheet per query tab (sheet name = tab name), one query per row (column A). A hidden sheet "_tabs"
+    # keeps the tab order and whether each tab is open or closed (closed tabs can be re-opened from the UI).
+    _sqlq_lock = _threading.RLock()
+    _SQLQ_META = "_tabs"
+
+    def _sqlq_file(scope, app_name, version):
+        d, app_dir, ver = _dwb_data_dir("SQL_Queries", scope, app_name, version)
+        return d / f"{app_dir}_{ver}_Queries.xlsx"
+
+    def _sqlq_sheet_name(name):
+        import re as _rq
+        n = _rq.sub(r'[\[\]:*?/\\]', "_", str(name or "").strip())[:31].strip()
+        return n if n and n.lower() not in (_SQLQ_META, "history") else ""
+
+    def _sqlq_open(path):
+        import openpyxl as _xl
+        if path.exists():
+            wb = _xl.load_workbook(str(path))
+        else:
+            wb = _xl.Workbook()
+            wb.remove(wb.active)
+        rows, known = [], set()
+        if _SQLQ_META in wb.sheetnames:
+            for r in wb[_SQLQ_META].iter_rows(min_row=2, values_only=True):
+                if r and r[0] and str(r[0]) in wb.sheetnames and str(r[0]) not in known:
+                    rows.append([str(r[0]), str(r[1] or "Y").upper() != "N"])
+                    known.add(str(r[0]))
+        for n in wb.sheetnames:                          # sheets added by hand in Excel count as open tabs
+            if n != _SQLQ_META and n not in known:
+                rows.append([n, True])
+        return wb, rows
+
+    def _sqlq_write(path, wb, rows):
+        if _SQLQ_META in wb.sheetnames:
+            wb.remove(wb[_SQLQ_META])
+        m = wb.create_sheet(_SQLQ_META)
+        m.append(["Tab", "Open"])
+        for n, op in rows:
+            m.append([n, "Y" if op else "N"])
+        m.sheet_state = "hidden"
+        tmp = path.with_suffix(".tmp.xlsx")
+        wb.save(str(tmp))
+        os.replace(str(tmp), str(path))
+
+    def _sqlq_queries(wb, name):
+        ws = wb[name]
+        return [str(r[0]) for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0] is not None and str(r[0]).strip()]
+
+    def _sqlq_set_queries(wb, name, queries):
+        ws = wb[name]
+        ws.delete_rows(1, ws.max_row + 1)
+        ws.append(["Query"])
+        for q in queries:
+            ws.append([q])
+        ws.column_dimensions["A"].width = 120
+
+    def _sqlq_state(path, wb, rows):
+        return {"ok": True, "path": str(path),
+                "tabs": [{"name": n, "queries": _sqlq_queries(wb, n)} for n, op in rows if op],
+                "closed": [n for n, op in rows if not op]}
+
+    def _sqlq_apply(scope, app_name, version, fn):
+        """Load the workbook, let fn(wb, rows) change it (and return an error string, if any), save, return the state."""
+        path = _sqlq_file(scope, app_name, version)
+        with _sqlq_lock:
+            wb, rows = _sqlq_open(path)
+            err = fn(wb, rows)
+            if err:
+                return {"ok": False, "error": err}
+            if not any(op for _, op in rows):                       # always keep one open tab
+                nm = "QueryTab1"
+                while nm in wb.sheetnames:
+                    nm += "_"
+                wb.create_sheet(nm); _sqlq_set_queries(wb, nm, [])
+                rows.append([nm, True])
+            try:
+                _sqlq_write(path, wb, rows)
+            except Exception as e:
+                return {"ok": False, "error": f"Could not save {path.name} (is it open in Excel?): {e}"}
+            return _sqlq_state(path, wb, rows)
+
+    def _sqlq_req():
+        b = request.get_json(silent=True) or {}
+        return b, str(request.args.get("version") or b.get("version") or "").strip()
+
+    @app.route("/api/sqlq/<scope>/<app_name>/tabs", methods=["GET"])
+    def api_sqlq_tabs(scope, app_name):
+        return jsonify(_sqlq_apply(scope, app_name, str(request.args.get("version") or "").strip(), lambda wb, rows: None))
+
+    @app.route("/api/sqlq/<scope>/<app_name>/tabs", methods=["POST"])
+    def api_sqlq_tab_create(scope, app_name):
+        b, ver = _sqlq_req()
+        want = _sqlq_sheet_name(b.get("name")) if b.get("name") else ""
+        def fn(wb, rows):
+            if want:
+                for r in rows:
+                    if r[0] == want:
+                        r[1] = True                                  # re-open a closed tab
+                        return None
+                wb.create_sheet(want); _sqlq_set_queries(wb, want, []); rows.append([want, True])
+                return None
+            i = 1
+            while f"QueryTab{i}" in wb.sheetnames:
+                i += 1
+            nm = f"QueryTab{i}"
+            wb.create_sheet(nm); _sqlq_set_queries(wb, nm, []); rows.append([nm, True])
+            created.append(nm)
+        created = []
+        res = _sqlq_apply(scope, app_name, ver, fn)
+        if created and res.get("ok"):
+            res["created"] = created[0]
+        return jsonify(res)
+
+    @app.route("/api/sqlq/<scope>/<app_name>/tabs/close", methods=["POST"])
+    def api_sqlq_tab_close(scope, app_name):
+        b, ver = _sqlq_req()
+        def fn(wb, rows):
+            for r in rows:
+                if r[0] == b.get("name"):
+                    r[1] = False
+        return jsonify(_sqlq_apply(scope, app_name, ver, fn))
+
+    @app.route("/api/sqlq/<scope>/<app_name>/tabs/rename", methods=["POST"])
+    def api_sqlq_tab_rename(scope, app_name):
+        b, ver = _sqlq_req()
+        new = _sqlq_sheet_name(b.get("new"))
+        def fn(wb, rows):
+            if not new:
+                return "Invalid tab name"
+            if new != b.get("name") and new.lower() in [n.lower() for n in wb.sheetnames]:
+                return f'A tab named "{new}" already exists (it may be closed — re-open it)'
+            for r in rows:
+                if r[0] == b.get("name"):
+                    wb[r[0]].title = new
+                    r[0] = new
+        return jsonify(_sqlq_apply(scope, app_name, ver, fn))
+
+    @app.route("/api/sqlq/<scope>/<app_name>/queries/<op>", methods=["POST"])
+    def api_sqlq_query_op(scope, app_name, op):
+        b, ver = _sqlq_req()
+        tab = b.get("tab")
+        def fn(wb, rows):
+            if tab not in wb.sheetnames:
+                return f'Tab "{tab}" not found'
+            qs = _sqlq_queries(wb, tab)
+            i = b.get("index")
+            sql = str(b.get("sql") or "").strip()
+            if op == "add":
+                if not sql:
+                    return "Query is empty"
+                qs.append(sql)
+            elif op == "update":
+                if not sql or not isinstance(i, int) or not 0 <= i < len(qs):
+                    return "Query not found"
+                qs[i] = sql
+            elif op == "delete":
+                if not isinstance(i, int) or not 0 <= i < len(qs):
+                    return "Query not found"
+                qs.pop(i)
+            elif op == "move":
+                to = b.get("to")
+                if not isinstance(i, int) or not isinstance(to, int) or not (0 <= i < len(qs)) or not (0 <= to < len(qs)):
+                    return "Cannot move query"
+                qs.insert(to, qs.pop(i))
+            else:
+                return "Unknown operation"
+            _sqlq_set_queries(wb, tab, qs)
+        return jsonify(_sqlq_apply(scope, app_name, ver, fn))
+
+    # ── API payloads: API_Contracts\<Local|Remote>\<App>\<Version>\<API>\<API_Method>\<App>_<Version>_<API>_<API_Method>_<timestamp>.payload ──
+    # The request id sent by the UI is "<API_Method>_<YYYYMMDD_HHMMSS>"; the method is the operation of the API.
+    _API_ID_RE = r"^(.*)_(\d{8}_\d{6}(?:_\d+)?)$"
+
+    def _api_safe(x, default):
+        import re as _rq
+        return _rq.sub(r'[\\/:*?"<>|\s]+', "_", str(x or "").strip()) or default
+
+    def _api_payload_dir(app_name, version, api, method):
+        scope = (request.args.get("scope") or (request.get_json(silent=True) or {}).get("scope") or "local").strip().lower()
+        d, app_dir, ver = _dwb_data_dir("API_Contracts", scope, app_name, version)
+        api_s, m_s = _api_safe(api, "api"), _api_safe(method, "method")
+        d = d / api_s / m_s
+        d.mkdir(parents=True, exist_ok=True)
+        return d, f"{app_dir}_{ver}_{api_s}_{m_s}_"
+
+    def _api_payload_file(app_name, version, api, req_id):
+        import re as _rq
+        m = _rq.match(_API_ID_RE, req_id or "")
+        method, ts = (m.group(1), m.group(2)) if m else ("", _rq.sub(r'[^A-Za-z0-9_.-]', '_', req_id or ""))
+        d, prefix = _api_payload_dir(app_name, version, api, method)
+        return d / f"{prefix}{ts}.payload"
+
+    @app.route("/api/local-app/<app_name>/api-requests", methods=["GET"])
+    def api_requests_list(app_name):
         version = (request.args.get("version") or "").strip()
         api     = (request.args.get("api") or "").strip()
-        if not version or not api:
-            return jsonify({"ok": False, "error": "version and api are required"})
-        folder = _pl.Path(_API_REQ_BASE) / version
-        if not folder.exists():
-            return jsonify({"ok": True, "requests": []})
-        prefix = api + "_"
-        files = [f for f in folder.glob("*.xml") if f.stem.startswith(prefix)]
+        method  = (request.args.get("method") or "").strip()
+        if not version or not api or not method:
+            return jsonify({"ok": False, "error": "version, api and method are required"})
+        d, prefix = _api_payload_dir(app_name, version, api, method)       # only this method's payloads
         result = []
-        for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True):
-            req_id = f.stem[len(prefix):]
-            result.append({"id": req_id, "name": req_id, "path": str(f)})
+        for f in sorted(d.glob("*.payload"), key=lambda x: x.stat().st_mtime, reverse=True):
+            if not f.stem.startswith(prefix):
+                continue
+            rid = f"{method}_{f.stem[len(prefix):]}"
+            result.append({"id": rid, "name": rid, "path": str(f)})
         return jsonify({"ok": True, "requests": result})
 
-    @app.route("/api/local-app/payor/api-requests/load", methods=["GET"])
-    def api_requests_load():
-        import pathlib as _pl
+    @app.route("/api/local-app/<app_name>/api-requests/load", methods=["GET"])
+    def api_requests_load(app_name):
         version  = (request.args.get("version") or "").strip()
         api      = (request.args.get("api") or "").strip()
         req_id   = (request.args.get("id") or "").strip()
         if not version or not api or not req_id:
             return jsonify({"ok": False, "error": "version, api, and id are required"})
-        path = _pl.Path(_API_REQ_BASE) / version / f"{api}_{req_id}.xml"
+        path = _api_payload_file(app_name, version, api, req_id)
         if not path.exists():
             return jsonify({"ok": False, "error": "Request file not found"})
         return jsonify({"ok": True, "content": path.read_text(encoding="utf-8")})
 
-    @app.route("/api/local-app/payor/api-requests", methods=["POST"])
-    def api_requests_save():
-        import pathlib as _pl, re as _re3
+    @app.route("/api/local-app/<app_name>/api-requests", methods=["POST"])
+    def api_requests_save(app_name):
         body    = request.get_json() or {}
         version = (body.get("version") or "").strip()
         api     = (body.get("api") or "").strip()
@@ -18669,23 +18899,23 @@ def create_flask_app():
         content = body.get("content", "")
         if not version or not api or not req_id:
             return jsonify({"ok": False, "error": "version, api, and id are required"})
-        safe_id = _re3.sub(r'[^\w\-.]', '_', req_id)
-        folder = _pl.Path(_API_REQ_BASE) / version
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{api}_{safe_id}.xml"
+        path = _api_payload_file(app_name, version, api, req_id)
+        n = 1
+        while path.exists():                                         # two saves in the same second
+            n += 1
+            path = _api_payload_file(app_name, version, api, f"{req_id}_{n}")
         path.write_text(content, encoding="utf-8")
         return jsonify({"ok": True, "path": str(path)})
 
-    @app.route("/api/local-app/payor/api-requests", methods=["DELETE"])
-    def api_requests_delete():
-        import pathlib as _pl
+    @app.route("/api/local-app/<app_name>/api-requests", methods=["DELETE"])
+    def api_requests_delete(app_name):
         body    = request.get_json() or {}
         version = (body.get("version") or "").strip()
         api     = (body.get("api") or "").strip()
         req_id  = (body.get("id") or "").strip()
         if not version or not api or not req_id:
             return jsonify({"ok": False, "error": "version, api, and id are required"})
-        path = _pl.Path(_API_REQ_BASE) / version / f"{api}_{req_id}.xml"
+        path = _api_payload_file(app_name, version, api, req_id)
         if path.exists():
             path.unlink()
         return jsonify({"ok": True})
@@ -19977,6 +20207,8 @@ def create_flask_app():
                             continue
                         if k == "deployment_container" and selected:
                             result["container"] = selected
+                        elif k in ("tomcat_manager_user", "tomcat_manager_pass", "tomcat_manager_port") and selected:
+                            result[k] = selected
         except Exception:
             pass
         return result
@@ -20125,6 +20357,11 @@ def create_flask_app():
                 build_rows = [{"key": r["key"], "value": r["value"], "condition": "", "description": r["description"]}
                               for r in _sheet_rows("build", ["key", "value", "description"])]
             deploy_rows = _sheet_rows("deploy", ["key", "value", "condition", "description"])
+            have = {r["key"] for r in deploy_rows}
+            for k, v, d in (("tomcat_manager_user", "admin", "Tomcat Manager user (used to deploy WAR files)"),
+                            ("tomcat_manager_pass", "admin", "Tomcat Manager password")):
+                if k not in have:
+                    deploy_rows.append({"key": k, "value": v, "condition": "", "description": d})
             return jsonify({"ok": True, "build": build_rows, "deploy": deploy_rows})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
@@ -22043,6 +22280,46 @@ def create_flask_app():
 
     @app.route("/api/remote-app/<app_name>/tomcat/deploy", methods=["POST"])
     def api_remote_tomcat_deploy(app_name):
+        if request.files.get("war"):
+            # Same as Tomcat Manager's "WAR file to deploy": the context path comes from the file name (ROOT.war -> /)
+            up = request.files["war"]
+            vm_ip = request.form.get("vm_ip", "")
+            fname = Path(up.filename or "").name
+            if not fname.lower().endswith(".war"):
+                return jsonify({"ok": False, "error": "Choose a .war file"})
+            stem = fname[:-4]
+            cfg = _read_remote_app_config(app_name)
+            container = cfg.get("container", app_name)
+            mgr_user = cfg.get("tomcat_manager_user", "admin")
+            mgr_pass = cfg.get("tomcat_manager_pass", "admin")
+            mgr_port = cfg.get("tomcat_manager_port") or cfg.get("port", 8080)
+            cpath = "" if stem == "ROOT" else "/" + stem
+            tmp_vm = f"/tmp/dwb_{stem}.war"
+            try:
+                sftp = _pooled_client(vm_ip).open_sftp()
+                try:
+                    with sftp.open(tmp_vm, "wb") as rf:
+                        rf.set_pipelined(True)
+                        while True:
+                            chunk = up.stream.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            rf.write(chunk)
+                finally:
+                    sftp.close()
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"Could not upload WAR to VM: {e}"})
+            ok, out, err = _ssh_run(vm_ip, f"docker cp {tmp_vm} {container}:/tmp/{stem}.war; rm -f {tmp_vm}", timeout=120)
+            if not ok:
+                return jsonify({"ok": False, "error": f"Could not copy WAR to container: {err}"})
+            ok, out, err = _tomcat_exec(vm_ip, container,
+                f"curl -s -u {mgr_user}:{mgr_pass} \"http://localhost:{mgr_port}/manager/text/deploy?path={cpath}&update=true\" "
+                f"--upload-file /tmp/{stem}.war 2>&1; rm -f /tmp/{stem}.war", timeout=300)
+            if out.startswith("OK"):
+                return jsonify({"ok": True, "output": out.strip()})
+            if "401" in out or "Unauthorized" in out.lower():
+                return jsonify({"ok": False, "error": "Tomcat Manager auth failed — configure tomcat_manager_user/pass"})
+            return jsonify({"ok": False, "error": out.strip() or err or "Deploy failed"})
         body = request.get_json() or {}
         vm_ip    = body.get("vm_ip", "")
         path     = body.get("path", "").strip()
@@ -22095,6 +22372,40 @@ def create_flask_app():
         defaults = _LOCAL_APP_DEFAULTS.get(app_name, {})
         cfg = _read_generic_app_config(app_name)
         return cfg.get("container") or defaults.get("container", app_name)
+
+    def _manager_deploy_war(container, cfg, up, stem):
+        """Deploy an uploaded WAR through Tomcat Manager (text API deploy with the WAR as the PUT body: what the
+        Manager page's 'WAR file to deploy' does). Returns (ok, message)."""
+        import subprocess as _sp, tempfile as _tf, os as _os
+        cf = 0x08000000 if sys.platform == "win32" else 0
+        mgr_user = cfg.get("tomcat_manager_user", "admin")
+        mgr_pass = cfg.get("tomcat_manager_pass", "admin")
+        mgr_port = cfg.get("tomcat_manager_port") or cfg.get("port", 8080)
+        cpath = "" if stem == "ROOT" else "/" + stem
+        tmpd = _tf.mkdtemp(prefix="dwb_war_")
+        try:
+            local = _os.path.join(tmpd, stem + ".war")
+            up.save(local)
+            r = _sp.run(["docker", "cp", local, f"{container}:/tmp/{stem}.war"], capture_output=True, text=True, creationflags=cf)
+            if r.returncode != 0:
+                return False, f"Could not copy WAR to container: {r.stderr.strip()}"
+        finally:
+            import shutil as _sh
+            _sh.rmtree(tmpd, ignore_errors=True)
+        ok, out, err = _local_tomcat_exec(container,
+            f"curl -s -u {mgr_user}:{mgr_pass} \"http://localhost:{mgr_port}/manager/text/deploy?path={cpath}&update=true\" "
+            f"--upload-file /tmp/{stem}.war 2>&1; rm -f /tmp/{stem}.war", timeout=300)
+        if out.startswith("OK"):
+            # confirm with the Manager's own list that the context is really running
+            ok2, lst, _e = _local_tomcat_exec(container,
+                f"curl -s -u {mgr_user}:{mgr_pass} \"http://localhost:{mgr_port}/manager/text/list\" 2>&1", timeout=30)
+            line = next((l for l in lst.splitlines() if l.startswith((cpath or "/") + ":")), "")
+            if not line.split(":")[1:2] == ["running"]:
+                return False, f"Manager reported OK but the application is not running: {line or 'not listed'}\n{out.strip()}"
+            return True, out.strip() + f"\n{line}"
+        if "401" in out or "unauthorized" in out.lower():
+            return False, "Tomcat Manager auth failed — configure tomcat_manager_user/pass in Deploy Configuration"
+        return False, out.strip() or err.strip() or "Deploy failed"
 
     def _get_local_tomcat_cfg(app_name):
         defaults = _LOCAL_APP_DEFAULTS.get(app_name, {})
@@ -22302,6 +22613,17 @@ def create_flask_app():
     def api_local_tomcat_deploy(app_name):
         if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
             return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
+        if request.files.get("war"):
+            # Same as Tomcat Manager's "WAR file to deploy": upload + deploy, context path from the file name (ROOT.war -> /)
+            up = request.files["war"]
+            fname = Path(up.filename or "").name
+            if not fname.lower().endswith(".war"):
+                return jsonify({"ok": False, "error": "Choose a .war file"})
+            stem = fname[:-4]
+            container = _get_local_tomcat_container(app_name)
+            cfg = _get_local_tomcat_cfg(app_name)
+            ok, msg = _manager_deploy_war(container, cfg, up, stem)
+            return jsonify({"ok": ok, ("output" if ok else "error"): msg})
         body = request.get_json() or {}
         path     = body.get("path", "").strip()
         war_path = body.get("war_path", "").strip()
@@ -25045,8 +25367,8 @@ def create_flask_app():
                 "tabs": [{"key": k, "label": l, "enabled": True, "order": i}
                          for i, (k, l) in enumerate([
                              ("code", "Code"), ("app_server", "App Server"),
-                             ("database", "Database"), ("queue", "Queue"),
-                             ("api", "API"), ("user_interface", "User Interface"),
+                             ("queue", "Queue"), ("user_interface", "User Interface"),
+                             ("api", "API"), ("database", "Database"),
                          ], 1)],
                 "panels": [{"key": k, "label": l, "enabled": True, "order": i}
                            for i, (k, l) in enumerate([
@@ -25566,7 +25888,7 @@ def create_flask_app():
         with lock:
             mop["output"] += f"$ {' '.join(cmd)}\n\n"
         try:
-            proc = _detached_popen("gmodule_op", cmd, cwd=cwd, meta={"app": app_name, "op": op, "module": module})   # survives a Workbench restart
+            proc = _detached_popen("gmodule_op", cmd, cwd=cwd, env=_tomcat_mgr_env(app_root), meta={"app": app_name, "op": op, "module": module})   # survives a Workbench restart
             with lock:
                 mop["proc"] = proc
             for line in iter(proc.stdout.readline, ""):

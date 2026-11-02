@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ConfirmDialog from '../components/ConfirmDialog'
+import SqlQueryPanel from '../components/SqlQueryPanel'
 import { useNavigate } from 'react-router-dom'
 import { TomcatRightPanel } from './RemoteAppShared'
 
@@ -2770,7 +2771,7 @@ export function AppServerTab({ appName, displayName, serverType }) {
       </div>
 
       {/* ── Op output (shown when active) ── */}
-      {opKind !== 'stop' && opKind !== 'start_debug' && (opStatus || opOutput) && (
+      {opKind !== 'stop' && opKind !== 'start_debug' && !(['start', 'restart'].includes(opKind) && serverType === 'tomcat') && (opStatus || opOutput) && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
             {opKind && opKind.charAt(0).toUpperCase() + opKind.slice(1)} output
@@ -2795,7 +2796,7 @@ export function AppServerTab({ appName, displayName, serverType }) {
             query=""
             propertiesPanel={<RuntimePropertiesPanel appName={appName} />}
             logSignal={logSignal}
-            opOutput={opOutput} opKind={opKind} opStatus={opStatus}
+            opOutput={['start', 'restart'].includes(opKind) ? '' : opOutput} opKind={['start', 'restart'].includes(opKind) ? null : opKind} opStatus={['start', 'restart'].includes(opKind) ? null : opStatus}
           />
         : <RuntimePropertiesPanel appName={appName} />}
     </div>
@@ -2804,7 +2805,6 @@ export function AppServerTab({ appName, displayName, serverType }) {
 
 // ── Database Tab ──────────────────────────────────────────────────────────────
 
-const MAX_QUERY_TABS = 10
 
 function TableStructureModal({ appName, schema, table, onClose, onInsert }) {
   const [navStack, setNavStack] = useState([{ schema, table }])
@@ -3116,19 +3116,12 @@ export function DatabaseTab({ appName, displayName }) {
 
   useEffect(() => { refreshSvcStatus() }, [appName])
 
-  const [tabs,       setTabs]       = useState([{ id: 1, title: 'QueryTab1' }])
-  const [renaming, setRenaming] = useState(null)   // {id, text}
-  const [activeTab,  setActiveTab]  = useState(1)
-  const [sqls,       setSqls]       = useState({ 1: '' })
+  const [activeTab,  setActiveTab]  = useState('')     // sheet (tab) name in SQL_Queries\Local\<App>\<Version>\<App>_<Version>_Queries.xlsx
   const [results,    setResults]    = useState({})
   const [executing,  setExecuting]  = useState({})
   const [execErr,    setExecErr]    = useState({})
-  const [version,    setVersion]    = useState('')
-  const saveTimers   = useRef({})
-  const editorRef    = useRef(null)
-  const undoStack    = useRef({})
-  const undoPtr      = useRef({})
-  const undoDebounce = useRef({})
+  const [version,    setVersion]    = useState(null)
+  const queryPanel   = useRef(null)
 
   const [editedCells, setEditedCells] = useState({})
   const [editingCell, setEditingCell] = useState(null)
@@ -3162,174 +3155,41 @@ export function DatabaseTab({ appName, displayName }) {
   }
 
   useEffect(() => {
-    if (!connected) return
-    fetch(`/api/local-app/${appName}/db/query-names`)
-      .then(r => r.json())
-      .then(d => {
-        if (!d.ok) return
-        const ids = Object.keys(d.names || {}).map(Number).filter(n => n >= 1 && n <= MAX_QUERY_TABS)
-        // tabs that were named earlier come back with their names (and their saved SQL)
-        setTabs(prev => {
-          const all = [...new Set([...prev.map(t => t.id), ...ids])].sort((x, y) => x - y)
-          return all.map(id => ({ id, title: d.names[String(id)] || prev.find(t => t.id === id)?.title || `QueryTab${id}` }))
-        })
-        ids.filter(id => id !== 1).forEach(id => {
-          fetch(`/api/local-app/${appName}/db/query/${id}`).then(r => r.json())
-            .then(q => { if (q.ok && q.sql) setSqls(p => ({ ...p, [id]: q.sql })) }).catch(() => {})
-        })
-      })
-      .catch(() => {})
-    tabs.forEach(t => {
-      fetch(`/api/local-app/${appName}/db/query/${t.id}`)
-        .then(r => r.json())
-        .then(d => { if (d.ok) { setVersion(d.version); if (d.sql) setSqls(p => ({ ...p, [t.id]: d.sql })) } })
-        .catch(() => {})
-    })
-  }, [connected])
+    // the app version names the workbook: SQL_Queries\Local\<App>\<Version>\<App>_<Version>_Queries.xlsx
+    fetch(`/api/local-app/${appName}/current-branch`).then(r => r.json())
+      .then(d => setVersion((d.ok && d.release_ver) ? String(d.release_ver) : ''))
+      .catch(() => setVersion(''))
+  }, [appName])
 
   useEffect(() => { connect() }, [appName])
 
-  function saveQuery(tabId, sql) {
-    clearTimeout(saveTimers.current[tabId])
-    saveTimers.current[tabId] = setTimeout(() => {
-      fetch(`/api/local-app/${appName}/db/query/${tabId}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql }),
-      }).catch(() => {})
-    }, 1500)
-  }
-
-  function _pushUndo(tabId, val) {
-    if (!undoStack.current[tabId]) { undoStack.current[tabId] = ['']; undoPtr.current[tabId] = 0 }
-    const stack = undoStack.current[tabId]
-    const ptr   = undoPtr.current[tabId]
-    if (stack[ptr] === val) return
-    undoStack.current[tabId] = stack.slice(0, ptr + 1)
-    undoStack.current[tabId].push(val)
-    if (undoStack.current[tabId].length > 300) undoStack.current[tabId].shift()
-    undoPtr.current[tabId] = undoStack.current[tabId].length - 1
-  }
-
-  function handleSqlChange(tabId, val) {
-    setSqls(p => ({ ...p, [tabId]: val }))
-    saveQuery(tabId, val)
-    clearTimeout(undoDebounce.current[tabId])
-    undoDebounce.current[tabId] = setTimeout(() => _pushUndo(tabId, val), 500)
-  }
-
-  function undoSql() {
-    const tabId = activeTab
-    if (!undoStack.current[tabId]) return
-    clearTimeout(undoDebounce.current[tabId])
-    _pushUndo(tabId, sqls[tabId] || '')
-    const ptr = undoPtr.current[tabId]
-    if (ptr <= 0) return
-    undoPtr.current[tabId] = ptr - 1
-    const val = undoStack.current[tabId][ptr - 1]
-    setSqls(p => ({ ...p, [tabId]: val }))
-    saveQuery(tabId, val)
-  }
-
-  function redoSql() {
-    const tabId = activeTab
-    if (!undoStack.current[tabId]) return
-    const stack = undoStack.current[tabId]
-    const ptr   = undoPtr.current[tabId]
-    if (ptr >= stack.length - 1) return
-    undoPtr.current[tabId] = ptr + 1
-    const val = stack[ptr + 1]
-    setSqls(p => ({ ...p, [tabId]: val }))
-    saveQuery(tabId, val)
-  }
-
-  function addTab() {
-    if (tabs.length >= MAX_QUERY_TABS) return
-    const newId = Math.max(...tabs.map(t => t.id)) + 1
-    setTabs(prev => [...prev, { id: newId, title: `QueryTab${newId}` }])
-    setActiveTab(newId)
-    setSqls(p => ({ ...p, [newId]: '' }))
-  }
-
-  function commitRename() {
-    if (!renaming) return
-    const { id, text } = renaming
-    setRenaming(null)
-    const title = text.trim().slice(0, 60) || `QueryTab${id}`
-    setTabs(prev => prev.map(t => t.id === id ? { ...t, title } : t))
-    fetch(`/api/local-app/${appName}/db/query-names/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    }).catch(() => {})
-  }
-
-  function closeTab(id) {
-    if (tabs.length === 1) return
-    const idx  = tabs.findIndex(t => t.id === id)
-    const next = tabs[idx + 1] || tabs[idx - 1]
-    setTabs(tabs.filter(t => t.id !== id))
-    if (activeTab === id) setActiveTab(next.id)
-  }
-
-  function getEffectiveSql() {
-    const ta   = editorRef.current
-    const full = sqls[activeTab] || ''
-    if (ta) {
-      const selStart = ta.selectionStart, selEnd = ta.selectionEnd
-      if (selEnd > selStart) return full.substring(selStart, selEnd).trim()
-      const cursor = selStart
-      const stmts  = []
-      let pos = 0
-      for (const raw of full.split(';')) {
-        stmts.push({ text: raw, start: pos, end: pos + raw.length })
-        pos += raw.length + 1
-      }
-      for (const s of stmts) {
-        if (cursor >= s.start && cursor <= s.end + 1) {
-          const trimmed = s.text.trim()
-          if (trimmed) return trimmed
-        }
-      }
-    }
-    return full.trim()
-  }
-
-  function executeQuery() {
-    const sql = getEffectiveSql()
-    if (!sql || !connected) return
-    setExecuting(p => ({ ...p, [activeTab]: true }))
-    setExecErr(p => ({ ...p, [activeTab]: null }))
-    setResults(p => ({ ...p, [activeTab]: null }))
-    setNewRows(p => ({ ...p, [activeTab]: [] }))
-    fetch(`/api/local-app/${appName}/db/execute`, {
+  // Runs sql for the given tab and shows its result there; resolves true when it executed without error.
+  function executeQuery(sql, tab) {
+    if (!sql || !connected) return Promise.resolve(false)
+    setExecuting(p => ({ ...p, [tab]: true }))
+    setExecErr(p => ({ ...p, [tab]: null }))
+    setResults(p => ({ ...p, [tab]: null }))
+    setNewRows(p => ({ ...p, [tab]: [] }))
+    return fetch(`/api/local-app/${appName}/db/execute`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql }),
     })
       .then(r => r.json())
       .then(d => {
         if (d.ok) {
-          setResults(p => ({ ...p, [activeTab]: d }))
+          setResults(p => ({ ...p, [tab]: { ...d, sql } }))
           const m = sql.match(/\bFROM\s+(["'\w.]+)/i)
-          if (m) setCommitTable(p => ({ ...p, [activeTab]: m[1].replace(/['"]/g, '') }))
-        } else {
-          setExecErr(p => ({ ...p, [activeTab]: d.error }))
+          if (m) setCommitTable(p => ({ ...p, [tab]: m[1].replace(/['"]/g, '') }))
+          return true
         }
+        setExecErr(p => ({ ...p, [tab]: d.error }))
+        return false
       })
-      .catch(() => setExecErr(p => ({ ...p, [activeTab]: 'Request failed' })))
-      .finally(() => setExecuting(p => ({ ...p, [activeTab]: false })))
+      .catch(() => { setExecErr(p => ({ ...p, [tab]: 'Request failed' })); return false })
+      .finally(() => setExecuting(p => ({ ...p, [tab]: false })))
   }
 
-  function insertIntoEditor(text) {
-    const ta = editorRef.current
-    if (!ta) { handleSqlChange(activeTab, (sqls[activeTab] || '') + text); return }
-    const start = ta.selectionStart, end = ta.selectionEnd
-    const cur  = sqls[activeTab] || ''
-    const next = cur.slice(0, start) + text + cur.slice(end)
-    handleSqlChange(activeTab, next)
-    requestAnimationFrame(() => {
-      ta.selectionStart = ta.selectionEnd = start + text.length
-      ta.focus()
-    })
-  }
+  function insertIntoEditor(text) { queryPanel.current && queryPanel.current.insert(text) }
 
   function triggerDownload(content, filename, mime) {
     const blob = new Blob([content], { type: mime })
@@ -3353,7 +3213,7 @@ export function DatabaseTab({ appName, displayName }) {
       rows.forEach(r => lines.push(r.map(esc).join('\t')))
       triggerDownload(lines.join('\r\n'), 'query_result.txt', 'text/plain')
     } else if (fmt === 'sql') {
-      const tbl   = (() => { const m = (sqls[activeTab] || '').match(/\bFROM\s+(["'\w.]+)/i); return m ? m[1].replace(/['"]/g, '') : 'table_name' })()
+      const tbl   = (() => { const m = (result.sql || '').match(/\bFROM\s+(["'\w.]+)/i); return m ? m[1].replace(/['"]/g, '') : 'table_name' })()
       const lines = rows.map(r => {
         const vals = r.map(v => v === null ? 'NULL' : typeof v === 'number' ? v : `'${String(v).replace(/'/g, "''")}'`)
         return `INSERT INTO ${tbl} (${columns.join(', ')}) VALUES (${vals.join(', ')});`
@@ -3409,7 +3269,7 @@ export function DatabaseTab({ appName, displayName }) {
           setEditedCells(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => !k.startsWith(tabPrefix))))
           setNewRows(prev => ({ ...prev, [activeTab]: [] }))
           setCommitMsg(`Committed ${d.committed} row(s) — refreshing…`)
-          executeQuery()
+          executeQuery(result.sql, activeTab)
           setTimeout(() => setCommitMsg(null), 3000)
         } else {
           setCommitErr(d.error || 'Commit failed')
@@ -3526,78 +3386,8 @@ export function DatabaseTab({ appName, displayName }) {
         {/* Right: query editor + results */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
 
-          {/* Tab bar */}
-          <div style={{
-            display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)',
-            background: 'var(--surface)', flexShrink: 0, overflowX: 'auto',
-          }}>
-            {tabs.map(t => (
-              <div key={t.id} onClick={() => setActiveTab(t.id)} style={{
-                display: 'flex', alignItems: 'center', gap: 4,
-                padding: '7px 14px', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
-                borderRight: '1px solid var(--border)',
-                background: activeTab === t.id ? 'var(--bg, #fff)' : 'transparent',
-                borderBottom: activeTab === t.id ? '2px solid var(--primary, #3b82f6)' : '2px solid transparent',
-                color: activeTab === t.id ? 'var(--primary, #3b82f6)' : 'var(--text-muted)',
-                fontWeight: activeTab === t.id ? 600 : 400,
-              }}>
-                {renaming?.id === t.id ? (
-                  <input autoFocus value={renaming.text}
-                    onChange={e => setRenaming(r => ({ ...r, text: e.target.value }))}
-                    onClick={e => e.stopPropagation()}
-                    onBlur={commitRename}
-                    onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setRenaming(null) }}
-                    style={{ width: 120, fontSize: 12, padding: '1px 4px' }} />
-                ) : (
-                  <span onDoubleClick={e => { e.stopPropagation(); setRenaming({ id: t.id, text: t.title }) }}
-                    title="Double-click to rename">{t.title}</span>
-                )}
-                {tabs.length > 1 && (
-                  <span onClick={e => { e.stopPropagation(); closeTab(t.id) }}
-                    style={{ marginLeft: 2, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1, padding: '0 2px' }}>×</span>
-                )}
-              </div>
-            ))}
-            {tabs.length < MAX_QUERY_TABS && (
-              <button onClick={addTab} style={{
-                border: 'none', background: 'transparent', cursor: 'pointer',
-                padding: '7px 12px', fontSize: 16, color: 'var(--text-muted)', lineHeight: 1,
-              }} title="New tab">+</button>
-            )}
-            <div style={{ flex: 1 }} />
-            <div style={{ display: 'flex', gap: 6, padding: '4px 8px', flexShrink: 0 }}>
-              <button className="btn btn-sm" onClick={() => handleSqlChange(activeTab, '')} disabled={busy}
-                style={{ fontSize: 12, padding: '3px 10px' }}>Clear</button>
-              <button className="btn btn-primary btn-sm" onClick={executeQuery} disabled={busy || !connected}
-                style={{ fontSize: 12, padding: '3px 10px' }}>
-                {busy ? <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> Running…</> : '▶ Run'}
-              </button>
-            </div>
-          </div>
-
-          {/* SQL editor */}
-          <textarea
-            ref={editorRef}
-            value={sqls[activeTab] || ''}
-            onChange={e => handleSqlChange(activeTab, e.target.value)}
-            onKeyDown={e => {
-              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); executeQuery(); return }
-              if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); undoSql(); return }
-              if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); redoSql(); return }
-            }}
-            onPaste={() => {
-              clearTimeout(undoDebounce.current[activeTab])
-              _pushUndo(activeTab, sqls[activeTab] || '')
-            }}
-            placeholder="Enter SQL query… (Ctrl+Enter to run)"
-            style={{
-              flex: result || eErr ? '0 0 160px' : 1, minHeight: 120,
-              background: '#141414', color: '#d4d4d4',
-              fontFamily: 'monospace', fontSize: 13, lineHeight: 1.6,
-              padding: '10px 14px', border: 'none', outline: 'none',
-              resize: 'none', borderBottom: '1px solid var(--border)',
-            }}
-          />
+          <SqlQueryPanel ref={queryPanel} scope="local" appName={appName} version={version} connected={connected}
+            busy={busy} onActive={setActiveTab} runSql={(sql, tab) => executeQuery(sql, tab)} />
 
           {/* Results */}
           {eErr && (
@@ -3749,12 +3539,6 @@ export function DatabaseTab({ appName, displayName }) {
             </div>
           )}
 
-          {version && (
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', padding: '3px 12px',
-              borderTop: '1px solid var(--border)', flexShrink: 0, background: 'var(--surface)' }}>
-              Auto-saved to {version}_queries_{activeTab}.sql
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -4159,7 +3943,7 @@ function RequestBuilder({ svc, op, type, version, apiName, appName, onClose }) {
 
   function loadSavedList() {
     if (!version || !apiName) return
-    fetch(`/api/local-app/${appName}/api-requests?version=${encodeURIComponent(version)}&api=${encodeURIComponent(apiName)}`)
+    fetch(`/api/local-app/${appName}/api-requests?version=${encodeURIComponent(version)}&api=${encodeURIComponent(apiName)}&method=${encodeURIComponent(op)}`)
       .then(r => r.json())
       .then(d => { if (d.ok) setSavedList(d.requests || []) })
       .catch(() => {})

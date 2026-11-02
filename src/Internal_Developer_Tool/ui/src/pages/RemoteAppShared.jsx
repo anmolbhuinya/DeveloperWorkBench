@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import SqlQueryPanel from '../components/SqlQueryPanel'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { ConfigureModal, KarafRightPanel, GpRunPanel, ColoredTerminal } from './LocalAppShared'
 export { KarafRightPanel }
@@ -1398,7 +1399,6 @@ export function RemoteDeployedBanner({ vmIp, appName = 'payor', noMargin, server
     </div>
   )
 }
-const REMOTE_MAX_QUERY_TABS = 10
 
 function RemoteTableStructureModal({ vmIp, schema, table, onClose, onInsert, appName = 'payor' }) {
   const [navStack, setNavStack] = useState([{ schema, table }])
@@ -1650,18 +1650,12 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
   const [connInfo,   setConnInfo]   = useState(null)
   const [schemas,    setSchemas]    = useState([])
 
-  const [tabs,      setTabs]      = useState([{ id: 1, title: 'QueryTab1' }])
-  const [renaming, setRenaming] = useState(null)   // {id, text}
-  const [activeTab, setActiveTab] = useState(1)
-  const [sqls,      setSqls]      = useState({ 1: '' })
+  const [activeTab, setActiveTab] = useState('')      // sheet (tab) name in SQL_Queries\Remote\<App>\<Version>\<App>_<Version>_Queries.xlsx
   const [results,   setResults]   = useState({})
   const [executing, setExecuting] = useState({})
   const [execErr,   setExecErr]   = useState({})
-  const saveTimers   = useRef({})
-  const editorRef    = useRef(null)
-  const undoStack    = useRef({})
-  const undoPtr      = useRef({})
-  const undoDebounce = useRef({})
+  const [version,   setVersion]   = useState(null)
+  const queryPanel  = useRef(null)
 
   const [editedCells, setEditedCells] = useState({})
   const [editingCell, setEditingCell] = useState(null)
@@ -1707,151 +1701,40 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
   useEffect(() => { connect() }, [vmIp])
 
   useEffect(() => {
-    if (!connected) return
-    fetch(`/api/remote-app/${appName}/db/query-names${QS}`)
-      .then(r => r.json())
-      .then(d => {
-        if (!d.ok) return
-        const ids = Object.keys(d.names || {}).map(Number).filter(n => n >= 1 && n <= REMOTE_MAX_QUERY_TABS)
-        // tabs that were named earlier come back with their names (and their saved SQL)
-        setTabs(prev => {
-          const all = [...new Set([...prev.map(t => t.id), ...ids])].sort((x, y) => x - y)
-          return all.map(id => ({ id, title: d.names[String(id)] || prev.find(t => t.id === id)?.title || `QueryTab${id}` }))
-        })
-        ids.filter(id => id !== 1).forEach(id => {
-          fetch(`/api/remote-app/${appName}/db/query/${id}${QS}`).then(r => r.json())
-            .then(q => { if (q.ok && q.sql) setSqls(p => ({ ...p, [id]: q.sql })) }).catch(() => {})
-        })
-      })
-      .catch(() => {})
-    tabs.forEach(t => {
-      fetch(`/api/remote-app/${appName}/db/query/${t.id}${QS}`)
-        .then(r => r.json())
-        .then(d => { if (d.ok && d.sql) setSqls(p => ({ ...p, [t.id]: d.sql })) })
-        .catch(() => {})
-    })
-  }, [connected])
+    // the app version names the workbook: SQL_Queries\Remote\<App>\<Version>\<App>_<Version>_Queries.xlsx
+    if (!vmIp) return
+    fetch(`/api/remote-app/${appName}/current-branch${QS}`).then(r => r.json())
+      .then(d => setVersion((d.ok && d.release_ver) ? String(d.release_ver) : ''))
+      .catch(() => setVersion(''))
+  }, [vmIp, appName])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  function saveQuery(tabId, sql) {
-    clearTimeout(saveTimers.current[tabId])
-    saveTimers.current[tabId] = setTimeout(() => {
-      fetch(`/api/remote-app/${appName}/db/query/${tabId}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vm_ip: vmIp, sql }),
-      }).catch(() => {})
-    }, 1500)
-  }
-
-  function _pushUndo(tabId, val) {
-    if (!undoStack.current[tabId]) { undoStack.current[tabId] = ['']; undoPtr.current[tabId] = 0 }
-    const stack = undoStack.current[tabId], ptr = undoPtr.current[tabId]
-    if (stack[ptr] === val) return
-    undoStack.current[tabId] = stack.slice(0, ptr + 1)
-    undoStack.current[tabId].push(val)
-    if (undoStack.current[tabId].length > 300) undoStack.current[tabId].shift()
-    undoPtr.current[tabId] = undoStack.current[tabId].length - 1
-  }
-
-  function handleSqlChange(tabId, val) {
-    setSqls(p => ({ ...p, [tabId]: val })); saveQuery(tabId, val)
-    clearTimeout(undoDebounce.current[tabId])
-    undoDebounce.current[tabId] = setTimeout(() => _pushUndo(tabId, val), 500)
-  }
-
-  function undoSql() {
-    const tabId = activeTab
-    if (!undoStack.current[tabId]) return
-    clearTimeout(undoDebounce.current[tabId]); _pushUndo(tabId, sqls[tabId] || '')
-    const ptr = undoPtr.current[tabId]
-    if (ptr <= 0) return
-    undoPtr.current[tabId] = ptr - 1
-    const val = undoStack.current[tabId][ptr - 1]
-    setSqls(p => ({ ...p, [tabId]: val })); saveQuery(tabId, val)
-  }
-
-  function redoSql() {
-    const tabId = activeTab
-    if (!undoStack.current[tabId]) return
-    const stack = undoStack.current[tabId], ptr = undoPtr.current[tabId]
-    if (ptr >= stack.length - 1) return
-    undoPtr.current[tabId] = ptr + 1
-    const val = stack[ptr + 1]
-    setSqls(p => ({ ...p, [tabId]: val })); saveQuery(tabId, val)
-  }
-
-  function addTab() {
-    if (tabs.length >= REMOTE_MAX_QUERY_TABS) return
-    const newId = Math.max(...tabs.map(t => t.id)) + 1
-    setTabs([...tabs, { id: newId, title: `QueryTab${newId}` }])
-    setActiveTab(newId); setSqls(p => ({ ...p, [newId]: '' }))
-  }
-
-  function commitRename() {
-    if (!renaming) return
-    const { id, text } = renaming
-    setRenaming(null)
-    const title = text.trim().slice(0, 60) || `QueryTab${id}`
-    setTabs(prev => prev.map(t => t.id === id ? { ...t, title } : t))
-    fetch(`/api/remote-app/${appName}/db/query-names/${id}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, vm_ip: vmIp }),
-    }).catch(() => {})
-  }
-
-  function closeTab(id) {
-    if (tabs.length === 1) return
-    const idx = tabs.findIndex(t => t.id === id), next = tabs[idx + 1] || tabs[idx - 1]
-    setTabs(tabs.filter(t => t.id !== id))
-    if (activeTab === id) setActiveTab(next.id)
-  }
-
-  function getEffectiveSql() {
-    const ta = editorRef.current, full = sqls[activeTab] || ''
-    if (ta) {
-      const { selectionStart: ss, selectionEnd: se } = ta
-      if (se > ss) return full.substring(ss, se).trim()
-      const cursor = ss; let pos = 0
-      for (const raw of full.split(';')) {
-        const start = pos, end = pos + raw.length
-        if (cursor >= start && cursor <= end + 1) { const t = raw.trim(); if (t) return t }
-        pos = end + 1
-      }
-    }
-    return full.trim()
-  }
-
-  function executeQuery() {
-    const sql = getEffectiveSql()
-    if (!sql || !connected) return
-    setExecuting(p => ({ ...p, [activeTab]: true }))
-    setExecErr(p => ({ ...p, [activeTab]: null }))
-    setResults(p => ({ ...p, [activeTab]: null }))
-    setNewRows(p => ({ ...p, [activeTab]: [] }))
-    fetch(`/api/remote-app/${appName}/db/execute`, {
+  // Runs sql for the given tab and shows its result there; resolves true when it executed without error.
+  function executeQuery(sql, tab) {
+    if (!sql || !connected) return Promise.resolve(false)
+    setExecuting(p => ({ ...p, [tab]: true }))
+    setExecErr(p => ({ ...p, [tab]: null }))
+    setResults(p => ({ ...p, [tab]: null }))
+    setNewRows(p => ({ ...p, [tab]: [] }))
+    return fetch(`/api/remote-app/${appName}/db/execute`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ vm_ip: vmIp, sql }),
     })
       .then(r => r.json())
       .then(d => {
         if (d.ok) {
-          setResults(p => ({ ...p, [activeTab]: d }))
+          setResults(p => ({ ...p, [tab]: { ...d, sql } }))
           const m = sql.match(/\bFROM\s+(["'\w.]+)/i)
-          if (m) setCommitTable(p => ({ ...p, [activeTab]: m[1].replace(/['"]/g, '') }))
-        } else {
-          setExecErr(p => ({ ...p, [activeTab]: d.error }))
+          if (m) setCommitTable(p => ({ ...p, [tab]: m[1].replace(/['"]/g, '') }))
+          return true
         }
+        setExecErr(p => ({ ...p, [tab]: d.error }))
+        return false
       })
-      .catch(() => setExecErr(p => ({ ...p, [activeTab]: 'Request failed' })))
-      .finally(() => setExecuting(p => ({ ...p, [activeTab]: false })))
+      .catch(() => { setExecErr(p => ({ ...p, [tab]: 'Request failed' })); return false })
+      .finally(() => setExecuting(p => ({ ...p, [tab]: false })))
   }
 
-  function insertIntoEditor(text) {
-    const ta = editorRef.current
-    if (!ta) { handleSqlChange(activeTab, (sqls[activeTab] || '') + text); return }
-    const start = ta.selectionStart, end = ta.selectionEnd, cur = sqls[activeTab] || ''
-    handleSqlChange(activeTab, cur.slice(0, start) + text + cur.slice(end))
-    requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + text.length; ta.focus() })
-  }
+  function insertIntoEditor(text) { queryPanel.current && queryPanel.current.insert(text) }
 
   function doCommit() {
     if (!result) return
@@ -1880,7 +1763,7 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
           setEditedCells(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => !k.startsWith(tabPrefix))))
           setNewRows(prev => ({ ...prev, [activeTab]: [] }))
           setCommitMsg(`Committed ${d.committed} row(s) — refreshing…`)
-          executeQuery(); setTimeout(() => setCommitMsg(null), 3000)
+          executeQuery(result.sql, activeTab); setTimeout(() => setCommitMsg(null), 3000)
         } else setCommitErr(d.error || 'Commit failed')
       })
       .catch(() => setCommitErr('Request failed'))
@@ -1926,7 +1809,7 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
       const lines = [columns.join('\t')]; rows.forEach(r => lines.push(r.map(esc).join('\t')))
       triggerDownload(lines.join('\r\n'), 'query_result.txt', 'text/plain')
     } else if (fmt === 'sql') {
-      const tbl = (() => { const m = (sqls[activeTab] || '').match(/\bFROM\s+(["'\w.]+)/i); return m ? m[1].replace(/['"]/g, '') : 'table_name' })()
+      const tbl = (() => { const m = (result.sql || '').match(/\bFROM\s+(["'\w.]+)/i); return m ? m[1].replace(/['"]/g, '') : 'table_name' })()
       triggerDownload(
         rows.map(r => {
           const vals = r.map(v => v === null ? 'NULL' : typeof v === 'number' ? v : `'${String(v).replace(/'/g, "''")}'`)
@@ -1978,67 +1861,8 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
 
         {/* Right: query editor + results */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          {/* Tab bar */}
-          <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)',
-            background: 'var(--surface)', flexShrink: 0, overflowX: 'auto' }}>
-            {tabs.map(t => (
-              <div key={t.id} onClick={() => setActiveTab(t.id)} style={{
-                display: 'flex', alignItems: 'center', gap: 4, padding: '7px 14px',
-                cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap', borderRight: '1px solid var(--border)',
-                background: activeTab === t.id ? 'var(--bg, #fff)' : 'transparent',
-                borderBottom: activeTab === t.id ? '2px solid var(--primary, #3b82f6)' : '2px solid transparent',
-                color: activeTab === t.id ? 'var(--primary, #3b82f6)' : 'var(--text-muted)',
-                fontWeight: activeTab === t.id ? 600 : 400,
-              }}>
-                {renaming?.id === t.id ? (
-                  <input autoFocus value={renaming.text}
-                    onChange={e => setRenaming(r => ({ ...r, text: e.target.value }))}
-                    onClick={e => e.stopPropagation()}
-                    onBlur={commitRename}
-                    onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setRenaming(null) }}
-                    style={{ width: 120, fontSize: 12, padding: '1px 4px' }} />
-                ) : (
-                  <span onDoubleClick={e => { e.stopPropagation(); setRenaming({ id: t.id, text: t.title }) }}
-                    title="Double-click to rename">{t.title}</span>
-                )}
-                {tabs.length > 1 && (
-                  <span onClick={e => { e.stopPropagation(); closeTab(t.id) }}
-                    style={{ marginLeft: 2, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1, padding: '0 2px' }}>×</span>
-                )}
-              </div>
-            ))}
-            {tabs.length < REMOTE_MAX_QUERY_TABS && (
-              <button onClick={addTab} style={{ border: 'none', background: 'transparent', cursor: 'pointer',
-                padding: '7px 12px', fontSize: 16, color: 'var(--text-muted)', lineHeight: 1 }} title="New tab">+</button>
-            )}
-            <div style={{ flex: 1 }} />
-            <div style={{ display: 'flex', gap: 6, padding: '4px 8px', flexShrink: 0 }}>
-              <button className="btn btn-sm" onClick={() => handleSqlChange(activeTab, '')} disabled={busy}
-                style={{ fontSize: 12, padding: '3px 10px' }}>Clear</button>
-              <button className="btn btn-primary btn-sm" onClick={executeQuery} disabled={busy || !connected}
-                style={{ fontSize: 12, padding: '3px 10px' }}>
-                {busy ? <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> Running…</> : '▶ Run'}
-              </button>
-            </div>
-          </div>
-
-          {/* SQL editor */}
-          <textarea ref={editorRef}
-            value={sqls[activeTab] || ''}
-            onChange={e => handleSqlChange(activeTab, e.target.value)}
-            onKeyDown={e => {
-              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); executeQuery(); return }
-              if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); undoSql(); return }
-              if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); redoSql(); return }
-            }}
-            onPaste={() => { clearTimeout(undoDebounce.current[activeTab]); _pushUndo(activeTab, sqls[activeTab] || '') }}
-            placeholder="Enter SQL query… (Ctrl+Enter to run)"
-            style={{
-              flex: result || eErr ? '0 0 160px' : 1, minHeight: 120,
-              background: '#141414', color: '#d4d4d4', fontFamily: 'monospace', fontSize: 13, lineHeight: 1.6,
-              padding: '10px 14px', border: 'none', outline: 'none', resize: 'none',
-              borderBottom: '1px solid var(--border)',
-            }} />
+          <SqlQueryPanel ref={queryPanel} scope="remote" appName={appName} version={version} connected={connected}
+            busy={busy} onActive={setActiveTab} runSql={(sql, tab) => executeQuery(sql, tab)} />
 
           {/* Error */}
           {eErr && <div style={{ padding: '8px 14px', fontSize: 12, color: '#f44336',
@@ -3056,8 +2880,7 @@ function TomcatAppsTab({ base, query = '', vmIp }) {
   const [actionBusy, setActionBusy] = useState(null)
   const [actionMsg,  setActionMsg]  = useState(null)
   const [showDeploy, setShowDeploy] = useState(false)
-  const [deployPath, setDeployPath] = useState('')
-  const [deployWar,  setDeployWar]  = useState('')
+  const [deployFile, setDeployFile] = useState(null)
   const [deploying,  setDeploying]  = useState(false)
   const [deployMsg,  setDeployMsg]  = useState(null)
   const qs = query ? `?${query}` : ''
@@ -3091,16 +2914,16 @@ function TomcatAppsTab({ base, query = '', vmIp }) {
   }
 
   function doDeploy() {
-    if (!deployPath || !deployWar) return
+    if (!deployFile) return
     setDeploying(true); setDeployMsg(null)
-    fetch(`${base}/deploy`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...(vmIp ? { vm_ip: vmIp } : {}), path: deployPath, war_path: deployWar }),
-    })
+    const fd = new FormData()
+    fd.append('war', deployFile)
+    if (vmIp) fd.append('vm_ip', vmIp)
+    fetch(`${base}/deploy`, { method: 'POST', body: fd })
       .then(r => r.json())
       .then(d => {
         setDeployMsg(d.ok ? 'Deployed successfully' : (d.error || 'Deploy failed'))
-        if (d.ok) { setDeployPath(''); setDeployWar(''); setTimeout(load, 1000) }
+        if (d.ok) { setDeployFile(null); setTimeout(load, 1000) }
       })
       .catch(() => setDeployMsg('Request failed'))
       .finally(() => setDeploying(false))
@@ -3148,17 +2971,15 @@ function TomcatAppsTab({ base, query = '', vmIp }) {
           <div style={{ marginBottom: 12, padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: 6, border: '1px solid var(--border-color)' }}>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Deploy New Application</div>
             {deployMsg && <div style={{ fontSize: 12, marginBottom: 6, color: deployMsg.includes('success') ? '#2e7d32' : '#c62828' }}>{deployMsg}</div>}
-            <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 90, flexShrink: 0 }}>Context Path</span>
-              <input value={deployPath} onChange={e => setDeployPath(e.target.value)}
-                placeholder="/myapp" style={inputStyle} />
-            </div>
             <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 90, flexShrink: 0 }}>WAR Path (VM)</span>
-              <input value={deployWar} onChange={e => setDeployWar(e.target.value)}
-                placeholder="/home/user/app.war" style={inputStyle} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 90, flexShrink: 0 }}>WAR file to deploy</span>
+              <input type="file" accept=".war" onChange={e => setDeployFile(e.target.files?.[0] || null)}
+                style={{ ...inputStyle, padding: 2 }} />
             </div>
-            <button className="btn btn-primary btn-sm" onClick={doDeploy} disabled={deploying || !deployPath || !deployWar} style={{ fontSize: 11 }}>
+            {deployFile && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+              Context path: <code>{deployFile.name.replace(/\.war$/i, '') === 'ROOT' ? '/' : '/' + deployFile.name.replace(/\.war$/i, '')}</code> (from file name, like Tomcat Manager)
+            </div>}
+            <button className="btn btn-primary btn-sm" onClick={doDeploy} disabled={deploying || !deployFile} style={{ fontSize: 11 }}>
               {deploying ? <><span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }} /> Deploying…</> : '▶ Deploy'}
             </button>
           </div>
@@ -3650,13 +3471,13 @@ function SharedRequestBuilder({ svc, op, type, appName, onClose }) {
   }
 
   function loadSavedList() {
-    fetch(`/api/local-app/${appName}/api-requests?version=${encodeURIComponent(version)}&api=${encodeURIComponent(apiName)}`)
+    fetch(`/api/local-app/${appName}/api-requests?scope=remote&version=${encodeURIComponent(version)}&api=${encodeURIComponent(apiName)}&method=${encodeURIComponent(op)}`)
       .then(r => r.json()).then(d => { if (d.ok) setSavedList(d.requests || []) }).catch(() => {})
   }
 
   function doLoad(id) {
     setLoadMenuOpen(false)
-    fetch(`/api/local-app/${appName}/api-requests/load?version=${encodeURIComponent(version)}&api=${encodeURIComponent(apiName)}&id=${encodeURIComponent(id)}`)
+    fetch(`/api/local-app/${appName}/api-requests/load?scope=remote&version=${encodeURIComponent(version)}&api=${encodeURIComponent(apiName)}&id=${encodeURIComponent(id)}`)
       .then(r => r.json()).then(d => { if (d.ok) { fromXml(d.content); setLoadedId(id) } }).catch(() => {})
   }
 
@@ -3665,7 +3486,7 @@ function SharedRequestBuilder({ svc, op, type, appName, onClose }) {
     const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`
     fetch(`/api/local-app/${appName}/api-requests`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version, api: apiName, id: `${op}_${ts}`, content: toXml() }),
+      body: JSON.stringify({ scope: 'remote', version, api: apiName, id: `${op}_${ts}`, content: toXml() }),
     })
       .then(r => r.json())
       .then(d => { setSaveMsg(d.ok ? { ok: true, text: `Saved as "${op}_${ts}"` } : { ok: false, text: d.error }); if (d.ok) loadSavedList(); setTimeout(() => setSaveMsg(null), 3000) })
@@ -3675,7 +3496,7 @@ function SharedRequestBuilder({ svc, op, type, appName, onClose }) {
   function doDelete(id, { clearLoaded = false } = {}) {
     fetch(`/api/local-app/${appName}/api-requests`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version, api: apiName, id }),
+      body: JSON.stringify({ scope: 'remote', version, api: apiName, id }),
     })
       .then(r => r.json()).then(d => { if (d.ok) { loadSavedList(); if (clearLoaded) doClear() } }).catch(() => {})
   }
