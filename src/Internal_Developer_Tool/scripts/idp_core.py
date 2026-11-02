@@ -7384,6 +7384,96 @@ def create_flask_app():
         except Exception:
             pass
 
+    # ── Docker explorer: browse a container's file system, export / import with docker cp ──────────────
+    def _dk_local_path(p, default_downloads=True):
+        p = (p or "").strip()
+        if not p:
+            p = "~/Downloads" if default_downloads else "~"
+        return Path(os.path.expandvars(p)).expanduser()
+
+    @app.route("/api/docker/containers/<name>/fs", methods=["GET"])
+    def api_docker_fs_list(name):
+        import subprocess as _sub
+        path = (request.args.get("path") or "/").strip() or "/"
+        try:
+            # -p marks directories with '/', -L follows links so a link to a folder opens like a folder
+            r = _sub.run(["docker", "exec", name, "sh", "-c", 'cd -- "$1" 2>&1 && pwd -P && ls -1ApL 2>/dev/null', "sh", path],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=0x08000000)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+        out = r.stdout.splitlines()
+        if r.returncode != 0 or not out:
+            msg = (r.stdout + r.stderr).strip() or "Cannot list this folder"
+            if "is not running" in msg or "No such container" in msg:
+                msg = "The container is not running - start it to browse its files."
+            return jsonify({"ok": False, "error": msg})
+        cwd, items = out[0], []
+        for ln in out[1:]:
+            if not ln:
+                continue
+            isdir = ln.endswith("/")
+            items.append({"name": ln[:-1] if isdir else ln, "dir": isdir})
+        items.sort(key=lambda i: (not i["dir"], i["name"].lower()))
+        return jsonify({"ok": True, "path": cwd, "items": items})
+
+    @app.route("/api/docker/containers/<name>/fs/export", methods=["POST"])
+    def api_docker_fs_export(name):
+        import subprocess as _sub
+        b = request.get_json() or {}
+        src = (b.get("path") or "").strip()
+        if not src:
+            return jsonify({"ok": False, "error": "path required"})
+        dest = _dk_local_path(b.get("dest"))
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            r = _sub.run(["docker", "cp", f"{name}:{src}", str(dest)], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=600, creationflags=0x08000000)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+        if r.returncode != 0:
+            return jsonify({"ok": False, "error": (r.stderr or r.stdout).strip() or "docker cp failed"})
+        return jsonify({"ok": True, "saved_to": str(dest / (src.rstrip("/").split("/")[-1] or ""))})
+
+    @app.route("/api/docker/containers/<name>/fs/import", methods=["POST"])
+    def api_docker_fs_import(name):
+        import subprocess as _sub
+        b = request.get_json() or {}
+        src = _dk_local_path(b.get("src"), default_downloads=False)
+        dest = (b.get("dest") or "").strip()
+        if not dest:
+            return jsonify({"ok": False, "error": "destination folder required"})
+        if not src.exists():
+            return jsonify({"ok": False, "error": f"{src} does not exist"})
+        try:
+            # "<dest>/." semantics: copy into the folder (a directory keeps its own name)
+            r = _sub.run(["docker", "cp", str(src), f"{name}:{dest.rstrip('/')}/"], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", timeout=600, creationflags=0x08000000)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+        if r.returncode != 0:
+            return jsonify({"ok": False, "error": (r.stderr or r.stdout).strip() or "docker cp failed"})
+        return jsonify({"ok": True})
+
+    @app.route("/api/docker/local-fs", methods=["GET"])
+    def api_docker_local_fs():
+        """List a folder of this machine (used to pick the export folder / import source)."""
+        p = _dk_local_path(request.args.get("path"))
+        try:
+            p = p.resolve()
+            if not p.is_dir():
+                return jsonify({"ok": False, "error": f"{p} is not a folder"})
+            items = []
+            for c in p.iterdir():
+                try:
+                    items.append({"name": c.name, "dir": c.is_dir()})
+                except OSError:
+                    pass
+            items.sort(key=lambda i: (not i["dir"], i["name"].lower()))
+            parent = str(p.parent) if p.parent != p else ""
+            return jsonify({"ok": True, "path": str(p), "parent": parent, "items": items})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
     @app.route("/api/docker/terminal/open", methods=["POST"])
     def api_docker_terminal_open():
         import subprocess as _sub, uuid as _uuid

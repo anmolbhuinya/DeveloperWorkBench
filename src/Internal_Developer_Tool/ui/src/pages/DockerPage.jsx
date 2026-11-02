@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import DockerExplorer, { ContextMenu } from '../components/DockerExplorer'
 
 function ConfirmModal({ message, detail, confirmLabel = 'Remove', onConfirm, onCancel }) {
   return (
@@ -1026,6 +1027,8 @@ function ContainersPanel({ refreshKey, runCmd, running }) {
   const [collapsedGroups, setCollapsedGroups] = useState(new Set())
   const [stats,           setStats]           = useState({})  // { containerName: { cpu, mem, disk } }
 
+  const [rowMenu,  setRowMenu]  = useState(null)   // right-click menu on a container row
+  const [explorer, setExplorer] = useState(null)   // container whose files are open in the explorer
   const sessionsRef  = useRef(sessions)
   const termRefs     = useRef({})   // tabId → <pre> DOM el
   const addMenuRef   = useRef(null)
@@ -1245,9 +1248,15 @@ function ContainersPanel({ refreshKey, runCmd, running }) {
           const leftBorder = inCompose ? { borderLeft: COMPOSE_BORDER } : {}
           return (
             <tr key={c.id || c.name}
-              style={{ cursor: 'pointer', background: rowBg }}
-              onClick={() => openTerminal(c.name)}
-              title="Click to open terminal"
+              style={{ background: rowBg }}
+              onContextMenu={e => {
+                e.preventDefault()
+                setRowMenu({ x: e.clientX, y: e.clientY, items: [
+                  { label: '⌨ Open in Terminal', onClick: () => openTerminal(c.name) },
+                  { label: '📂 Open in Explorer', onClick: () => setExplorer(c.name) },
+                ] })
+              }}
+              title="Right-click to open in Terminal or Explorer"
             >
               <td style={{ fontWeight: 500, fontFamily: 'monospace', fontSize: 13, ...leftBorder, ...lastBorder }}>
                 {c.name}
@@ -1393,6 +1402,9 @@ function ContainersPanel({ refreshKey, runCmd, running }) {
           </div>
         )
       })()}
+
+      {rowMenu && <ContextMenu x={rowMenu.x} y={rowMenu.y} items={rowMenu.items} onClose={() => setRowMenu(null)} />}
+      {explorer && <div style={{ marginBottom: 14 }}><DockerExplorer key={explorer} container={explorer} onClose={() => setExplorer(null)} /></div>}
 
       {/* Terminal panel */}
       {tabs.length > 0 && (
