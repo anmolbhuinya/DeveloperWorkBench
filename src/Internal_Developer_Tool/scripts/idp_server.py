@@ -25568,6 +25568,16 @@ def create_flask_app():
             return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
         body   = request.get_json() or {}
         flags  = [f for f in (body.get("flags") or []) if str(f).startswith("-")]
+        _rf = (body.get("resume_from") or "").strip()
+        _fl = []
+        for f in flags:                      # keep -rf together with its module (-rf :artifactId)
+            if f.strip() == "-rf":
+                if _rf:
+                    _fl.append("-rf")
+                    _fl.append(_rf if _rf.startswith(":") else ":" + _rf)
+                continue
+            _fl.append(f)
+        flags = _fl
         srcdir = _get_generic_srcdir(app_name)
         if not srcdir or not Path(srcdir).exists():
             return jsonify({"ok": False, "error": f"Clone directory not found: {srcdir or '(not configured — run env tool first)'}"})
@@ -33447,13 +33457,134 @@ def create_flask_app():
         _th_stop.Thread(target=_die, daemon=True).start()
         return jsonify({"ok": True})
 
+    _res_prev = {"t": 0.0, "cpu": {}}
+
+    _wpt_lock = _threading.Lock()
+
+    def _win_process_table():
+        with _wpt_lock:            # the ctypes prototypes are process-wide: one caller at a time
+            return _win_process_table_locked()
+
+    def _win_process_table_locked():
+        """{pid: (ppid, exe, rss_bytes, cpu_seconds)} for all processes (Windows, via toolhelp + psapi; no extra packages)."""
+        import ctypes as _c
+        from ctypes import wintypes as _w
+
+        class PE(_c.Structure):
+            _fields_ = [("dwSize", _w.DWORD), ("cntUsage", _w.DWORD), ("th32ProcessID", _w.DWORD),
+                        ("th32DefaultHeapID", _c.c_size_t), ("th32ModuleID", _w.DWORD), ("cntThreads", _w.DWORD),
+                        ("th32ParentProcessID", _w.DWORD), ("pcPriClassBase", _c.c_long), ("dwFlags", _w.DWORD),
+                        ("szExeFile", _c.c_wchar * 260)]
+
+        class PMC(_c.Structure):
+            _fields_ = [("cb", _w.DWORD), ("PageFaultCount", _w.DWORD), ("PeakWorkingSetSize", _c.c_size_t),
+                        ("WorkingSetSize", _c.c_size_t), ("QuotaPeakPagedPoolUsage", _c.c_size_t),
+                        ("QuotaPagedPoolUsage", _c.c_size_t), ("QuotaPeakNonPagedPoolUsage", _c.c_size_t),
+                        ("QuotaNonPagedPoolUsage", _c.c_size_t), ("PagefileUsage", _c.c_size_t),
+                        ("PeakPagefileUsage", _c.c_size_t)]
+
+        k32, ps = _c.windll.kernel32, _c.windll.psapi
+        k32.CreateToolhelp32Snapshot.restype = _c.c_void_p
+        k32.OpenProcess.restype = _c.c_void_p
+        k32.OpenProcess.argtypes = [_w.DWORD, _w.BOOL, _w.DWORD]
+        k32.CloseHandle.argtypes = [_c.c_void_p]
+        k32.GetProcessTimes.argtypes = [_c.c_void_p] + [_c.POINTER(_w.FILETIME)] * 4
+        ps.GetProcessMemoryInfo.argtypes = [_c.c_void_p, _c.POINTER(PMC), _w.DWORD]
+        k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [_c.c_void_p, _c.POINTER(PE)]
+        snap = k32.CreateToolhelp32Snapshot(2, 0)
+        out = {}
+        e = PE()
+        e.dwSize = _c.sizeof(PE)
+        ok = k32.Process32FirstW(snap, _c.byref(e))
+        while ok:
+            pid = e.th32ProcessID
+            rss, cpu = 0, 0.0
+            h = k32.OpenProcess(0x1000 | 0x0010, False, pid)    # QUERY_LIMITED_INFORMATION | VM_READ
+            if not h:
+                h = k32.OpenProcess(0x1000, False, pid)
+            if h:
+                m = PMC()
+                m.cb = _c.sizeof(PMC)
+                if ps.GetProcessMemoryInfo(h, _c.byref(m), m.cb):
+                    rss = m.WorkingSetSize
+                a, b, kt, ut = _w.FILETIME(), _w.FILETIME(), _w.FILETIME(), _w.FILETIME()
+                if k32.GetProcessTimes(h, _c.byref(a), _c.byref(b), _c.byref(kt), _c.byref(ut)):
+                    cpu = (((kt.dwHighDateTime << 32) | kt.dwLowDateTime) + ((ut.dwHighDateTime << 32) | ut.dwLowDateTime)) / 1e7
+                k32.CloseHandle(h)
+            out[pid] = (e.th32ParentProcessID, e.szExeFile, rss, cpu)
+            ok = k32.Process32NextW(snap, _c.byref(e))
+        k32.CloseHandle(snap)
+        return out
+
+    @app.route("/api/system/resources", methods=["GET"])
+    def api_system_resources():
+        """Memory / CPU used by the Workbench server and everything it started (builds, deploys, tools)."""
+        import json as _j, time as _t
+        if sys.platform != "win32":
+            return jsonify({"ok": False, "error": "Windows only"})
+        try:
+            table = _win_process_table()
+            roots = {os.getpid()}
+            for info in (_DET_DIR.glob("*.json") if _DET_DIR.is_dir() else []):     # detached builds outlive a restart
+                try:
+                    pid = _j.loads(info.read_text(encoding="utf-8")).get("pid")
+                    if pid in table:
+                        roots.add(pid)
+                except Exception:
+                    pass
+            mine, grew = set(roots), True
+            while grew:
+                grew = False
+                for pid, (ppid, _n, _r, _c) in table.items():
+                    if ppid in mine and pid not in mine and pid != 0:
+                        mine.add(pid); grew = True
+            now = _t.time()
+            dt = now - _res_prev["t"] if _res_prev["t"] else 0
+            ncpu = os.cpu_count() or 1
+            procs, tot_cpu, tot_mem = [], 0.0, 0
+            newcpu = {}
+            for pid in mine:
+                if pid not in table:
+                    continue
+                _pp, exe, rss, cpu = table[pid]
+                newcpu[pid] = cpu
+                prev = _res_prev["cpu"].get(pid)
+                pct = max(0.0, (cpu - prev) / dt / ncpu * 100) if (prev is not None and dt > 0) else 0.0
+                tot_cpu += pct; tot_mem += rss
+                procs.append({"pid": pid, "name": exe, "mem_mb": round(rss / 1048576, 1), "cpu": round(pct, 1)})
+            _res_prev["t"], _res_prev["cpu"] = now, newcpu
+            procs.sort(key=lambda p: p["mem_mb"], reverse=True)
+            tot_ram = None
+            try:
+                import ctypes as _c
+
+                class MS(_c.Structure):
+                    _fields_ = [("l", _c.c_ulong), ("load", _c.c_ulong), ("tp", _c.c_ulonglong), ("ap", _c.c_ulonglong),
+                                ("tpf", _c.c_ulonglong), ("apf", _c.c_ulonglong), ("tv", _c.c_ulonglong), ("av", _c.c_ulonglong),
+                                ("ae", _c.c_ulonglong)]
+                ms = MS(); ms.l = _c.sizeof(MS)
+                _c.windll.kernel32.GlobalMemoryStatusEx(_c.byref(ms))
+                tot_ram = ms.tp
+            except Exception:
+                pass
+            return jsonify({"ok": True, "pid": os.getpid(), "mem_mb": round(tot_mem / 1048576, 1), "cpu": round(tot_cpu, 1), "cpus": ncpu,
+                            "ram_mb": round(tot_ram / 1048576) if tot_ram else None, "count": len(procs), "processes": procs[:12]})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
     @app.route("/api/system/restart", methods=["POST"])
     def api_system_restart():
         """Restart the Developer WorkBench server (the green button in the header). Detached jobs keep running."""
         import threading as _th_re
         port = request.host.rsplit(":", 1)[-1] if ":" in request.host else "5556"
         helper = ("import subprocess,sys,time,pathlib\n"
-                  "time.sleep(3)\n"
+                  "import socket\n"
+                  "for _ in range(40):\n"
+                  "    s=socket.socket()\n"
+                  "    try:\n"
+                  "        s.bind(('127.0.0.1',int(sys.argv[3])));s.close();break\n"
+                  "    except OSError:\n"
+                  "        s.close();time.sleep(0.25)\n"
                   "p=subprocess.Popen([sys.argv[1],sys.argv[2],'--server','--port',sys.argv[3]],creationflags=0x208,"
                   "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)\n"
                   "pathlib.Path(sys.argv[4]).write_text(str(p.pid))\n")
@@ -33462,7 +33593,7 @@ def create_flask_app():
 
         def _die():
             import time as _t_re
-            _t_re.sleep(0.8)
+            _t_re.sleep(0.4)
             os._exit(0)
         _th_re.Thread(target=_die, daemon=True).start()
         return jsonify({"ok": True})

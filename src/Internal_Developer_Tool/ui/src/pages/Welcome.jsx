@@ -124,6 +124,50 @@ function ActivityBar({ localBuilds, remoteBuilds, workflowRuns, navigate }) {
   )
 }
 
+function ResourcePanel() {
+  const [d, setD] = useState(null)
+  useEffect(() => {
+    let stop = false, busy = false
+    const load = () => {
+      if (busy || document.hidden) return              // never stack requests on a busy server
+      busy = true
+      fetch('/api/system/resources').then(r => r.json()).then(x => { if (!stop) setD(x) }).catch(() => {}).finally(() => { busy = false })
+    }
+    load()
+    const id = setInterval(load, 5000)
+    return () => { stop = true; clearInterval(id) }
+  }, [])
+  const bar = (pct, color) => (
+    <div style={{ height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+      <div style={{ width: `${Math.min(100, Math.max(0, pct))}%`, height: '100%', background: color, transition: 'width .4s' }} />
+    </div>
+  )
+  const box = { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 18px', width: 280, flexShrink: 0, alignSelf: 'flex-start' }
+  if (!d || !d.ok) return <div style={box}><div style={{ fontWeight: 600, marginBottom: 6 }}>Workbench Resources</div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d ? (d.error || 'Unavailable') : 'Loading…'}</div></div>
+  const memPct = d.ram_mb ? d.mem_mb / d.ram_mb * 100 : 0
+  return (
+    <div style={box}>
+      <div style={{ fontWeight: 600, marginBottom: 12 }}>Workbench Resources</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+        <span style={{ color: 'var(--text-muted)' }}>CPU</span><b>{d.cpu.toFixed(1)}%</b>
+      </div>
+      {bar(d.cpu, 'var(--primary)')}
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, margin: '12px 0 4px' }}>
+        <span style={{ color: 'var(--text-muted)' }}>Memory</span>
+        <b>{d.mem_mb >= 1024 ? (d.mem_mb / 1024).toFixed(2) + ' GB' : Math.round(d.mem_mb) + ' MB'}{d.ram_mb ? ` (${memPct.toFixed(1)}%)` : ''}</b>
+      </div>
+      {bar(memPct, '#a371f7')}
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', margin: '12px 0 6px' }}>{d.count} processes · top by memory</div>
+      {d.processes.slice(0, 6).map(p => (
+        <div key={p.pid} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }} title={`PID ${p.pid}`}>{p.name}</span>
+          <span style={{ color: 'var(--text-muted)' }}>{p.cpu.toFixed(1)}% · {Math.round(p.mem_mb)} MB</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function Welcome() {
   const navigate = useNavigate()
   const [localBuilds,  setLocalBuilds]  = useState(0)
@@ -210,6 +254,7 @@ export default function Welcome() {
         navigate={navigate}
       />
 
+      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <div className="welcome-sections">
         {CARDS.map(card => (
           <div
@@ -227,6 +272,8 @@ export default function Welcome() {
             }
           </div>
         ))}
+      </div>
+      <ResourcePanel />
       </div>
     </div>
   )

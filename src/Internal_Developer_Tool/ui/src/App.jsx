@@ -82,13 +82,16 @@ export default function App() {
   const [confirmRestart, setConfirmRestart] = useState(false)
   const restartWorkbench = () => {
     setRestarting(true)
-    fetch('/api/system/restart', { method: 'POST' }).catch(() => {})
     const t0 = Date.now()
+    let oldPid = null
+    fetch('/api/system/resources', { cache: 'no-store' }).then(r => r.json()).then(d => { oldPid = d.pid }).catch(() => {})
+      .finally(() => fetch('/api/system/restart', { method: 'POST' }).catch(() => {}))
     const iv = setInterval(() => {
-      if (Date.now() - t0 < 4000) return                       // let the old server go away first
-      fetch('/api/setup/config', { cache: 'no-store' }).then(r => { if (r.ok) { clearInterval(iv); window.location.reload() } }).catch(() => {})
+      if (Date.now() - t0 < 1000) return
+      fetch('/api/system/resources', { cache: 'no-store' }).then(r => r.json())
+        .then(d => { if (d.pid && d.pid !== oldPid) { clearInterval(iv); window.location.reload() } }).catch(() => {})
       if (Date.now() - t0 > 90000) { clearInterval(iv); setRestarting(false) }
-    }, 1500)
+    }, 500)
   }
   const newBuild = useNewBuildDetector()
   return (
