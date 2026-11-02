@@ -31430,6 +31430,8 @@ def create_flask_app():
     def api_it_config_get(scope, app_name):
         modules, props = _it_load(scope, app_name)
         src = _it_srcdir(app_name)
+        if src and Path(src).exists():      # build the class index in the background while the tab opens
+            _threading.Thread(target=lambda: _it_index(app_name, modules), daemon=True).start()
         return jsonify({"ok": True, "modules": modules, "test_properties": props, "srcdir": src,
                         "config_path": str(_it_cfg_path(scope, app_name))})
 
@@ -31511,42 +31513,73 @@ def create_flask_app():
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
+    _it_index_lock = _threading.Lock()
+
     def _it_index(app_name, modules):
-        """All test classes under <srcdir>/<module>/src/test/java for the configured modules."""
+        with _it_index_lock:
+            return _it_index_locked(app_name, modules)
+
+    def _it_index_locked(app_name, modules):
+        """All test classes under <srcdir>/<module>/src/test/java for the configured modules.
+        Thousands of files: they are read in parallel and the result is kept for 15 minutes (Rescan refreshes it)."""
         import time as _tm
+        from concurrent.futures import ThreadPoolExecutor as _TPE
         src = _it_srcdir(app_name)
         key = (src, tuple(modules))
         hit = _it_index_cache.get(key)
-        if hit and _tm.time() - hit[0] < 120:
+        if hit and _tm.time() - hit[0] < 900:
             return hit[1]
-        out = []
+        files = []
         for mod in modules:
             troot = Path(src) / mod / "src" / "test" / "java"
-            if not troot.is_dir():
-                continue
-            for f in troot.rglob("*.java"):
-                try:
-                    txt = f.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    continue
-                if "@Test" not in txt and not _jre.search(r"void\s+test\w*\s*\(", txt):
-                    continue
-                if not _jre.search(r"\bclass\s+" + _jre.escape(f.stem) + r"\b", txt) or _jre.search(r"\babstract\s+class\s+" + _jre.escape(f.stem) + r"\b", txt):
-                    continue
-                pm = _jre.search(r"^\s*package\s+([\w.]+)\s*;", txt, _jre.M)
-                out.append({"cls": f.stem, "fqcn": (pm.group(1) + "." if pm else "") + f.stem,
-                            "module": mod, "path": str(f.relative_to(src)).replace("\\", "/")})
+            if troot.is_dir():
+                files.extend((mod, f) for f in troot.rglob("*.java"))
+
+        def _one(mf):
+            mod, f = mf
+            try:
+                raw = f.read_bytes()
+            except Exception:
+                return None
+            # cheap byte searches first: the regexes below are slow over ~140 MB of test sources
+            if b"@Test" not in raw and b"void test" not in raw:
+                return None
+            stem = f.stem
+            if (b"class " + stem.encode()) not in raw:
+                return None
+            txt = raw.decode("utf-8", errors="replace")
+            if "@Test" not in txt and not _jre.search(r"void\s+test\w*\s*\(", txt):
+                return None
+            if not _jre.search(r"\bclass\s+" + _jre.escape(stem) + r"\b", txt):
+                return None
+            if "abstract" in txt and _jre.search(r"\babstract\s+class\s+" + _jre.escape(stem) + r"\b", txt):
+                return None
+            pm = _jre.search(r"^\s*package\s+([\w.]+)\s*;", txt[:8192], _jre.M)
+            return {"cls": stem, "fqcn": (pm.group(1) + "." if pm else "") + stem,
+                    "module": mod, "path": str(f.relative_to(src)).replace("\\", "/")}
+
+        with _TPE(max_workers=16) as ex:
+            out = [r for r in ex.map(_one, files) if r]
         out.sort(key=lambda c: c["cls"].lower())
         _it_index_cache[key] = (_tm.time(), out)
         return out
 
+    _it_changes_cache = {}
+
     def _it_changes(app_name):
         """Test files added/modified on the current feature branch (vs its merge-base with master/main,
         or `base_branch` from it_config settings) plus uncommitted work.
-        Returns ({repo-relative path: {"whole": bool, "ranges": [(start, end)]}}, base label)."""
+        Returns ({repo-relative path: {"whole": bool, "ranges": [(start, end)]}}, base label).
+        git is slow on this repo (seconds per command), so the commands run in parallel, the diff is limited to
+        test sources, and the result is cached for a short time (Rescan clears it)."""
+        import time as _tm
+        from concurrent.futures import ThreadPoolExecutor as _TPE
         src = _it_srcdir(app_name)
         if not src or not Path(src).exists():
             return {}, ""
+        hit = _it_changes_cache.get(src)
+        if hit and _tm.time() - hit[0] < 90:
+            return hit[1]
         rc, root = _git(src, "rev-parse", "--show-toplevel")
         if rc != 0:
             return {}, ""
@@ -31557,18 +31590,24 @@ def create_flask_app():
             prefix = "" if prefix == "." else prefix + "/"
         except ValueError:
             pass
-        best = None
-        for cand in ("origin/master", "origin/main"):
-            rc1, mb = _git(root, "merge-base", "HEAD", cand)
+        spec = ":(glob)**/src/test/**/*.java"
+
+        def _cand(c):
+            rc1, mb = _git(root, "merge-base", "HEAD", c)
             if rc1 != 0:
-                continue
-            rc2, names = _git(root, "diff", "--name-only", mb.strip())
-            n = len(names.splitlines()) if rc2 == 0 else 10**9
-            if best is None or n < best[0]:
-                best = (n, mb.strip(), cand)
-        if best is None:
+                return None
+            rc2, names = _git(root, "diff", "--name-only", mb.strip(), "--", spec)
+            return (len(names.splitlines()) if rc2 == 0 else 10**9, mb.strip(), c)
+
+        with _TPE(max_workers=3) as ex:
+            f_cands = [ex.submit(_cand, c) for c in ("origin/master", "origin/main")]
+            f_untr = ex.submit(_git, root, "ls-files", "--others", "--exclude-standard", "--", spec)
+            cands = [x for x in (f.result() for f in f_cands) if x]
+            _, untracked = f_untr.result()
+        if not cands:
             return {}, ""
-        rc, diff = _git(root, "diff", "-U0", "--no-color", best[1], timeout=120)
+        best = min(cands, key=lambda x: x[0])
+        rc, diff = _git(root, "diff", "-U0", "--no-color", best[1], "--", spec, timeout=120)
         out, cur, whole = {}, None, False
 
         def _rel(p):
@@ -31586,22 +31625,24 @@ def create_flask_app():
             elif ln.startswith("@@") and cur is not None:
                 m = _jre.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", ln)
                 if m:
-                    s = int(m.group(1))
-                    c = int(m.group(2)) if m.group(2) is not None else 1
-                    cur["ranges"].append((s, s + max(c, 1) - 1))
-        # `--- /dev/null` precedes `+++ b/…`, so whole is already set when the file entry is created
-        _, untracked = _git(root, "ls-files", "--others", "--exclude-standard")
+                    s0 = int(m.group(1))
+                    c0 = int(m.group(2)) if m.group(2) is not None else 1
+                    cur["ranges"].append((s0, s0 + max(c0, 1) - 1))
+        # `--- /dev/null` precedes `+++ b/...`, so whole is already set when the file entry is created
         for p in untracked.splitlines():
             p = _rel(p.strip())
             if p.endswith(".java") and "/src/test/" in p:
                 out[p] = {"whole": True, "ranges": []}
-        return out, best[2]
+        res = (out, best[2])
+        _it_changes_cache[src] = (_tm.time(), res)
+        return res
 
     @app.route("/api/it/<scope>/<app_name>/classes", methods=["GET"])
     def api_it_classes(scope, app_name):
         modules, _ = _it_load(scope, app_name)
         if request.args.get("refresh"):
             _it_index_cache.clear()
+            _it_changes_cache.clear()
         if not _it_srcdir(app_name) or not Path(_it_srcdir(app_name)).exists():
             return jsonify({"ok": False, "error": "Project source folder not found - set the branch / clone the project first."})
         toks = str(request.args.get("q") or "").lower().split()
