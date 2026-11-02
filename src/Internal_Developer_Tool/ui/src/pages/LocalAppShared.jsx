@@ -625,7 +625,11 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
   const [currentModule,  setCurrentModule]  = useState(null)
   const [moduleNum,      setModuleNum]      = useState(null)
   const [totalModules,   setTotalModules]   = useState(null)
-  const [failedModule,   setFailedModule]   = useState(null)
+  // the module of the last failed build is remembered, so Resume From stays available after a reload / Workbench restart
+  const [failedModule,   setFailedModule]   = useState(() => { try { return localStorage.getItem(`${appName}_failed_module`) || null } catch { return null } })
+  useEffect(() => {
+    try { failedModule ? localStorage.setItem(`${appName}_failed_module`, failedModule) : localStorage.removeItem(`${appName}_failed_module`) } catch {}
+  }, [failedModule, appName])
   const [phase,          setPhase]          = useState(null)
   const [retryCount,     setRetryCount]     = useState(0)
   const [maxRetries,     setMaxRetries]     = useState(5)
@@ -725,6 +729,7 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
   }, [output])
 
   useEffect(() => {
+    if (buildStatus === 'success') setFailedModule(null)       // a good build ends the resume-from state
     if (buildStatus === 'success' && branch?.branch) {
       fetch(`/api/local-app/${appName}/deployed-info`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -819,7 +824,7 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
 
           {buildFlags.length > 0 && (
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
-            {buildFlags.filter(f => f.key !== '-rf' || buildStatus === 'failed').map(f => (
+            {buildFlags.filter(f => f.key !== '-rf' || buildStatus === 'failed' || failedModule).map(f => (
               <label key={f.key} style={{
                 display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', fontSize: 13,
                 ...(f.key === '-rf' ? {
