@@ -33672,7 +33672,7 @@ def create_flask_app():
 
         def _stream(argv):
             job["output"] += "$ " + " ".join(argv) + "\n"
-            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=_vm_env())
+            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=_vm_env(), creationflags=0x08000000)
             for line in p.stdout:
                 job["output"] += line
             p.wait()
@@ -33702,7 +33702,7 @@ def create_flask_app():
 
         def _run_go_env(k):
             try:
-                return subprocess.run(["go", "env", k], capture_output=True, text=True, timeout=15).stdout.strip()
+                return subprocess.run(["go", "env", k], capture_output=True, text=True, timeout=15, creationflags=0x08000000).stdout.strip()
             except Exception:
                 return ""
 
@@ -33712,7 +33712,7 @@ def create_flask_app():
                     job["status"] = "success" if _go_steps() else "failed"
                     return
                 job["output"] += "$ " + " ".join(cmd) + "\n"
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=_vm_env())
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=_vm_env(), creationflags=0x08000000)
                 for line in p.stdout:
                     job["output"] += line
                 p.wait()
@@ -33736,6 +33736,12 @@ def create_flask_app():
          "desc": "HTTP debugging proxy (Fiddler Classic)", "exe": ["Fiddler.exe"], "known": ["%LOCALAPPDATA%\\Programs\\Fiddler\\Fiddler.exe", r"C:\Program Files (x86)\Fiddler2\Fiddler.exe"]},
         {"key": "docker", "title": "Docker Desktop", "sub": "Docker", "winget": "Docker.DockerDesktop",
          "desc": "Containers (needs administrator rights and WSL 2)", "exe": ["Docker Desktop.exe"], "known": [r"C:\Program Files\Docker\Docker\Docker Desktop.exe"]},
+        {"key": "dbeaver", "title": "DBeaver", "sub": "DBeaver", "winget": "DBeaver.DBeaver.Community",
+         "desc": "Universal database client (Community Edition)", "exe": ["dbeaver.exe"],
+         "known": [r"C:\Program Files\DBeaver\dbeaver.exe", "%LOCALAPPDATA%\\Programs\\DBeaver\\dbeaver.exe"]},
+        {"key": "jqassistant", "title": "jQAssistant", "sub": "jQAssistant", "winget": "",
+         "desc": "Code structure analysis CLI (downloaded from Maven Central; needs Java)", "exe": ["bin/jqassistant.cmd"], "known": [],
+         "zip": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/2.0.10/jqassistant-commandline-distribution-2.0.10-bin.zip"},
     ]
 
     # Version managers that can be installed by the Workbench, into Installed_Softwares\<sub>
@@ -33768,14 +33774,41 @@ def create_flask_app():
         if not d:
             return jsonify({"ok": False, "error": "Unknown software"}), 400
         winget = shutil.which("winget")
-        if not winget:
+        if not winget and not d.get("zip"):
             return jsonify({"ok": False, "error": "winget is not available on this machine (install App Installer from the Microsoft Store)"}), 400
         target = INSTALLED_SOFTWARES / d["sub"]
         jid = _uuid.uuid4().hex[:10]
         job = _vm_jobs[jid] = {"status": "running", "output": ""}
 
+        def _run_zip():
+            import urllib.request as _ur, zipfile as _zf, tempfile as _tf
+            target.mkdir(parents=True, exist_ok=True)
+            job["output"] += "Downloading %s\n" % d["zip"]
+            with _tf.TemporaryDirectory() as td:
+                zp = os.path.join(td, "pkg.zip")
+                with _ur.urlopen(d["zip"], timeout=180) as r, open(zp, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                with _zf.ZipFile(zp) as z:
+                    z.extractall(os.path.join(td, "x"))
+                root = os.path.join(td, "x")
+                kids = os.listdir(root)
+                if len(kids) == 1 and os.path.isdir(os.path.join(root, kids[0])):
+                    root = os.path.join(root, kids[0])
+                for n in os.listdir(root):
+                    dst = target / n
+                    if dst.is_dir():
+                        shutil.rmtree(dst)
+                    elif dst.exists():
+                        dst.unlink()
+                    shutil.move(os.path.join(root, n), str(dst))
+            job["output"] += "Extracted to %s\n" % target
+            job["status"] = "success"
+
         def _run():
             try:
+                if d.get("zip"):
+                    _run_zip()
+                    return
                 target.mkdir(parents=True, exist_ok=True)
                 argv = [winget, "install", "-e", "--id", d["winget"], "--accept-package-agreements", "--accept-source-agreements", "--silent"]
                 if d["key"] == "docker":
@@ -33783,7 +33816,7 @@ def create_flask_app():
                 else:
                     argv += ["--location", str(target)]
                 job["output"] += "$ " + " ".join(argv) + "\n"
-                p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+                p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", creationflags=0x08000000)
                 for line in p.stdout:
                     job["output"] += line
                 p.wait()
@@ -33811,7 +33844,7 @@ def create_flask_app():
 
         def _stream(argv, env=None, cwd=None):
             job["output"] += "$ " + " ".join(str(a) for a in argv) + "\n"
-            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env, cwd=cwd)
+            p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env, cwd=cwd, creationflags=0x08000000)
             for line in p.stdout:
                 job["output"] += line
             p.wait()
