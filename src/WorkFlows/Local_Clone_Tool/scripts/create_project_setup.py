@@ -13,7 +13,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 TOOL_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from pathlib import Path as _DwPath
 import os as _dwos
-DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Local_Clone_Tool"        # project data: <DWB>\Projects\WorkFlows\Local_Clone_Tool
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "DWB_Projects")) / "WorkFlows" / "Local_Clone_Tool"        # project data: <DWB>\DWB_Projects\WorkFlows\Local_Clone_Tool
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 HEADER_FILL = PatternFill("solid", fgColor="4472C4")

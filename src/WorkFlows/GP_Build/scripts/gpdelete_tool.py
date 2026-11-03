@@ -15,7 +15,7 @@ SCRIPT_DIR    = Path(__file__).resolve().parent
 TOOL_ROOT     = SCRIPT_DIR.parent
 from pathlib import Path as _DwPath
 import os as _dwos
-DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "GP_Build"        # project data: <DWB>\Projects\WorkFlows\GP_Build
+DATA_ROOT = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "DWB_Projects")) / "WorkFlows" / "GP_Build"        # project data: <DWB>\DWB_Projects\WorkFlows\GP_Build
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 PROJECTS_PATH = DATA_ROOT / "projects.xlsx"
 

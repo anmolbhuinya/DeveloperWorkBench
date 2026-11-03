@@ -1,7 +1,7 @@
 // Developer Workbench installer (self-contained: ships its own Python runtime).
 //
 // Asks for the installation directory (default ~\DWB), creates AI_Workspace, DeveloperWorkBench, HE_UI_Clients,
-// Projects and Workspace, unpacks the Workbench + a private Python into <dir>\DeveloperWorkBench, runs "setupalltools",
+// DWB_Projects and DWB_Workspace, unpacks the Workbench + a private Python into <dir>\DeveloperWorkBench, runs "setupalltools",
 // points every command wrapper in ~\.local\bin (.cmd and bash) at the new location, adds Start Menu / Desktop shortcuts
 // (no terminal window) and an entry in Windows "Installed apps" (per user, no admin rights needed).
 //
@@ -23,7 +23,7 @@ using Microsoft.Win32;
 
 static class Program
 {
-    public static readonly string[] Folders = { "AI_Workspace", "DeveloperWorkBench", "HE_UI_Clients", "Installed_Softwares", "Projects", "Workspace", "SQL_Queries", "API_Contracts" };
+    public static readonly string[] Folders = { "AI_Workspace", "DeveloperWorkBench", "HE_UI_Clients", "Installed_Softwares", "DWB_Projects", "DWB_Workspace", "SQL_Queries", "API_Contracts" };
 
     [STAThread]
     static int Main(string[] args)

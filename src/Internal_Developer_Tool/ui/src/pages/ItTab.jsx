@@ -7,8 +7,10 @@ const _itCache = {}
 
 // IT tab: search test classes of the configured test modules, list their methods and run them with Maven.
 // Runs are detached server-side jobs, so they keep going across Workbench restarts until aborted.
-export default function ItTab({ appName, scope = 'local' }) {
+export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
   const API = `/api/it/${scope}/${appName}`
+  // remote apps run everything on the VM, so every call carries its IP
+  const vq = (path) => scope === 'remote' ? `${path}${path.includes('?') ? '&' : '?'}vm_ip=${encodeURIComponent(vmIp)}` : path
   const jobKey = `it/${scope}/${appName}`
   const c0 = _itCache[jobKey] || {}
 
@@ -42,10 +44,10 @@ export default function ItTab({ appName, scope = 'local' }) {
 
   const loadCfg = useCallback(async () => {
     try {
-      const d = await (await fetch(`${API}/config`)).json()
+      const d = await (await fetch(vq(`${API}/config`))).json()
       if (d.ok) { setCfg(d); setDraftMods((d.modules || []).join('\n')); setDraftProps(d.test_properties || '') }
     } catch { /* ignore */ }
-  }, [API])
+  }, [API, vmIp])
 
   useEffect(() => { loadCfg() }, [loadCfg])
 
@@ -56,7 +58,7 @@ export default function ItTab({ appName, scope = 'local' }) {
     const t = setTimeout(async () => {
       setSearching(true); setLoadErr('')
       try {
-        const d = await (await fetch(`${API}/classes?q=${encodeURIComponent(q.trim())}${recent ? '&recent=1' : ''}`)).json()
+        const d = await (await fetch(vq(`${API}/classes?q=${encodeURIComponent(q.trim())}${recent ? '&recent=1' : ''}`))).json()
         if (stale) return
         if (d.ok) {
           setClasses(d.classes); setTotal(d.total); setBase(d.base || ''); setChangedTotal(d.changed_total || 0)
@@ -65,13 +67,13 @@ export default function ItTab({ appName, scope = 'local' }) {
       if (!stale) setSearching(false)
     }, 200)
     return () => { stale = true; clearTimeout(t) }
-  }, [q, cfg, API, recent])
+  }, [q, cfg, API, recent, vmIp])
 
   async function selectClass(c) {
     setSelected(c); setMq(''); setMethods([]); setChangedMeths([]); setMethLoading(true)
     selRef.current = c.path
     try {
-      const d = await (await fetch(`${API}/methods?path=${encodeURIComponent(c.path)}`)).json()
+      const d = await (await fetch(vq(`${API}/methods?path=${encodeURIComponent(c.path)}`))).json()
       if (selRef.current !== c.path) return   // another class was clicked meanwhile
       if (d.ok) {
         // changed methods first so they are easy to spot
@@ -86,7 +88,7 @@ export default function ItTab({ appName, scope = 'local' }) {
   async function saveCfg() {
     setCfgErr('')
     try {
-      const d = await (await fetch(`${API}/config`, {
+      const d = await (await fetch(vq(`${API}/config`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modules: draftMods.split('\n').map(s => s.trim()).filter(Boolean), test_properties: draftProps }),
       })).json()
@@ -105,14 +107,14 @@ export default function ItTab({ appName, scope = 'local' }) {
   async function openProps() {
     setPropMsg(''); setPropQ('')
     try {
-      const d = await (await fetch(`${API}/properties`)).json()
+      const d = await (await fetch(vq(`${API}/properties`))).json()
       if (d.ok) { setPropRows(d.props); setPropInfo({ path: d.path, exists: d.exists }); setPropsOpen(true) }
     } catch (e) { setPropMsg(String(e)); setPropsOpen(true) }
   }
   async function saveProps() {
     setPropMsg('')
     try {
-      const d = await (await fetch(`${API}/properties`, {
+      const d = await (await fetch(vq(`${API}/properties`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ props: propRows }),
       })).json()
       setPropMsg(d.ok ? `✓ Saved ${d.count} properties (backup: .bak)` : (d.error || 'Save failed'))
@@ -153,7 +155,7 @@ export default function ItTab({ appName, scope = 'local' }) {
   async function run(c, method) {
     setErr('')
     try {
-      const d = await (await fetch(`${API}/run`, {
+      const d = await (await fetch(vq(`${API}/run`), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ module: c.module, cls: c.cls, method: method || '' }),
       })).json()
@@ -207,7 +209,7 @@ export default function ItTab({ appName, scope = 'local' }) {
         </span>
         <button onClick={() => (propsOpen ? setPropsOpen(false) : openProps())} style={{ ...btn(false), marginLeft: 'auto' }}>📝 test.properties</button>
         <button onClick={() => setCfgOpen(o => !o)} style={btn(false)}>⚙ Configure</button>
-        <button onClick={async () => { await fetch(`${API}/classes?refresh=1`); setQ(x => x + ' '); setTimeout(() => setQ(x => x.trim()), 0) }} style={btn(false)}>↻ Rescan</button>
+        <button onClick={async () => { await fetch(vq(`${API}/classes?refresh=1`)); setQ(x => x + ' '); setTimeout(() => setQ(x => x.trim()), 0) }} style={btn(false)}>↻ Rescan</button>
       </div>
 
       {cfgOpen && (
@@ -309,7 +311,7 @@ export default function ItTab({ appName, scope = 'local' }) {
                   <div style={{ fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0, wordBreak: 'break-all' }}>{selected.cls}</div>
                   <button onClick={() => run(selected)} disabled={running} style={btn(true, running)}>▶ Run class</button>
                 </div>
-                <div style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'monospace', margin: '2px 0 8px' }}>mvn test -Dtest={selected.cls} · {selected.module}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'monospace', margin: '2px 0 8px' }}>mvn test -Dtest={selected.cls} · {selected.module}{scope === 'remote' ? ' · on the VM' : ''}</div>
                 <input value={mq} onChange={e => setMq(e.target.value)} placeholder="Filter methods…" style={{ width: '100%', boxSizing: 'border-box' }} />
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{methLoading ? 'Loading methods…' : `${shownMethods.length} of ${methods.length} methods`}</div>
               </div>

@@ -56,7 +56,7 @@ def setup():
 
     from pathlib import Path as _DwPath
     import os as _dwos
-    _base = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")) / "WorkFlows" / "Remote_Regression_Jenkins_IT_Failure"
+    _base = _DwPath(_dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "DWB_Projects")) / "WorkFlows" / "Remote_Regression_Jenkins_IT_Failure"
     _base.mkdir(parents=True, exist_ok=True)
     projects = _base / "projects.xlsx"
     if projects.exists():

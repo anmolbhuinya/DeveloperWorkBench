@@ -1214,7 +1214,7 @@ export function RemoteBuildPanel({ vmIp, appName = 'payor', appLabel = 'Payor', 
   const timeLabel     = barVisible
     ? (buildStatus === 'success' ? fmtMs(elapsedMs) : eta ? `${fmtMs(elapsedMs)} / ${eta}` : fmtMs(elapsedMs))
     : null
-  const phaseLabel    = { building: 'Building…', deploying: 'Deploying…', creating_schema: 'Schema…', bootstrapping: 'Starting server…' }
+  const phaseLabel    = { building: 'Building…', deploying: 'Deploying…', creating_schema: 'Schema…', starting: 'Starting server…', bootstrapping: 'Bootstrapping…' }
 
   return (
     <>
@@ -2058,7 +2058,7 @@ export function RemoteCodeTab({ vmIp, appName, appLabel, appIcon, screenCfg, def
                 </div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <GpRunPanel appName={appName} branch={localBranch || branch?.branch} releaseBranch={branch?.release_ver || branch?.branch} />
+                <GpRunPanel appName={appName} branch={localBranch || branch?.branch} releaseBranch={(branch?.branch === 'master' || branch?.branch === 'main') ? branch.branch : (branch?.release_ver || branch?.branch)} />
               </div>
             </div>
 
@@ -2527,7 +2527,7 @@ export function RemoteAppServerTab({ vmIp, appName, displayName = 'App', serverT
 
   const busy = opStatus === 'running'
 
-  const terminalEl = opKind !== 'stop' && opKind !== 'start_debug' && (opStatus || opOutput) && (
+  const terminalEl = false && (opStatus || opOutput) && (   // op output is shown in the Tomcat server logs panel instead
     <div style={{ marginTop: 12, borderRadius: 8, overflow: 'hidden', border: '1px solid #333' }}>
       <div style={{ background: '#2d2d2d', padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid #3a3a3a' }}>
         <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#ff5f57', display: 'inline-block' }} />

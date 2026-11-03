@@ -295,7 +295,7 @@ def _projects_dir(tool_root):
     """Project data (<type>_projects.xlsx and <pid>_<ticket>.xlsx) lives in <DWB>\\Projects\\Local_Clone, not in the tool folder."""
     from pathlib import Path as _P
     import os as _o
-    base = _o.environ.get("DWB_PROJECTS") or (next((q.parent for q in _P(__file__).resolve().parents if q.name.lower() == "developerworkbench"), _P.home() / "DWB") / "Projects")
+    base = _o.environ.get("DWB_PROJECTS") or (next((q.parent for q in _P(__file__).resolve().parents if q.name.lower() == "developerworkbench"), _P.home() / "DWB") / "DWB_Projects")
     d = _P(base) / "Local_Clone" / "projects"
     d.mkdir(parents=True, exist_ok=True)
     return str(d)

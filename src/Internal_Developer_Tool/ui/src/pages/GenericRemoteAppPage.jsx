@@ -363,10 +363,10 @@ export default function GenericRemoteAppPage({
         <ScmTab appName={appName} branch={gitBranch || branch?.git_branch || branch?.branch} />
       )}
 
-      {resolvedTab === 'it' && <ItTab appName={appName} scope="remote" />}
+      {resolvedTab === 'it' && <ItTab appName={appName} scope="remote" vmIp={vmIp} />}
 
       {resolvedTab === 'gp_run' && (
-        <GpRunTab app={appName === 'pik' ? 'PIK' : appName.charAt(0).toUpperCase() + appName.slice(1)} branch={branch?.branch} releaseBranch={branch?.release_ver || branch?.branch} featureBranch={gitBranch || branch?.git_branch || branch?.branch} />
+        <GpRunTab app={appName === 'pik' ? 'PIK' : appName.charAt(0).toUpperCase() + appName.slice(1)} branch={branch?.branch} releaseBranch={(branch?.branch === 'master' || branch?.branch === 'main') ? branch.branch : (branch?.release_ver || branch?.branch)} featureBranch={gitBranch || branch?.git_branch || branch?.branch} />
       )}
 
       {!['code', 'app_server', 'database', 'queue', 'api', 'user_interface', 'scm', 'gp_run', 'it'].includes(resolvedTab) && (

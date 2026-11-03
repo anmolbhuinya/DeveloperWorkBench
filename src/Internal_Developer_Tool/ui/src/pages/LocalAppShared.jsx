@@ -5249,8 +5249,8 @@ const GP_INTEG_LS = 'gp_integ_settings'
 function GpRunModal({ gpApp, featureBranch: initFeature, destBranch: initDest, releaseBranch, onClose }) {
   const isYes = v => String(v || '').toLowerCase() === 'yes'
 
-  const computedDest = (releaseBranch && releaseBranch !== 'master' && releaseBranch !== 'main')
-    ? `release-${releaseBranch}` : ''
+  const computedDest = releaseBranch
+    ? ((releaseBranch === 'master' || releaseBranch === 'main') ? releaseBranch : `release-${releaseBranch}`) : ''
 
   const [form, setForm] = useState({
     feature_branch:       initFeature || '',
@@ -5265,8 +5265,8 @@ function GpRunModal({ gpApp, featureBranch: initFeature, destBranch: initDest, r
   const [showIntegSettings, setShowIntegSettings] = useState(false)
 
   useEffect(() => {
-    if (!destEdited && releaseBranch && releaseBranch !== 'master' && releaseBranch !== 'main') {
-      setForm(f => ({ ...f, dest_branch: `release-${releaseBranch}` }))
+    if (!destEdited && releaseBranch) {
+      setForm(f => ({ ...f, dest_branch: (releaseBranch === 'master' || releaseBranch === 'main') ? releaseBranch : `release-${releaseBranch}` }))
     }
   }, [releaseBranch])
   const [integCategories,   setIntegCategories]   = useState([])

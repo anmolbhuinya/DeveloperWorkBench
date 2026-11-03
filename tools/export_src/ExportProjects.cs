@@ -58,8 +58,8 @@ static class Exporter
     static readonly string[] SkipNames = { "README.txt", "install.txt", "package.json", "package-lock.json", ".secrets_path" };
 
 
-    // Project data used to live inside the program folder; it now lives in <DWB>\Projects\<type>.
-    // Returns the path below Projects\ for a legacy program-relative path, or null when it is not project data.
+    // Project data used to live inside the program folder; it now lives in <DWB>\DWB_Projects\<type>.
+    // Returns the path below DWB_Projects\ for a legacy program-relative path, or null when it is not project data.
     public static string MapLegacy(string rel)
     {
         string r = rel.Replace('/', '\\');
@@ -148,14 +148,14 @@ static class Exporter
             if (File.Exists(zip)) File.Delete(zip);
             List<string> files = new List<string>();
             Collect(src, src, secrets, files);
-            // project data: <DWB>\Projects (new layout) plus any legacy project files still inside the program folder (e.g. an old DeveloperPlatform)
+            // project data: <DWB>\DWB_Projects (new layout) plus any legacy project files still inside the program folder (e.g. an old DeveloperPlatform)
             List<string[]> entries = new List<string[]>();            // { zip entry, full path }
             foreach (string rel in files)
             {
                 string mapped = MapLegacy(rel);
                 entries.Add(new string[] { mapped != null ? "projects/" + mapped.Replace('\\', '/') : "data/" + rel.Replace('\\', '/'), Path.Combine(src, rel) });
             }
-            string projRoot = Path.Combine(dwbRoot, "Projects");
+            string projRoot = Path.Combine(dwbRoot, "DWB_Projects");
             if (string.IsNullOrEmpty(srcOverride) && Directory.Exists(projRoot))
                 foreach (string f in Directory.GetFiles(projRoot, "*", SearchOption.AllDirectories))
                 {

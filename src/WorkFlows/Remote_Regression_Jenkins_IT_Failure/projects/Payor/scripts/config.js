@@ -23,7 +23,7 @@ const APP_DIR = process.env.RPB_APP_DIR
 
 const CONFIG_XLSX = path.join(APP_DIR, 'config.xlsx');
 
-// Project data (projects.xlsx, <app>/projects, <app>/output, <app>/logs) lives in <DWB>\Projects\WorkFlows\Remote_Regression_Jenkins_IT_Failure
+// Project data (projects.xlsx, <app>/projects, <app>/output, <app>/logs) lives in <DWB>\DWB_Projects\WorkFlows\Remote_Regression_Jenkins_IT_Failure
 const DATA_BASE = (() => {
   let root = process.env.DWB_PROJECTS ? path.resolve(process.env.DWB_PROJECTS) : null;
   if (!root) {

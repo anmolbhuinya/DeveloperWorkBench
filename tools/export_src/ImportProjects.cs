@@ -57,8 +57,8 @@ static class Importer
     static readonly string[] TextExt = { ".json", ".sql", ".xml", ".csv", ".txt", ".properties" };
 
 
-    // Project data used to live inside the program folder; it now lives in <DWB>\Projects\<type>.
-    // Returns the path below Projects\ for a legacy program-relative path, or null when it is not project data.
+    // Project data used to live inside the program folder; it now lives in <DWB>\DWB_Projects\<type>.
+    // Returns the path below DWB_Projects\ for a legacy program-relative path, or null when it is not project data.
     public static string MapLegacy(string rel)
     {
         string r = rel.Replace('/', '\\');
@@ -199,7 +199,7 @@ static class Importer
             if (wasUp) { log("Stopping the Workbench while the data is copied ..."); Launcher(src, "--stop"); Thread.Sleep(2500); }
 
             string backup = Path.Combine(dwbRoot, "import_backup", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
-            string projRoot = Path.Combine(dwbRoot, "Projects");
+            string projRoot = Path.Combine(dwbRoot, "DWB_Projects");
             int added = 0, replaced = 0, rewritten = 0;
             using (ZipArchive z = ZipFile.OpenRead(zipPath))
             {
@@ -237,14 +237,14 @@ static class Importer
                     if (!isProj && !e.FullName.StartsWith("data/", StringComparison.Ordinal)) continue;
                     string rel = e.FullName.Substring(isProj ? 9 : 5).Replace('/', '\\');
                     string baseDir = src;
-                    if (isProj) baseDir = projRoot;                                     // <DWB>\Projects\<type>\...
+                    if (isProj) baseDir = projRoot;                                     // <DWB>\DWB_Projects\<type>\...
                     else { string mp = MapLegacy(rel); if (mp != null) { rel = mp; baseDir = projRoot; } }   // older exports kept project data inside the program folder
                     string dest = Path.GetFullPath(Path.Combine(baseDir, rel));
                     if (!dest.StartsWith(baseDir + "\\", StringComparison.OrdinalIgnoreCase)) continue;      // never write outside the installation
                     Directory.CreateDirectory(Path.GetDirectoryName(dest));
                     if (File.Exists(dest))
                     {
-                        string b = Path.Combine(backup, isProj || baseDir == projRoot ? "Projects" : "DeveloperWorkBench", rel);
+                        string b = Path.Combine(backup, isProj || baseDir == projRoot ? "DWB_Projects" : "DeveloperWorkBench", rel);
                         Directory.CreateDirectory(Path.GetDirectoryName(b));
                         File.Copy(dest, b, true);
                         replaced++;

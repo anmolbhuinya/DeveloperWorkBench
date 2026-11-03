@@ -1481,7 +1481,7 @@ export function GpRunTab({ app, branch, releaseBranch: _releaseBranchProp, featu
       setLocalReleaseBranch(null)
       fetch(`/api/local-app/${appKey}/current-branch`)
         .then(r => r.json())
-        .then(d => { if (d.ok) setLocalReleaseBranch((d.branch === 'master' || d.branch === 'main') ? d.branch : (d.release_ver || d.branch)) })
+        .then(d => { if (d.ok) { const _m = b => b === 'master' || b === 'main'; setLocalReleaseBranch(_m(d.set_branch) ? d.set_branch : (_m(d.branch) ? d.branch : (d.release_ver || d.branch))) } })
         .catch(() => {})
     }
     if (!_featureBranchProp) {

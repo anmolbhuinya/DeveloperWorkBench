@@ -32,7 +32,7 @@ def _expand(v):
 
 def _dwb_projects(*kind):
     """<DWB>\\Projects\\<kind>  (DWB_PROJECTS overrides the Projects folder)."""
-    base = _dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "Projects")
+    base = _dwos.environ.get("DWB_PROJECTS") or (next((_p.parent for _p in _DwPath(__file__).resolve().parents if _p.name.lower() == "developerworkbench"), _DwPath.home() / "DWB") / "DWB_Projects")
     return _DwPath(base).joinpath(*kind)
 
 HERE = Path(__file__).resolve().parent
