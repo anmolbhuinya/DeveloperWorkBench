@@ -4,6 +4,34 @@ const field = { padding: '5px 8px', fontSize: 13, border: '1px solid var(--borde
 const th = { textAlign: 'left', padding: '4px 8px', fontSize: 11, background: 'var(--surface)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0 }
 const td = { padding: '3px 8px', fontSize: 12, borderBottom: '1px solid var(--border)' }
 
+// Server-side folder picker (the browser cannot reveal real folder paths)
+function FolderPicker({ start, onPick, onCancel }) {
+  const [st, setSt] = useState({ path: '', parent: null, dirs: [], has_pom: false })
+  const [err, setErr] = useState('')
+  const go = p => fetch(`/api/jqassistant/browse?path=${encodeURIComponent(p || '')}`).then(r => r.json())
+    .then(d => { if (d.ok) { setSt(d); setErr('') } else setErr(d.error) }).catch(() => setErr('Request failed'))
+  useEffect(() => { go(start) }, [])
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="card" style={{ width: 560, maxHeight: '80vh', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontWeight: 700 }}>Select project folder</div>
+        <div style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>{st.path || 'This PC'}{st.has_pom && <span style={{ color: 'var(--success)' }}> · Maven project (pom.xml)</span>}</div>
+        {err && <div className="alert alert-danger">{err}</div>}
+        <div style={{ flex: 1, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, minHeight: 220 }}>
+          {st.path !== '' && <div style={{ padding: '5px 10px', cursor: 'pointer', fontSize: 13 }} onClick={() => go(st.parent || '')}>⬆ ..</div>}
+          {st.dirs.map(d => <div key={d.path} style={{ padding: '5px 10px', cursor: 'pointer', fontSize: 13, borderTop: '1px solid var(--border)' }} onClick={() => go(d.path)}>📁 {d.name}</div>)}
+          {st.dirs.length === 0 && !err && <div style={{ padding: 10, fontSize: 12, color: 'var(--text-muted)' }}>No sub-folders</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          {st.home && st.path === '' && <button className="btn" onClick={() => go(st.home)}>Home</button>}
+          <button className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn btn-primary" disabled={!st.path} onClick={() => onPick(st.path)}>Select this folder</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function JqassistantPanel({ onClose }) {
   const [tab, setTab] = useState('code')
   const [cfg, setCfg] = useState({ apps: [], installed: true, version: '', results: {} })
@@ -16,6 +44,7 @@ export default function JqassistantPanel({ onClose }) {
   const [sbomApps, setSbomApps] = useState({})
   const [sbom, setSbom] = useState(null)
   const timer = useRef(null)
+  const [pickIdx, setPickIdx] = useState(null)   // row whose folder is being browsed
 
   const load = () => fetch('/api/jqassistant/config').then(r => r.json()).then(d => {
     if (d.ok) { setCfg(d); setApps(d.apps.length ? d.apps : [{ name: '', path: '' }]); if (!sel && d.apps[0]) setSel(d.apps[0].name) }
@@ -69,7 +98,8 @@ export default function JqassistantPanel({ onClose }) {
           {apps.map((a, i) => (
             <div key={i} style={{ display: 'flex', gap: 8 }}>
               <input style={{ ...field, width: 180 }} placeholder="Application name" value={a.name} onChange={e => setApps(x => x.map((y, j) => j === i ? { ...y, name: e.target.value } : y))} />
-              <input style={{ ...field, flex: 1 }} placeholder="Folder, e.g. C:\Users\me\hebb\hrp.payer.core-master" value={a.path} onChange={e => setApps(x => x.map((y, j) => j === i ? { ...y, path: e.target.value } : y))} />
+              <input style={{ ...field, flex: 1 }} placeholder="Folder - use Browse… to pick the project" value={a.path} onChange={e => setApps(x => x.map((y, j) => j === i ? { ...y, path: e.target.value } : y))} />
+              <button className="btn" onClick={() => setPickIdx(i)}>Browse…</button>
               <button className="btn" onClick={() => setApps(x => x.filter((_, j) => j !== i))}>Remove</button>
             </div>
           ))}
@@ -79,6 +109,13 @@ export default function JqassistantPanel({ onClose }) {
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{msg}</span>
           </div>
         </div>
+      )}
+      {pickIdx !== null && (
+        <FolderPicker start={apps[pickIdx]?.path} onCancel={() => setPickIdx(null)}
+          onPick={p => {
+            setApps(x => x.map((y, j) => j === pickIdx ? { ...y, path: p, name: y.name || p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() } : y))
+            setPickIdx(null)
+          }} />
       )}
 
       {tab === 'analyze' && (

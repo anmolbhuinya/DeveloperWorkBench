@@ -34691,6 +34691,30 @@ def create_flask_app():
         import re as _r
         return _r.sub(r"[^A-Za-z0-9_.-]+", "_", str(n).strip()) or "app"
 
+    @app.route("/api/jqassistant/browse")
+    def api_jqa_browse():
+        """List sub-folders of a local folder (empty path = drives) for the folder picker."""
+        import string as _st
+        path = request.args.get("path", "").strip()
+        if not path:
+            drives = [c + ":" + os.sep for c in _st.ascii_uppercase if os.path.isdir(c + ":" + os.sep)]
+            return jsonify({"ok": True, "path": "", "parent": None, "home": str(Path.home()), "dirs": [{"name": d, "path": d} for d in drives]})
+        pth = Path(path)
+        if not pth.is_dir():
+            return jsonify({"ok": False, "error": "Folder not found: " + path}), 400
+        dirs = []
+        try:
+            for e in sorted(pth.iterdir(), key=lambda x: x.name.lower()):
+                try:
+                    if e.is_dir() and not e.name.startswith("."):
+                        dirs.append({"name": e.name, "path": str(e)})
+                except OSError:
+                    pass
+        except OSError as ex:
+            return jsonify({"ok": False, "error": str(ex)}), 400
+        parent = str(pth.parent) if pth.parent != pth else ""
+        return jsonify({"ok": True, "path": str(pth), "parent": parent, "has_pom": (pth / "pom.xml").exists(), "dirs": dirs})
+
     @app.route("/api/jqassistant/config", methods=["GET", "POST"])
     def api_jqa_config():
         import json as _j
