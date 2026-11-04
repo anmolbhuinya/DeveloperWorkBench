@@ -34498,7 +34498,10 @@ def create_flask_app():
          "known": [r"C:\Program Files\DBeaver\dbeaver.exe", "%LOCALAPPDATA%\\Programs\\DBeaver\\dbeaver.exe"]},
         {"key": "jqassistant", "title": "jQAssistant", "sub": "jQAssistant", "winget": "",
          "desc": "Code structure analysis CLI (downloaded from Maven Central; needs Java)", "exe": ["bin/jqassistant.cmd"], "known": [],
-         "zip": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/2.0.10/jqassistant-commandline-distribution-2.0.10-bin.zip"},
+         "zip": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/2.0.10/jqassistant-commandline-distribution-2.0.10-bin.zip",
+         "zip_tpl": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/{v}/jqassistant-commandline-distribution-{v}-bin.zip",
+         "zip_meta": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/maven-metadata.xml",
+         "zip_fallback_version": "2.0.10"},
     ]
 
     # Version managers that can be installed by the Workbench, into Installed_Softwares\<sub>
@@ -34515,8 +34518,30 @@ def create_flask_app():
                 if hit:
                     there = hit[-1]
                     break
+        ver = ""
+        if here and d["key"] == "jqassistant":
+            import re as _rev
+            for j in sorted((base / "lib").glob("com.buschmais.jqassistant.cli-application-*.jar")):
+                m = _rev.search(r"application-(.+)\.jar$", j.name)
+                ver = m.group(1) if m else ver
         return {"key": d["key"], "title": d["title"], "desc": d["desc"], "winget": d["winget"],
-                "target": str(base), "installed_here": bool(here), "installed_elsewhere": there}
+                "target": str(base), "installed_here": bool(here), "installed_elsewhere": there, "version": ver}
+
+    def _maven_latest(meta_url, fallback=""):
+        """Newest stable version listed in a Maven Central maven-metadata.xml."""
+        import urllib.request as _ur, re as _rem
+        try:
+            with _ur.urlopen(meta_url, timeout=30) as r:
+                xml = r.read().decode("utf-8", "replace")
+            vers = [v for v in _rem.findall(r"<version>([^<]+)</version>", xml) if _rem.fullmatch(r"\d+(\.\d+)*", v)]
+            if vers:
+                return max(vers, key=lambda v: [int(x) for x in v.split(".")])
+            m = _rem.search(r"<release>([^<]+)</release>", xml)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return fallback
 
     @app.route("/api/setup/dev-softwares")
     def api_setup_dev_softwares():
@@ -34540,10 +34565,20 @@ def create_flask_app():
         def _run_zip():
             import urllib.request as _ur, zipfile as _zf, tempfile as _tf
             target.mkdir(parents=True, exist_ok=True)
-            job["output"] += "Downloading %s\n" % d["zip"]
+            url, ver = d["zip"], d.get("zip_fallback_version", "")
+            if d.get("zip_tpl"):
+                job["output"] += "Looking up the latest version on Maven Central ...\n"
+                latest = _maven_latest(d["zip_meta"], "")
+                if latest:
+                    ver = latest
+                else:
+                    job["output"] += "Could not read Maven Central metadata - using %s\n" % ver
+                url = d["zip_tpl"].replace("{v}", ver)
+                job["output"] += "Version: %s\n" % ver
+            job["output"] += "Downloading %s\n" % url
             with _tf.TemporaryDirectory() as td:
                 zp = os.path.join(td, "pkg.zip")
-                with _ur.urlopen(d["zip"], timeout=180) as r, open(zp, "wb") as f:
+                with _ur.urlopen(url, timeout=180) as r, open(zp, "wb") as f:
                     shutil.copyfileobj(r, f)
                 with _zf.ZipFile(zp) as z:
                     z.extractall(os.path.join(td, "x"))
@@ -34559,6 +34594,7 @@ def create_flask_app():
                         dst.unlink()
                     shutil.move(os.path.join(root, n), str(dst))
             job["output"] += "Extracted to %s\n" % target
+            job["output"] += "Installed %s%s\n" % (d["title"], (" version " + ver) if ver else "")
             job["status"] = "success"
 
         def _run():
@@ -34587,6 +34623,332 @@ def create_flask_app():
                 job["status"] = "failed"
         _th.Thread(target=_run, daemon=True).start()
         return jsonify({"ok": True, "key": jid})
+
+    @app.route("/api/setup/dev-softwares/uninstall", methods=["POST"])
+    def api_setup_dev_software_uninstall():
+        import threading as _th, uuid as _uuid
+        key = (request.get_json(silent=True) or {}).get("key", "")
+        d = next((x for x in _DEV_SOFTWARES if x["key"] == key), None)
+        if not d:
+            return jsonify({"ok": False, "error": "Unknown software"}), 400
+        target = INSTALLED_SOFTWARES / d["sub"]
+        if not (target.is_dir() and any(target.iterdir())):
+            return jsonify({"ok": False, "error": "Not installed in the Installed_Softwares folder"}), 400
+        winget = shutil.which("winget")
+        if not d.get("zip") and not winget:
+            return jsonify({"ok": False, "error": "winget is not available on this machine"}), 400
+        jid = _uuid.uuid4().hex[:10]
+        job = _vm_jobs[jid] = {"status": "running", "output": ""}
+
+        def _run():
+            try:
+                if d.get("zip"):
+                    job["output"] += "Removing %s\n" % target
+                    shutil.rmtree(target, ignore_errors=True)
+                    ok = not (target.is_dir() and any(target.iterdir()))
+                else:
+                    argv = [winget, "uninstall", "-e", "--id", d["winget"], "--silent", "--accept-source-agreements"]
+                    job["output"] += "$ " + " ".join(argv) + "\n"
+                    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", creationflags=0x08000000)
+                    for line in p.stdout:
+                        job["output"] += line
+                    p.wait()
+                    ok = p.returncode == 0
+                    if ok and target.is_dir() and not any(target.iterdir()):
+                        shutil.rmtree(target, ignore_errors=True)
+                job["output"] += ("Uninstalled %s\n" % d["title"]) if ok else "Uninstall did not complete - some files may remain in %s\n" % target
+                job["status"] = "success" if ok else "failed"
+            except Exception as e:
+                job["output"] += str(e)
+                job["status"] = "failed"
+        _th.Thread(target=_run, daemon=True).start()
+        return jsonify({"ok": True, "key": jid})
+
+    # ── jQAssistant: configure code bases, scan, analyze (dependencies / transitive), SBOM across applications ──
+    _JQA_HOME = PROJECTS_HOME / "jqassistant"
+    _jqa_jobs = {}
+
+    def _jqa_cmd():
+        return INSTALLED_SOFTWARES / "jQAssistant" / "bin" / "jqassistant.cmd"
+
+    def _jqa_cfg():
+        import json as _j
+        try:
+            return _j.loads((_JQA_HOME / "config.json").read_text(encoding="utf-8"))
+        except Exception:
+            return {"apps": []}
+
+    def _jqa_safe(n):
+        import re as _r
+        return _r.sub(r"[^A-Za-z0-9_.-]+", "_", str(n).strip()) or "app"
+
+    @app.route("/api/jqassistant/config", methods=["GET", "POST"])
+    def api_jqa_config():
+        import json as _j
+        if request.method == "POST":
+            apps = []
+            for a in (request.get_json(silent=True) or {}).get("apps", []):
+                name, path = str(a.get("name", "")).strip(), str(a.get("path", "")).strip()
+                if not name or not path:
+                    continue
+                if not Path(path).is_dir():
+                    return jsonify({"ok": False, "error": "Folder not found: " + path}), 400
+                apps.append({"name": name, "path": path})
+            _JQA_HOME.mkdir(parents=True, exist_ok=True)
+            (_JQA_HOME / "config.json").write_text(_j.dumps({"apps": apps}, indent=1), encoding="utf-8")
+        cfg = _jqa_cfg()
+        st = _ds_state(next(x for x in _DEV_SOFTWARES if x["key"] == "jqassistant"))
+        res = {}
+        for a in cfg["apps"]:
+            try:
+                res[a["name"]] = _j.loads((_JQA_HOME / "results" / (_jqa_safe(a["name"]) + ".json")).read_text(encoding="utf-8"))
+            except Exception:
+                res[a["name"]] = {}
+        return jsonify({"ok": True, "apps": cfg["apps"], "installed": st["installed_here"], "version": st["version"],
+                        "results": {k: {"scanned": v.get("scanned"), "analyzed": v.get("analyzed")} for k, v in res.items()}})
+
+    def _jqa_write_yml(work, version):
+        """Per-application jQAssistant config (store, rules, plugins). Written once - edit it to tune the analysis."""
+        yml = work / ".jqassistant.yml"
+        if yml.exists():
+            return
+        plugs = ""
+        for art in ("jqassistant-common-plugin", "jqassistant-java-plugin", "jqassistant-maven3-plugin", "jqassistant-xml-plugin"):
+            v = _maven_latest("https://repo1.maven.org/maven2/org/jqassistant/plugin/%s/maven-metadata.xml" % art, "")
+            if v:
+                plugs += "    - group-id: org.jqassistant.plugin\n      artifact-id: %s\n      version: %s\n" % (art, v)
+        yml.write_text(
+            "jqassistant:\n"
+            "  store:\n    uri: file:store\n"
+            "  scan:\n    reset: true\n"
+            "  analyze:\n    rule:\n      directory: rules\n    report:\n      directory: report\n"
+            + ("  plugins:\n" + plugs if plugs else ""), encoding="utf-8")
+
+    _JQA_RULES = """<?xml version="1.0" encoding="UTF-8"?>
+<jqassistant-rules xmlns="http://schema.jqassistant.org/rule/v2.0">
+  <concept id="dwb:DirectDependencies">
+    <description>Direct dependencies declared in the scanned POMs.</description>
+    <cypher><![CDATA[
+      MATCH (p:Maven:Pom)-[:DECLARES_DEPENDENCY]->(d:Maven:Dependency)-[:TO_ARTIFACT]->(a:Artifact)
+      RETURN coalesce(p.groupId, '') + ':' + coalesce(p.artifactId, p.name, '') AS Project,
+             a.group AS Group, a.name AS Artifact, a.version AS Version, d.scope AS Scope
+    ]]></cypher>
+  </concept>
+  <concept id="dwb:TransitiveDependencies">
+    <description>Transitive artifact dependencies between scanned artifacts.</description>
+    <cypher><![CDATA[
+      MATCH (a:Artifact)-[:DEPENDS_ON*2..6]->(b:Artifact)
+      WHERE a <> b
+      RETURN DISTINCT a.group + ':' + a.name AS Project, b.group AS Group, b.name AS Artifact, b.version AS Version
+    ]]></cypher>
+  </concept>
+</jqassistant-rules>
+"""
+
+    def _jqa_parse_report(xml_path):
+        import xml.etree.ElementTree as _et
+        out = {}
+        try:
+            root = _et.parse(str(xml_path)).getroot()
+        except Exception:
+            return out
+        loc = lambda e: e.tag.split("}")[-1]
+        for el in root.iter():
+            if loc(el) == "concept" and el.get("id", "").startswith("dwb:"):
+                cols = [(c.text or "").strip() for c in el.iter() if loc(c) == "column" and c.get("name") is None and c.text and c.text.strip()]
+                rows = []
+                for r in el.iter():
+                    if loc(r) == "row":
+                        vals = []
+                        for c in r:
+                            v = next((x for x in c if loc(x) == "value"), None)
+                            vals.append(((v.text if v is not None else c.text) or "").strip())
+                        rows.append(vals)
+                out[el.get("id")] = {"columns": cols, "rows": rows}
+        return out
+
+    def _jqa_parse_tree(txt):
+        """Parse `mvn dependency:tree` text output (appended, one tree per module) into modules with depth-tagged deps."""
+        import re as _r
+        mods, cur = [], None
+        for ln in txt.splitlines():
+            if not ln.strip():
+                continue
+            m = _r.match(r"^([|+\\ -]*)(?:\+- |\\- )?([\w.\-]+:[\w.\-]+:[\w.\-]+(?::[\w.\-]+){1,3})\s*(?:\(.*\))?$", ln.rstrip())
+            if not m:
+                continue
+            prefix, coord = m.group(1), m.group(2)
+            depth = len(ln) - len(ln.lstrip("|+\\ -"))
+            parts = coord.split(":")
+            if ln[0] not in "|+\\ ":          # root line = the module itself
+                cur = {"module": "%s:%s" % (parts[0], parts[1]), "version": parts[3] if len(parts) > 3 else "", "deps": []}
+                mods.append(cur)
+                continue
+            if cur is None:
+                continue
+            lvl = depth // 3
+            # coordinates: group:artifact:type[:classifier]:version:scope
+            scope = parts[-1]
+            ver = parts[-2]
+            cur["deps"].append({"group": parts[0], "artifact": parts[1], "version": ver, "scope": scope, "level": lvl})
+        return mods
+
+    def _jqa_job_start(label, fn):
+        import threading as _th, uuid as _uuid
+        jid = _uuid.uuid4().hex[:10]
+        job = _jqa_jobs[jid] = {"status": "running", "output": "", "label": label}
+
+        def _go():
+            try:
+                job["status"] = "success" if fn(job) else "failed"
+            except Exception as e:
+                job["output"] += "\nError: %s\n" % e
+                job["status"] = "failed"
+        _th.Thread(target=_go, daemon=True).start()
+        return jid
+
+    def _jqa_stream(job, argv, cwd):
+        job["output"] += "$ " + " ".join(str(a) for a in argv) + "\n"
+        p = subprocess.Popen(argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                             creationflags=0x08000000)
+        for line in p.stdout:
+            job["output"] += line
+        p.wait()
+        return p.returncode
+
+    def _jqa_save_result(name, **kw):
+        import json as _j, datetime as _dt
+        f = _JQA_HOME / "results" / (_jqa_safe(name) + ".json")
+        f.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            cur = _j.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            cur = {}
+        cur.update(kw)
+        f.write_text(_j.dumps(cur), encoding="utf-8")
+
+    @app.route("/api/jqassistant/run", methods=["POST"])
+    def api_jqa_run():
+        import datetime as _dt
+        body = request.get_json(silent=True) or {}
+        name, step = str(body.get("app", "")), str(body.get("step", ""))
+        a = next((x for x in _jqa_cfg()["apps"] if x["name"] == name), None)
+        if not a or step not in ("scan", "analyze"):
+            return jsonify({"ok": False, "error": "Unknown application or step"}), 400
+        cmd = _jqa_cmd()
+        if not cmd.exists():
+            return jsonify({"ok": False, "error": "jQAssistant is not installed"}), 400
+        work = _JQA_HOME / "work" / _jqa_safe(name)
+        work.mkdir(parents=True, exist_ok=True)
+        ver = _ds_state(next(x for x in _DEV_SOFTWARES if x["key"] == "jqassistant"))["version"]
+
+        def _scan(job):
+            _jqa_write_yml(work, ver)
+            rc = _jqa_stream(job, [str(cmd), "scan", "-f", a["path"]], work)
+            if rc == 0:
+                _jqa_save_result(name, scanned=_dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
+            return rc == 0
+
+        def _analyze(job):
+            _jqa_write_yml(work, ver)
+            (work / "rules").mkdir(exist_ok=True)
+            (work / "rules" / "dwb.xml").write_text(_JQA_RULES, encoding="utf-8")
+            rc = _jqa_stream(job, [str(cmd), "analyze", "-concepts", "dwb:DirectDependencies,dwb:TransitiveDependencies"], work)
+            rep = _jqa_parse_report(work / "report" / "jqassistant-report.xml")
+            if rc != 0:
+                job["output"] += "\njQAssistant analyze did not complete (is the code base scanned? are the plugins reachable?).\n"
+            # Maven's own resolver gives the full transitive tree (jQAssistant only knows the artifacts it scanned)
+            mods = []
+            mvn = shutil.which("mvn")
+            if mvn and (Path(a["path"]) / "pom.xml").exists():
+                tf = work / "tree.txt"
+                if tf.exists():
+                    tf.unlink()
+                job["output"] += "\nResolving the full dependency tree with Maven ...\n"
+                _jqa_stream(job, [mvn, "-B", "dependency:tree", "-DoutputType=text", "-DappendOutput=true", "-DoutputFile=" + str(tf)], a["path"])
+                if tf.exists():
+                    mods = _jqa_parse_tree(tf.read_text(encoding="utf-8", errors="replace"))
+            else:
+                job["output"] += "\nMaven not found (or no pom.xml): transitive tree skipped.\n"
+            _jqa_save_result(name, analyzed=_dt.datetime.now().strftime("%Y-%m-%d %H:%M"), jqa=rep, modules=mods)
+            job["output"] += "\nDone: %d module(s), %d dependency entries.\n" % (len(mods), sum(len(m["deps"]) for m in mods))
+            return bool(mods) or (rc == 0)
+
+        jid = _jqa_job_start(step + " " + name, _scan if step == "scan" else _analyze)
+        return jsonify({"ok": True, "job": jid})
+
+    @app.route("/api/jqassistant/job/<jid>")
+    def api_jqa_job(jid):
+        j = _jqa_jobs.get(jid)
+        return jsonify({"ok": True, **j}) if j else (jsonify({"ok": False, "error": "Unknown job"}), 404)
+
+    @app.route("/api/jqassistant/result/<name>")
+    def api_jqa_result(name):
+        import json as _j
+        try:
+            r = _j.loads((_JQA_HOME / "results" / (_jqa_safe(name) + ".json")).read_text(encoding="utf-8"))
+        except Exception:
+            return jsonify({"ok": True, "modules": [], "jqa": {}})
+        return jsonify({"ok": True, **r})
+
+    @app.route("/api/jqassistant/sbom", methods=["POST"])
+    def api_jqa_sbom():
+        import json as _j, csv as _csv, datetime as _dt, html as _h, uuid as _u
+        names = (request.get_json(silent=True) or {}).get("apps") or []
+        comps, deps, rows = {}, [], []
+        for n in names:
+            try:
+                r = _j.loads((_JQA_HOME / "results" / (_jqa_safe(n) + ".json")).read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for m in r.get("modules", []):
+                ref_root = "pkg:maven/%s@%s" % (m["module"].replace(":", "/"), m.get("version", ""))
+                comps.setdefault(ref_root, {"type": "application", "group": m["module"].split(":")[0], "name": m["module"].split(":")[1],
+                                            "version": m.get("version", ""), "purl": ref_root, "bom-ref": ref_root})
+                direct = []
+                for d in m["deps"]:
+                    purl = "pkg:maven/%s/%s@%s" % (d["group"], d["artifact"], d["version"])
+                    comps.setdefault(purl, {"type": "library", "group": d["group"], "name": d["artifact"], "version": d["version"],
+                                            "purl": purl, "bom-ref": purl, "scope": "required" if d["scope"] in ("compile", "runtime") else "optional"})
+                    if d["level"] <= 1:
+                        direct.append(purl)
+                    rows.append([n, m["module"], d["group"], d["artifact"], d["version"], d["scope"], "direct" if d["level"] <= 1 else "transitive"])
+                deps.append({"ref": ref_root, "dependsOn": sorted(set(direct))})
+        if not rows:
+            return jsonify({"ok": False, "error": "No analysis results yet - run Analyze on the selected applications first"}), 400
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = _JQA_HOME / "sbom"
+        out.mkdir(parents=True, exist_ok=True)
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.4", "serialNumber": "urn:uuid:" + str(_u.uuid4()), "version": 1,
+               "metadata": {"timestamp": _dt.datetime.utcnow().isoformat() + "Z", "tools": [{"vendor": "DWB", "name": "Developer Workbench + jQAssistant"}]},
+               "components": list(comps.values()), "dependencies": deps}
+        (out / f"sbom-{stamp}.json").write_text(_j.dumps(bom, indent=1), encoding="utf-8")
+        hdr = ["Application", "Module", "Group", "Artifact", "Version", "Scope", "Kind"]
+        with open(out / f"sbom-{stamp}.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f); w.writerow(hdr); w.writerows(rows)
+        per = {}
+        for r in rows:
+            per.setdefault(r[0], set()).add((r[2], r[3], r[4]))
+        html = ["<html><head><meta charset='utf-8'><title>SBOM</title><style>body{font-family:Segoe UI,Arial;margin:24px}table{border-collapse:collapse;font-size:13px}"
+                "td,th{border:1px solid #ccc;padding:4px 8px}th{background:#1565c0;color:#fff}</style></head><body>",
+                "<h2>Software Bill of Materials</h2><p>Generated %s &middot; %d applications &middot; %d unique components</p>" % (
+                    _dt.datetime.now().strftime("%Y-%m-%d %H:%M"), len(per), len(comps)),
+                "<h3>Per application</h3><table><tr><th>Application</th><th>Unique libraries</th></tr>"]
+        html += ["<tr><td>%s</td><td>%d</td></tr>" % (_h.escape(k), len(v)) for k, v in sorted(per.items())]
+        html.append("</table><h3>Components</h3><table><tr>" + "".join("<th>%s</th>" % x for x in hdr) + "</tr>")
+        html += ["<tr>" + "".join("<td>%s</td>" % _h.escape(str(c)) for c in r) + "</tr>" for r in rows]
+        html.append("</table></body></html>")
+        (out / f"sbom-{stamp}.html").write_text("\n".join(html), encoding="utf-8")
+        return jsonify({"ok": True, "components": len(comps), "entries": len(rows), "applications": len(per),
+                        "files": {k: f"sbom-{stamp}.{k}" for k in ("json", "csv", "html")}})
+
+    @app.route("/api/jqassistant/sbom/download")
+    def api_jqa_sbom_download():
+        import re as _r
+        fn = request.args.get("file", "")
+        if not _r.fullmatch(r"sbom-\d{8}-\d{6}\.(json|csv|html)", fn) or not (_JQA_HOME / "sbom" / fn).exists():
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        return send_file(str(_JQA_HOME / "sbom" / fn), as_attachment=True, download_name=fn)
 
     @app.route("/api/setup/version-managers/install", methods=["POST"])
     def api_setup_vm_install():

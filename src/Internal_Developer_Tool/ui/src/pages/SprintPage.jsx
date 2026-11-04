@@ -1139,8 +1139,8 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
               </>
             )}
           </div>
-          {/* Row 2: Freeze Dev + Refresh Sprint Board + Complete Sprint */}
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {/* Row 2: Freeze Dev + Refresh Sprint Board + Complete Sprint (not for completed / previous sprints) */}
+          {!sprintProp.previous && <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {sprintUrl && (<>
               <button
                 onClick={toggleFreeze}
@@ -1187,7 +1187,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                 </button>
               )
             })()}
-          </div>
+          </div>}
           {/* Complete Sprint confirmation banner */}
           {sprintCompleteConfirm && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
@@ -3014,7 +3014,7 @@ export default function SprintPage() {
   const handleRename = (oldFile, newFile) => {
     const newName = newFile.replace(/\.xlsx$/i, '')
     setSprints(p => p.map(s => s.file === oldFile ? { file: newFile, name: newName } : s))
-    setSelected(p => p && p.file === oldFile ? { file: newFile, name: newName } : p)
+    setSelected(p => p && p.file === oldFile ? { ...p, file: newFile, name: newName } : p)
   }
 
   const [deleteConfirmFile, setDeleteConfirmFile] = useState(null)
@@ -3104,7 +3104,7 @@ export default function SprintPage() {
                       onClick={() => {
                         const _team = r.sprint.match(/^(.+?)_\d{4}-\d{2}-\d{2}_/) ?. [1] || ''
                         if (_team) setActiveTeamTab(_team)
-                        setSelected({ file: r.file, name: r.sprint, _highlightJira: r.jira_id, _openTab: r.sheet === 'Adhoc Task' ? 'Adhoc Task' : 'Sprint Board' })
+                        setSelected({ file: r.file, name: r.sprint, previous: r.previous, _highlightJira: r.jira_id, _openTab: r.sheet === 'Adhoc Task' ? 'Adhoc Task' : 'Sprint Board' })
                         setSprintSearch(''); setSprintSearchResults(null)
                       }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>

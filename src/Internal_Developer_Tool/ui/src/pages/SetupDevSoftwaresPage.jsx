@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import JqassistantPanel from './JqassistantPanel'
 
 const ICONS = { intellij: '🧠', postman: '📮', soapui: '🧼', fiddler: '🕵️', docker: '🐳', dbeaver: '🗄️', jqassistant: '🔍' }
 
@@ -10,6 +11,7 @@ export default function SetupDevSoftwaresPage() {
   const [error, setError]     = useState('')
   const [jobs, setJobs]   = useState({}) // key -> {title, status, output}
   const timers = useRef({})
+  const [showJqa, setShowJqa] = useState(false)
 
   const load = () => {
     setLoading(true); setError('')
@@ -22,10 +24,11 @@ export default function SetupDevSoftwaresPage() {
   useEffect(() => () => Object.values(timers.current).forEach(clearInterval), [])
 
   const patch = (key, v) => setJobs(j => ({ ...j, [key]: { ...(j[key] || {}), ...v } }))
-  const install = (it) => {
+  const install = (it, action = 'install') => {
     if (jobs[it.key]?.status === 'running') return
-    patch(it.key, { title: it.title, status: 'running', output: '' })
-    fetch('/api/setup/dev-softwares/install', {
+    if (action === 'uninstall' && !window.confirm(`Uninstall ${it.title}?`)) return
+    patch(it.key, { title: it.title, action, status: 'running', output: '' })
+    fetch(`/api/setup/dev-softwares/${action}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: it.key }),
     }).then(r => r.json()).then(d => {
       if (!d.ok) { patch(it.key, { status: 'failed', output: d.error || 'Failed' }); return }
@@ -57,15 +60,18 @@ export default function SetupDevSoftwaresPage() {
       {error && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{error}</div>}
       {!data.winget && <div className="alert alert-danger" style={{ marginBottom: 12 }}>winget is not available on this machine, so installs cannot run.</div>}
 
-      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
+      {showJqa && <JqassistantPanel onClose={() => setShowJqa(false)} />}
+      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', marginTop: showJqa ? 16 : 0 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 290px)', gap: 16, flex: '0 0 auto' }}>
         {data.items.map(it => (
-          <div key={it.key} className="card" style={{ width: 290 }}>
+          <div key={it.key} className="card" style={{ width: 290, cursor: it.key === 'jqassistant' && it.installed_here ? 'pointer' : 'default' }}
+            onClick={() => { if (it.key === 'jqassistant' && it.installed_here) setShowJqa(true) }}
+            title={it.key === 'jqassistant' && it.installed_here ? 'Click to configure, scan and analyze code bases' : undefined}>
             <div style={{ fontSize: 36, marginBottom: 8 }}>{ICONS[it.key] || '📦'}</div>
             <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{it.title}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>{it.desc}</div>
             {it.installed_here
-              ? <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600 }}>● Installed</div>
+              ? <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600 }}>● Installed{it.version ? ` · v${it.version}` : ''}</div>
               : it.installed_elsewhere
                 ? <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600 }}>● Installed elsewhere</div>
                 : <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>○ Not installed</div>}
@@ -73,8 +79,13 @@ export default function SetupDevSoftwaresPage() {
               {it.installed_elsewhere || it.target}
             </div>
             {!it.installed_here && (
-              <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant')} onClick={() => install(it)}>
+              <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant')} onClick={e => { e.stopPropagation(); install(it) }}>
                 {running(it.key) ? 'Installing…' : 'Install'}
+              </button>
+            )}
+            {it.installed_here && (
+              <button className="btn" disabled={running(it.key)} onClick={e => { e.stopPropagation(); install(it, 'uninstall') }}>
+                {running(it.key) && jobs[it.key]?.action === 'uninstall' ? 'Uninstalling…' : 'Uninstall'}
               </button>
             )}
           </div>
@@ -86,7 +97,7 @@ export default function SetupDevSoftwaresPage() {
           <div key={k} className="card">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <div style={{ flex: 1, fontWeight: 600, fontSize: 13, color: job.status === 'failed' ? 'var(--danger)' : job.status === 'success' ? 'var(--success)' : 'var(--text)' }}>
-                Install {job.title} — {job.status}
+                {job.action === 'uninstall' ? 'Uninstall' : 'Install'} {job.title} — {job.status}
               </div>
               {job.status !== 'running' && <button className="btn" onClick={() => closeJob(k)}>✕</button>}
             </div>
