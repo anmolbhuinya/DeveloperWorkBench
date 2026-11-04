@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import JqassistantPanel from './JqassistantPanel'
 
 const ICONS = { intellij: '🧠', postman: '📮', soapui: '🧼', fiddler: '🕵️', docker: '🐳', dbeaver: '🗄️', jqassistant: '🔍' }
 
@@ -19,7 +18,6 @@ export default function SetupDevSoftwaresPage() {
   const [error, setError]     = useState('')
   const [jobs, setJobs]   = useState({}) // key -> {title, status, output}
   const timers = useRef({})
-  const [showJqa, setShowJqa] = useState(false)
 
   const load = () => {
     setLoading(true); setError('')
@@ -68,13 +66,12 @@ export default function SetupDevSoftwaresPage() {
       {error && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{error}</div>}
       {!data.winget && <div className="alert alert-danger" style={{ marginBottom: 12 }}>winget is not available on this machine, so installs cannot run.</div>}
 
-      {showJqa && <JqassistantPanel onClose={() => setShowJqa(false)} />}
-      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', marginTop: showJqa ? 16 : 0 }}>
+      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 290px)', gap: 16, flex: '0 0 auto' }}>
         {data.items.map(it => (
           <div key={it.key} className="card" style={{ width: 290, cursor: it.key === 'jqassistant' && it.installed_here ? 'pointer' : 'default' }}
-            onClick={() => { if (it.key === 'jqassistant' && it.installed_here) setShowJqa(true) }}
-            title={it.key === 'jqassistant' && it.installed_here ? 'Click to configure, scan and analyze code bases' : undefined}>
+            onClick={() => { if (it.key === 'jqassistant' && it.installed_here) navigate('/setup/dev-softwares/jqassistant') }}
+            title={it.key === 'jqassistant' && it.installed_here ? 'Click to open the jQAssistant page: configure code bases, scan, analyze, SBOM' : undefined}>
             <div style={{ fontSize: 36, marginBottom: 8 }}>{ICONS[it.key] || '📦'}</div>
             <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{it.title}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>{it.desc}</div>
