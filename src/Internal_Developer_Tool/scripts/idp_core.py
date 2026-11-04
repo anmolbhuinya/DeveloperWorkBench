@@ -27967,12 +27967,12 @@ def create_flask_app():
         return count
 
     def _find_prev_dev_days(team, key, sprint_root):
-        """Return (dev_days, in_dev_since) for key from the most recent previous sprint."""
+        """Return (dev_days, in_dev_since, found) for key from the most recent previous sprint."""
         if not team or not sprint_root:
-            return None, None
+            return None, None, False
         prev_dir = sprint_root / "PreviousSprints" / team
         if not prev_dir.exists():
-            return None, None
+            return None, None, False
         try:
             import openpyxl as _xl_pv
             sprint_files = sorted(prev_dir.glob("*.xlsx"),
@@ -27994,19 +27994,20 @@ def create_flask_app():
                             _dd  = _rp[_dd_p]  if _dd_p  is not None and _dd_p  < len(_rp) else None
                             _ids = _rp[_ids_p] if _ids_p is not None and _ids_p < len(_rp) else None
                             _wb_p.close()
-                            return (_dd, _ids)
+                            return (_dd, _ids, True)
                     _wb_p.close()
                 except Exception:
                     pass
         except Exception:
             pass
-        return None, None
+        return None, None, False
 
     def _apply_board_issues(ws, issues, base_url, creds=None, freeze_dev=True, team=None, sprint_root=None, adhoc_ws=None):
         from datetime import date as _date
         _today_str = _date.today().isoformat()
         _IN_DEV_STATUSES = {"in dev", "in development"}
         def _is_in_dev(s): return any(s.lower().strip() == x for x in _IN_DEV_STATUSES)
+        def _is_testing(s): return s.lower().strip() in ("in testing", "testing")
 
         header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
         ci = {h: i for i, h in enumerate(header) if h}
@@ -28022,6 +28023,18 @@ def create_flask_app():
         if ids_i is None:
             ws.cell(row=1, column=len(header)+1).value = "InDevSince"
             ids_i = len(header); header.append("InDevSince"); ci["InDevSince"] = ids_i
+        qa_i      = ci.get("QA")
+        qd_i      = ci.get("QADays");     qs_i      = ci.get("InQASince")
+        if qd_i is None:
+            ws.cell(row=1, column=len(header)+1).value = "QADays"
+            qd_i = len(header); header.append("QADays"); ci["QADays"] = qd_i
+        if qs_i is None:
+            ws.cell(row=1, column=len(header)+1).value = "InQASince"
+            qs_i = len(header); header.append("InQASince"); ci["InQASince"] = qs_i
+        co_i      = ci.get("Carried Over")
+        if co_i is None:
+            ws.cell(row=1, column=len(header)+1).value = "Carried Over"
+            co_i = len(header); header.append("Carried Over"); ci["Carried Over"] = co_i
         if jira_i is None: return 0
         existing = {}
         for ri, row in enumerate(ws.iter_rows(min_row=2, values_only=True)):
@@ -28072,6 +28085,20 @@ def create_flask_app():
                 if pr_stat_i  is not None and pr_stat_val is not None: ws.cell(row=er, column=pr_stat_i+1).value = pr_stat_val
                 if not freeze_dev:
                     if dev_i is not None and assignee: ws.cell(row=er, column=dev_i+1).value = assignee
+                # QA: when in Testing, always fill an empty QA; overwrite a filled one only when Dev Freeze is off
+                if _is_testing(status) and qa_i is not None and assignee:
+                    _cur_qa = ws.cell(row=er, column=qa_i+1).value
+                    if not str(_cur_qa or "").strip() or not freeze_dev:
+                        ws.cell(row=er, column=qa_i+1).value = assignee
+                # QADays: business days spent in Testing (count is kept after leaving Testing)
+                _cur_qs = ws.cell(row=er, column=qs_i+1).value
+                if _is_testing(status):
+                    if not _cur_qs:
+                        ws.cell(row=er, column=qs_i+1).value = _today_str
+                        _cur_qs = _today_str
+                    ws.cell(row=er, column=qd_i+1).value = _business_days(_cur_qs)
+                elif _cur_qs:
+                    ws.cell(row=er, column=qs_i+1).value = None
                 # DevDays logic for existing rows
                 cur_ids = ws.cell(row=er, column=ids_i+1).value
                 if _is_in_dev(status):
@@ -28084,7 +28111,7 @@ def create_flask_app():
                         ws.cell(row=er, column=ids_i+1).value = None
             else:
                 # New ticket: try to carry forward DevDays from previous sprint
-                prev_dd, prev_ids = _find_prev_dev_days(team, key, sprint_root)
+                prev_dd, prev_ids, prev_found = _find_prev_dev_days(team, key, sprint_root)
                 if _is_in_dev(status):
                     carry_ids = prev_ids if prev_ids else _today_str
                     carry_dd  = _business_days(carry_ids)
@@ -28101,6 +28128,9 @@ def create_flask_app():
                     if "Date Added" not in _ah_ci:
                         _ah.cell(row=1, column=len(_ah_hdr)+1).value = "Date Added"
                         _ah_ci["Date Added"] = len(_ah_hdr); _ah_hdr.append("Date Added")
+                    if "Carried Over" not in _ah_ci:
+                        _ah.cell(row=1, column=len(_ah_hdr)+1).value = "Carried Over"
+                        _ah_ci["Carried Over"] = len(_ah_hdr); _ah_hdr.append("Carried Over")
                     # Skip if already in Adhoc Task
                     _ah_existing = set()
                     for _ahr in _ah.iter_rows(min_row=2, values_only=True):
@@ -28113,6 +28143,7 @@ def create_flask_app():
                             ("JIRA ID", key), ("Story", summary), ("Type", issue_type),
                             ("Status", status), ("Developer", assignee), ("Story Point", sp_val),
                             ("PRs", prs_val), ("PR Status", pr_stat_val), ("Date Added", _today_str),
+                            ("Carried Over", "Yes" if prev_found else None),
                         ]:
                             if _col in _ah_ci:
                                 _ah_row[_ah_ci[_col]] = _val
@@ -28144,7 +28175,12 @@ def create_flask_app():
                     if prs_i     is not None: row_vals[prs_i]     = prs_val
                     if pr_stat_i is not None: row_vals[pr_stat_i] = pr_stat_val
                     row_vals[dd_i]  = carry_dd
+                    row_vals[co_i]  = "Yes" if prev_found else None
                     row_vals[ids_i] = carry_ids
+                    if _is_testing(status):
+                        if qa_i is not None: row_vals[qa_i] = assignee
+                        row_vals[qs_i] = _today_str
+                        row_vals[qd_i] = _business_days(_today_str)
                     ws.append(row_vals)
                     if base_url:
                         ws.cell(row=ws.max_row, column=jira_i+1).hyperlink = f"{base_url}/browse/{key}"
@@ -28736,47 +28772,29 @@ def create_flask_app():
             else:
                 sheets[LOG_SHEET] = {"columns": _LOG_COLS, "rows": []}
             wb.close()
-            # Ensure DevDays + InDevSince columns exist in Sprint Board
-            _sb = sheets.get("Sprint Board", {})
-            _sb_cols = _sb.get("columns", [])
-            _sb_needs_dd = "DevDays" not in _sb_cols or "InDevSince" not in _sb_cols
-            if _sb_needs_dd and "Sprint Board" in (_sb_cols and []) or _sb_needs_dd:
+            # Ensure the DevDays / QADays / carry-over helper columns exist on Sprint Board and Adhoc Task
+            for _en_sheet, _en_need in (("Sprint Board", ["DevDays", "InDevSince", "QADays", "InQASince", "Carried Over"]),
+                                        ("Adhoc Task",   ["DevDays", "QADays", "InQASince", "Carried Over"])):
+                _en_cols = sheets.get(_en_sheet, {}).get("columns", [])
+                if not _en_cols or all(c in _en_cols for c in _en_need):
+                    continue
                 try:
-                    _wb_dd = _xl.load_workbook(str(target))
-                    if "Sprint Board" in _wb_dd.sheetnames:
-                        _ws_dd  = _wb_dd["Sprint Board"]
-                        _hdr_dd = [c.value for c in next(_ws_dd.iter_rows(min_row=1, max_row=1))]
-                        _ncols  = len(_hdr_dd)
+                    _wb_en = _xl.load_workbook(str(target))
+                    if _en_sheet in _wb_en.sheetnames:
+                        _ws_en  = _wb_en[_en_sheet]
+                        _hdr_en = [c.value for c in next(_ws_en.iter_rows(min_row=1, max_row=1))]
                         _changed = False
-                        if "DevDays" not in _hdr_dd:
-                            _ws_dd.cell(row=1, column=_ncols+1).value = "DevDays"
-                            _sb_cols.append("DevDays")
-                            _ncols += 1; _changed = True
-                        if "InDevSince" not in _hdr_dd:
-                            _ws_dd.cell(row=1, column=_ncols+1).value = "InDevSince"
-                            _sb_cols.append("InDevSince")
-                            _changed = True
+                        for _nm in _en_need:
+                            if _nm not in _hdr_en:
+                                _ws_en.cell(row=1, column=len(_hdr_en) + 1).value = _nm
+                                _hdr_en.append(_nm)
+                                if _nm not in _en_cols:
+                                    _en_cols.append(_nm)
+                                _changed = True
                         if _changed:
-                            _wb_dd.save(str(target))
-                    _wb_dd.close()
-                    sheets["Sprint Board"]["columns"] = _sb_cols
-                except Exception:
-                    pass
-            # Ensure DevDays column exists in Adhoc Task
-            _ah = sheets.get("Adhoc Task", {})
-            _ah_cols = _ah.get("columns", [])
-            if _ah_cols and "DevDays" not in _ah_cols:
-                try:
-                    _wb_ah = _xl.load_workbook(str(target))
-                    if "Adhoc Task" in _wb_ah.sheetnames:
-                        _ws_ah  = _wb_ah["Adhoc Task"]
-                        _hdr_ah = [c.value for c in next(_ws_ah.iter_rows(min_row=1, max_row=1))]
-                        if "DevDays" not in _hdr_ah:
-                            _ws_ah.cell(row=1, column=len(_hdr_ah)+1).value = "DevDays"
-                            _ah_cols.append("DevDays")
-                            _wb_ah.save(str(target))
-                    _wb_ah.close()
-                    sheets["Adhoc Task"]["columns"] = _ah_cols
+                            _wb_en.save(str(target))
+                    _wb_en.close()
+                    sheets[_en_sheet]["columns"] = _en_cols
                 except Exception:
                     pass
             # Create or migrate Sprint Log sheet as needed
@@ -29026,6 +29044,40 @@ def create_flask_app():
             })
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/project-management/sprint/export-xlsx", methods=["POST"])
+    def api_tm_sprint_export_xlsx():
+        import openpyxl as _xl_ex
+        from openpyxl.styles import Font as _Fnt, PatternFill as _Fill
+        from flask import send_file as _sf_ex
+        body = request.get_json() or {}
+        head = body.get("head") or []
+        rows = body.get("rows") or []
+        urls = body.get("urls") or []
+        jp   = body.get("jp", -1)
+        wb = _xl_ex.Workbook()
+        ws = wb.active
+        ws.title = str(body.get("sheet") or "Stories")[:31]
+        ws.append(head)
+        for c in ws[1]:
+            c.font = _Fnt(bold=True, color="FFFFFF")
+            c.fill = _Fill("solid", fgColor="4472C4")
+        for ri, r in enumerate(rows):
+            ws.append(r)
+            u = urls[ri] if ri < len(urls) else ""
+            if u and isinstance(jp, int) and 0 <= jp < len(r):
+                cell = ws.cell(row=ri + 2, column=jp + 1)
+                cell.hyperlink = u
+                cell.font = _Fnt(color="0563C1", underline="single")
+        for ci, h in enumerate(head, 1):
+            width = max([len(str(h))] + [len(str(r[ci - 1])) for r in rows if ci - 1 < len(r)])
+            ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = min(max(width + 2, 10), 60)
+        ws.freeze_panes = "A2"
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return _sf_ex(buf, as_attachment=True, download_name=str(body.get("name") or "sprint") + ".xlsx",
+                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @app.route("/api/project-management/sprint/complete", methods=["POST"])
     def api_tm_sprint_complete():

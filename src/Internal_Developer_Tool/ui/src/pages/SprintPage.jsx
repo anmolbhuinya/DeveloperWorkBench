@@ -4,8 +4,8 @@ import DatePicker from '../components/DatePicker'
 
 const API = '/api/project-management/sprint'
 const DATA_SHEETS = ['Sprint Board', 'Adhoc Task', 'PR Reviews']
-const MAIN_COLS   = ['JIRA ID', 'Story', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA']
-const COL_WIDTHS  = { 'JIRA ID': 110, 'Story': 320, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'Date Added': 110 }
+const MAIN_COLS   = ['JIRA ID', 'Story', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays']
+const COL_WIDTHS  = { 'JIRA ID': 110, 'Story': 320, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
 const DETAIL_COLS     = ['Notes', 'Commit Job', 'IT Job', 'Code Freeze Date', 'Releasae Date', 'Deployment Date', 'Deployed']
 const COL_LABEL_OVERRIDE = { 'Deployed': 'Deployment Date' }
 
@@ -949,10 +949,17 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
     const i = STATUS_RANK_LIST.indexOf(v)
     return i >= 0 ? i : STATUS_RANK_LIST.length - 3  // unknown before Closed
   }
+  // Stories carried over from the previous sprint are flagged "Yes" in the hidden "Carried Over" column
+  const carriedIdx = cols.indexOf('Carried Over')
+  const isCarried  = r => carriedIdx >= 0 && String(r[carriedIdx] ?? '').trim().toLowerCase() === 'yes'
   const sortedRows = [...filteredRows].sort((a, b) =>
-    statusRank(statusColIdx >= 0 ? (a[0][statusColIdx] ?? '') : '') -
-    statusRank(statusColIdx >= 0 ? (b[0][statusColIdx] ?? '') : '')
+    (isCarried(b[0]) - isCarried(a[0])) ||
+    (statusRank(statusColIdx >= 0 ? (a[0][statusColIdx] ?? '') : '') -
+     statusRank(statusColIdx >= 0 ? (b[0][statusColIdx] ?? '') : ''))
   )
+  const prevCount = sortedRows.filter(([r]) => isCarried(r)).length
+  const spNum = r => { const n = spColIdx >= 0 ? Number(r[spColIdx]) : NaN; return Number.isFinite(n) ? n : 0 }
+  const prevSP = sortedRows.reduce((s, [r]) => s + (isCarried(r) ? spNum(r) : 0), 0)
 
   // Adhoc rows shown read-only below Sprint Board rows
   const adhocInBoard = (activeTab === 'Sprint Board' || activeTab === MY_STORIES) ? (() => {
@@ -978,6 +985,65 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
     const n = spColIdx >= 0 ? Number(row[spColIdx]) : NaN
     return sum + (Number.isFinite(n) ? n : 0)
   }, 0)
+
+  const currCount = filteredRows.length - prevCount
+  const currSP    = (totalSP - prevSP) + adhocSP
+  const fmtSP     = n => Math.round(n * 10) / 10
+  const strongS   = { color: 'var(--text-primary)' }
+  const countsEl = (
+    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+      Previous: <strong style={strongS}>{prevCount}</strong> {prevCount === 1 ? 'story' : 'stories'} · <strong style={strongS}>{fmtSP(prevSP)} SP</strong>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      Current: <strong style={strongS}>{currCount}</strong> {currCount === 1 ? 'story' : 'stories'} · <strong style={strongS}>{fmtSP(currSP)} SP</strong>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      Total: <strong style={strongS}>{filteredRows.length}</strong> · <strong style={strongS}>{fmtSP(totalSP + adhocSP)} SP</strong>
+    </span>
+  )
+
+  // Copy / Export of the visible table (main columns + segment), including adhoc rows shown under Sprint Board / My Stories
+  const [copied, setCopied] = useState(false)
+  const exportTable = () => {
+    const head = [...mainIndices.map(ci => cols[ci]), 'Segment']
+    const clean = v => String(v ?? '').replace(/[\r\n]+/g, ' ')
+    const body = sortedRows.map(([r]) => [...mainIndices.map(ci => clean(r[ci])), isCarried(r) ? 'Previous Sprint' : 'Current Sprint'])
+    adhocInBoard.forEach(({ row }) => body.push([...mainIndices.map(ci => clean(row[ci])), 'Adhoc']))
+    return { head, body, jp: mainIndices.indexOf(jiraCol) }
+  }
+  const copyTable = async () => {
+    const { head, body, jp } = exportTable()
+    const text = [head, ...body].map(r => r.join('\t')).join('\n')
+    const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    const cell = (v, i) => (i === jp && v && jiraUrl(v)) ? `<td><a href="${esc(jiraUrl(v))}" style="color:#0563C1;text-decoration:underline">${esc(v)}</a></td>` : `<td>${esc(v)}</td>`
+    const html = `<table><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr>${body.map(r => `<tr>${r.map(cell).join('')}</tr>`).join('')}</table>`
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })])
+    } catch { try { await navigator.clipboard.writeText(text) } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove() } }
+    setCopied(true); setTimeout(() => setCopied(false), 1500)
+  }
+  const downloadTable = async () => {
+    const { head, body, jp } = exportTable()
+    const urls = body.map(r => (jp >= 0 && r[jp]) ? (jiraUrl(r[jp]) || '') : '')
+    try {
+      const res = await fetch(`${API}/export-xlsx`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ head, rows: body, urls, jp, sheet: activeTab, name: `${stem}_${activeTab.replace(/\s+/g, '_')}` }),
+      })
+      if (!res.ok) throw new Error('export failed')
+      const blob = await res.blob()
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `${stem}_${activeTab.replace(/\s+/g, '_')}.xlsx`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+    } catch (e) { alert('Export failed: ' + e.message) }
+  }
+  const btnS = { fontSize: 11, padding: '3px 10px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }
+  const actionsEl = (
+    <span style={{ display: 'inline-flex', gap: 6, marginLeft: 12 }}>
+      <button onClick={copyTable} style={btnS} title="Copy the table to the clipboard (paste into Excel / mail)">{copied ? '✓ Copied' : 'Copy'}</button>
+      <button onClick={downloadTable} style={btnS} title="Download the table as Excel (.xlsx) with clickable JIRA links">Export</button>
+    </span>
+  )
 
   return (
     <div style={{ padding: '24px 28px' }}>
@@ -1896,10 +1962,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
           {/* Adhoc Task count bar */}
           {activeTab === 'Adhoc Task' && (
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                {filteredRows.length} {filteredRows.length === 1 ? 'story' : 'stories'}
-                {totalSP > 0 && <> &nbsp;·&nbsp; <strong style={{ color: 'var(--text-primary)' }}>{totalSP} SP</strong></>}
-              </span>
+              <span style={{ marginLeft: 'auto' }}>{countsEl}{actionsEl}</span>
             </div>
           )}
           {/* Filter bar — Sprint Board: Developer + Status; My Stories: Status only */}
@@ -1923,10 +1986,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                   Clear
                 </button>
               )}
-              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
-                {filteredRows.length} {filteredRows.length === 1 ? 'story' : 'stories'}
-                {(totalSP + adhocSP) > 0 && <> &nbsp;·&nbsp; <strong style={{ color: 'var(--text-primary)' }}>{totalSP + adhocSP} SP</strong></>}
-              </span>
+              <span style={{ marginLeft: 'auto' }}>{countsEl}{actionsEl}</span>
             </div>
           )}
         <div style={{ overflowX: 'auto' }}>
@@ -1954,8 +2014,21 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                 const isCancelled = statusColIdx >= 0 && /^cancel/i.test(row[statusColIdx] || '')
                 const rowJira     = jiraCol >= 0 ? String(row[jiraCol] || '').trim().toUpperCase() : ''
                 const isHighlighted = highlightJira && rowJira === highlightJira
+                const carried   = isCarried(row)
+                const segHead   = di === 0 ? (carried ? 'prev' : 'curr') : (!carried && isCarried(sortedRows[di - 1][0]) ? 'curr' : null)
+                const segCount  = segHead === 'prev' ? prevCount : (filteredRows.length - prevCount)
+                const segSP     = segHead === 'prev' ? prevSP : (totalSP - prevSP)
                 return (
                   <>
+                    {segHead && (
+                      <tr key={`seg_${segHead}`}>
+                        <td colSpan={mainIndices.length + 2} style={{ padding: '5px 10px', background: segHead === 'prev' ? 'rgba(230,81,0,0.08)' : 'rgba(21,101,192,0.07)', borderBottom: '1px solid var(--border)' }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: segHead === 'prev' ? '#e65100' : '#1565c0' }}>
+                            {segHead === 'prev' ? 'Previous Sprint Stories' : 'Current Sprint Stories'} ({segCount} · {fmtSP(segSP)} SP)
+                          </span>
+                        </td>
+                      </tr>
+                    )}
                     <tr key={origIdx}
                       ref={isHighlighted ? highlightRowRef : null}
                       style={{ background: isHighlighted ? 'rgba(25,118,210,0.22)' : rowBg,
@@ -2912,7 +2985,7 @@ export default function SprintPage() {
   }
 
   if (selected) return (
-    <SprintDetail sprint={selected} onBack={() => setSelected(null)} onRename={handleRename} />
+    <SprintDetail sprint={selected} onBack={() => { setSelected(null); load() }} onRename={handleRename} />
   )
 
   const today          = new Date().toISOString().slice(0, 10)
