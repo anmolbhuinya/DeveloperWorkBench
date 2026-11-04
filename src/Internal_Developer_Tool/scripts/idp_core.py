@@ -35058,11 +35058,61 @@ def create_flask_app():
         return jsonify({"ok": True, "components": len(comps), "entries": len(rows), "applications": len(per),
                         "files": {k: f"sbom-{stamp}.{k}" for k in ("json", "csv", "html")}})
 
+    @app.route("/api/jqassistant/sbom-diff", methods=["POST"])
+    def api_jqa_sbom_diff():
+        """Libraries used by the selected applications with different versions, as a report (JSON / CSV / HTML)."""
+        import json as _j, csv as _csv, datetime as _dt, html as _h
+        names = (request.get_json(silent=True) or {}).get("apps") or []
+        if len(names) < 2:
+            return jsonify({"ok": False, "error": "Select at least two applications to compare"}), 400
+        usage, analyzed = {}, []        # (group, artifact) -> {version: {app, ...}}
+        for n in names:
+            try:
+                r = _j.loads((_JQA_HOME / "results" / (_jqa_safe(n) + ".json")).read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not r.get("modules"):
+                continue
+            analyzed.append(n)
+            for m in r["modules"]:
+                for d in m["deps"]:
+                    usage.setdefault((d["group"], d["artifact"]), {}).setdefault(d["version"], set()).add(n)
+        if len(analyzed) < 2:
+            return jsonify({"ok": False, "error": "At least two of the selected applications must be analyzed first"}), 400
+        diffs = []
+        for (g, a), vers in sorted(usage.items()):
+            if len(vers) > 1:
+                diffs.append({"group": g, "artifact": a,
+                              "versions": [{"version": v, "apps": sorted(ap)} for v, ap in sorted(vers.items())]})
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = _JQA_HOME / "sbom"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"sbomdiff-{stamp}.json").write_text(_j.dumps({"applications": analyzed, "differences": diffs}, indent=1), encoding="utf-8")
+        with open(out / f"sbomdiff-{stamp}.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(["Group", "Artifact"] + analyzed)
+            for d in diffs:
+                byapp = {ap: v["version"] for v in d["versions"] for ap in v["apps"]}
+                w.writerow([d["group"], d["artifact"]] + [byapp.get(ap, "-") for ap in analyzed])
+        html = ["<html><head><meta charset='utf-8'><title>SBOM Diff</title><style>body{font-family:Segoe UI,Arial;margin:24px}table{border-collapse:collapse;font-size:13px}"
+                "td,th{border:1px solid #ccc;padding:4px 8px}th{background:#1565c0;color:#fff}td.d{background:#fff3e0}</style></head><body>",
+                "<h2>SBOM Diff &mdash; libraries with different versions</h2><p>%s &middot; %s &middot; %d libraries differ</p>" % (
+                    _dt.datetime.now().strftime("%Y-%m-%d %H:%M"), _h.escape(", ".join(analyzed)), len(diffs)),
+                "<table><tr><th>Group</th><th>Artifact</th>" + "".join("<th>%s</th>" % _h.escape(a) for a in analyzed) + "</tr>"]
+        for d in diffs:
+            byapp = {ap: v["version"] for v in d["versions"] for ap in v["apps"]}
+            html.append("<tr><td>%s</td><td>%s</td>%s</tr>" % (_h.escape(d["group"]), _h.escape(d["artifact"]),
+                        "".join("<td class='d'>%s</td>" % _h.escape(byapp.get(ap, "-")) for ap in analyzed)))
+        html.append("</table></body></html>")
+        (out / f"sbomdiff-{stamp}.html").write_text("\n".join(html), encoding="utf-8")
+        return jsonify({"ok": True, "applications": analyzed, "differences": diffs,
+                        "files": {k: f"sbomdiff-{stamp}.{k}" for k in ("json", "csv", "html")}})
+
     @app.route("/api/jqassistant/sbom/download")
     def api_jqa_sbom_download():
         import re as _r
         fn = request.args.get("file", "")
-        if not _r.fullmatch(r"sbom-\d{8}-\d{6}\.(json|csv|html)", fn) or not (_JQA_HOME / "sbom" / fn).exists():
+        if not _r.fullmatch(r"sbom(diff)?-\d{8}-\d{6}\.(json|csv|html)", fn) or not (_JQA_HOME / "sbom" / fn).exists():
             return jsonify({"ok": False, "error": "Not found"}), 404
         return send_file(str(_JQA_HOME / "sbom" / fn), as_attachment=True, download_name=fn)
 

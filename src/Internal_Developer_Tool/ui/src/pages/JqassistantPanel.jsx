@@ -43,6 +43,7 @@ export default function JqassistantPanel({ onClose }) {
   const [view, setView] = useState('direct')
   const [sbomApps, setSbomApps] = useState({})
   const [sbom, setSbom] = useState(null)
+  const [diff, setDiff] = useState(null)
   const timer = useRef(null)
   const [loc, setLoc] = useState('')
   const [locPick, setLocPick] = useState(false)
@@ -92,6 +93,10 @@ export default function JqassistantPanel({ onClose }) {
         if (j.status !== 'running') { clearInterval(timer.current); if (j.status === 'success') setClone({ url: '', branch: '', name: '' }); load() }
       }).catch(() => {})
     }, 1500)
+  }
+  const makeDiff = async () => {
+    const names = Object.keys(sbomApps).filter(k => sbomApps[k])
+    setDiff(await fetch('/api/jqassistant/sbom-diff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apps: names }) }).then(r => r.json()))
   }
   const makeSbom = async () => {
     const names = Object.keys(sbomApps).filter(k => sbomApps[k])
@@ -205,11 +210,29 @@ export default function JqassistantPanel({ onClose }) {
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}> {cfg.results[a.name]?.analyzed ? `(analyzed ${cfg.results[a.name].analyzed})` : '(not analyzed)'}</span>
             </label>
           ))}
-          <div><button className="btn btn-primary" disabled={!Object.values(sbomApps).some(Boolean)} onClick={makeSbom}>Generate SBOM &amp; report</button></div>
+          <div><button className="btn btn-primary" disabled={!Object.values(sbomApps).some(Boolean)} onClick={makeSbom}>Generate SBOM &amp; report</button>
+            <button className="btn" style={{ marginLeft: 8 }} disabled={Object.values(sbomApps).filter(Boolean).length < 2} onClick={makeDiff}
+              title="Libraries used with different versions across the selected applications">SBOM Diff</button></div>
           {sbom && (sbom.ok
             ? <div style={{ fontSize: 13 }}>{sbom.applications} application(s) · {sbom.components} unique components · {sbom.entries} entries —{' '}
                 {['json', 'csv', 'html'].map(k => <a key={k} style={{ marginRight: 10 }} href={`/api/jqassistant/sbom/download?file=${sbom.files[k]}`}>Download {k.toUpperCase()}</a>)}</div>
             : <div className="alert alert-danger">{sbom.error}</div>)}
+          {diff && (diff.ok
+            ? <div>
+                <div style={{ fontSize: 13, marginBottom: 6 }}>{diff.differences.length} librar{diff.differences.length === 1 ? 'y' : 'ies'} with different versions across {diff.applications.join(', ')} —{' '}
+                  {['json', 'csv', 'html'].map(k => <a key={k} style={{ marginRight: 10 }} href={`/api/jqassistant/sbom/download?file=${diff.files[k]}`}>Download {k.toUpperCase()}</a>)}</div>
+                {diff.differences.length > 0 && (
+                  <div style={{ maxHeight: 340, overflow: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr>{['Group', 'Artifact', ...diff.applications].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                      <tbody>{diff.differences.map((d, i) => {
+                        const by = {}; d.versions.forEach(v => v.apps.forEach(a => { by[a] = v.version }))
+                        return <tr key={i}><td style={td}>{d.group}</td><td style={td}>{d.artifact}</td>{diff.applications.map(a => <td key={a} style={{ ...td, background: by[a] ? 'rgba(255,152,0,0.12)' : 'transparent' }}>{by[a] || '-'}</td>)}</tr>
+                      })}</tbody>
+                    </table>
+                  </div>)}
+              </div>
+            : <div className="alert alert-danger">{diff.error}</div>)}
         </div>
       )}
     </div>
