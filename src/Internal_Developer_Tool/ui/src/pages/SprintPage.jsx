@@ -4,8 +4,8 @@ import DatePicker from '../components/DatePicker'
 
 const API = '/api/project-management/sprint'
 const DATA_SHEETS = ['Sprint Board', 'Adhoc Task', 'PR Reviews']
-const MAIN_COLS   = ['JIRA ID', 'Story', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays']
-const COL_WIDTHS  = { 'JIRA ID': 110, 'Story': 320, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
+const MAIN_COLS   = ['JIRA ID', 'Story', 'Issue Type', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays']
+const COL_WIDTHS  = { 'JIRA ID': 110, 'Story': 320, 'Issue Type': 100, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
 const DETAIL_COLS     = ['Notes', 'Commit Job', 'IT Job', 'Code Freeze Date', 'Releasae Date', 'Deployment Date', 'Deployed']
 const COL_LABEL_OVERRIDE = { 'Deployed': 'Deployment Date' }
 
@@ -93,6 +93,40 @@ function extractJiraId(v) {
   const m = String(v).match(/\/browse\/([A-Z]+-\d+)/i) || String(v).match(/^([A-Z]+-\d+)$/i)
   return m ? m[1].toUpperCase() : v
 }
+// Copy a table to the clipboard (HTML with clickable JIRA links + tab-separated text fallback)
+async function copyRowsToClipboard(head, body) {
+  const jp = head.indexOf('JIRA ID')
+  const text = [head, ...body].map(r => r.join('\t')).join('\n')
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  const cell = (v, i) => (i === jp && v && jiraUrl(v)) ? `<td><a href="${esc(jiraUrl(v))}" style="color:#0563C1;text-decoration:underline">${esc(v)}</a></td>` : `<td>${esc(v)}</td>`
+  const html = `<table><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}</tr>${body.map(r => `<tr>${r.map(cell).join('')}</tr>`).join('')}</table>`
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })])
+  } catch {
+    try { await navigator.clipboard.writeText(text) }
+    catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove() }
+  }
+}
+
+// Download a table as .xlsx with clickable JIRA links
+async function exportRowsToXlsx(head, body, name) {
+  const jp = head.indexOf('JIRA ID')
+  const urls = body.map(r => (jp >= 0 && r[jp]) ? (jiraUrl(r[jp]) || '') : '')
+  try {
+    const res = await fetch('/api/project-management/sprint/export-xlsx', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ head, rows: body, urls, jp, sheet: name.slice(0, 31), name }),
+    })
+    if (!res.ok) throw new Error('export failed')
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${name}.xlsx`
+    document.body.appendChild(a); a.click(); a.remove()
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  } catch (e) { alert('Export failed: ' + e.message) }
+}
+
 function jiraUrl(id) {
   return /^[A-Z]+-\d+$/i.test(String(id||''))
     ? `https://healthedge.atlassian.net/browse/${String(id).toUpperCase()}`
@@ -1833,7 +1867,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
 
             <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
               {/* Overview table + progress bar */}
-              <div style={{ flex: '0 0 300px', minWidth: 260 }}>
+              <div style={{ flex: '0 0 360px', minWidth: 300 }}>
                 {/* SP progress bar */}
                 {(() => {
                   // Weighted "work remaining" per status — how much of the SP is still at risk
@@ -1927,14 +1961,32 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
 
                 <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: '#1565c0' }}>Overview</div>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead><tr><th style={thStyle}>Metric</th><th style={{ ...thStyle, textAlign: 'center' }}>Value</th></tr></thead>
+                  <thead><tr>
+                    <th style={thStyle}>Stories</th>
+                    <th style={{ ...thStyle, textAlign: 'center' }}>Count</th>
+                    <th style={{ ...thStyle, textAlign: 'center' }}>Story Points</th>
+                    <th style={thStyle} />
+                  </tr></thead>
                   <tbody>
-                    {(summaryData.overview || []).map((m, i) => (
-                      <tr key={i}>
-                        <td style={tdStyle(i, true)}>{m.metric}</td>
-                        <td style={tdC(i)}>{m.value}</td>
-                      </tr>
-                    ))}
+                    {(summaryData.overview_rows || []).map((m, i) => {
+                      const g = (summaryData.groups || {})[m.key] || { head: [], rows: [] }
+                      const nm = `${stem}_${m.label.replace(/\s+/g, '_')}_Stories`
+                      return (
+                        <tr key={m.key}>
+                          <td style={tdStyle(i, true)}>{m.label}</td>
+                          <td style={tdC(i)}>{m.stories}</td>
+                          <td style={tdC(i)}>{m.sp}</td>
+                          <td style={{ ...tdC(i), whiteSpace: 'nowrap' }}>
+                            <button style={{ fontSize: 11, padding: '2px 8px', marginRight: 4, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}
+                              title={`Copy the ${m.label.toLowerCase()} stories (all Sprint Board columns)`}
+                              onClick={() => copyRowsToClipboard(g.head, g.rows)}>Copy</button>
+                            <button style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}
+                              title={`Export the ${m.label.toLowerCase()} stories to Excel`}
+                              onClick={() => exportRowsToXlsx(g.head, g.rows, nm)}>Export</button>
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>

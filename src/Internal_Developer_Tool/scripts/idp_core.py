@@ -16827,8 +16827,8 @@ def create_flask_app():
             now  = _dt_h.datetime.now().strftime("%Y-%m-%d %H:%M")
             item = {"id": _uuid_h.uuid4().hex[:8], "title": title,
                     "description": str(body.get("description", "")).strip(),
-                    "status": cfg["statuses"][0], "created": now, "updated": now}
-            ws.append([item[c] for c in _HELP_COLS])
+                    "status": cfg["statuses"][0], "created": now, "updated": now, "pushed": ""}
+            ws.append([item.get(c, "") for c in _HELP_COLS])
             try:
                 _help_save(wb, path)
             except PermissionError:
@@ -27968,6 +27968,22 @@ def create_flask_app():
             cur += timedelta(days=1)
         return count
 
+    def _ensure_issue_type_col(ws):
+        """Make sure the sheet has an "Issue Type" column right after "Story" (backfilled from "Type"). True if it added one."""
+        if ws is None:
+            return False
+        hdr = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        if "Issue Type" in hdr or "Story" not in hdr:
+            return False
+        at = hdr.index("Story") + 2            # 1-based column right after Story
+        ws.insert_cols(at)
+        ws.cell(row=1, column=at).value = "Issue Type"
+        if "Type" in hdr:
+            tcol = hdr.index("Type") + 1 + (1 if hdr.index("Type") + 1 >= at else 0)
+            for r in range(2, ws.max_row + 1):
+                ws.cell(row=r, column=at).value = ws.cell(row=r, column=tcol).value
+        return True
+
     def _find_prev_dev_days(team, key, sprint_root):
         """Return (dev_days, in_dev_since, found) for key from the most recent previous sprint."""
         if not team or not sprint_root:
@@ -28011,8 +28027,11 @@ def create_flask_app():
         def _is_in_dev(s): return any(s.lower().strip() == x for x in _IN_DEV_STATUSES)
         def _is_testing(s): return s.lower().strip() in ("in testing", "testing")
 
+        _ensure_issue_type_col(ws)
+        _ensure_issue_type_col(adhoc_ws)
         header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
         ci = {h: i for i, h in enumerate(header) if h}
+        it_i      = ci.get("Issue Type")
         jira_i    = ci.get("JIRA ID");    story_i   = ci.get("Story")
         type_i    = ci.get("Type");       stat_i    = ci.get("Status")
         dev_i     = ci.get("Developer");  sp_i      = ci.get("Story Point")
@@ -28081,6 +28100,7 @@ def create_flask_app():
                 er = existing[key]
                 if story_i    is not None: ws.cell(row=er, column=story_i+1).value    = summary
                 if type_i     is not None and issue_type: ws.cell(row=er, column=type_i+1).value = issue_type
+                if it_i       is not None and issue_type: ws.cell(row=er, column=it_i+1).value   = issue_type
                 if stat_i     is not None: ws.cell(row=er, column=stat_i+1).value     = status
                 if sp_i       is not None: ws.cell(row=er, column=sp_i+1).value       = sp_val
                 if prs_i      is not None and prs_val     is not None: ws.cell(row=er, column=prs_i+1).value     = prs_val
@@ -28142,7 +28162,7 @@ def create_flask_app():
                     if key not in _ah_existing:
                         _ah_row = [None] * len(_ah_hdr)
                         for _col, _val in [
-                            ("JIRA ID", key), ("Story", summary), ("Type", issue_type),
+                            ("JIRA ID", key), ("Story", summary), ("Type", issue_type), ("Issue Type", issue_type),
                             ("Status", status), ("Developer", assignee), ("Story Point", sp_val),
                             ("PRs", prs_val), ("PR Status", pr_stat_val), ("Date Added", _today_str),
                             ("Carried Over", "Yes" if prev_found else None),
@@ -28160,7 +28180,7 @@ def create_flask_app():
                         for _ahr in _ah.iter_rows(min_row=2):
                             if _ahr[_jc].value and str(_ahr[_jc].value).strip().upper() == key:
                                 for _col, _val in [
-                                    ("Story", summary), ("Story Point", sp_val), ("Status", status),
+                                    ("Story", summary), ("Issue Type", issue_type), ("Story Point", sp_val), ("Status", status),
                                     ("PRs", prs_val), ("PR Status", pr_stat_val),
                                 ]:
                                     if _col in _ah_ci:
@@ -28171,6 +28191,7 @@ def create_flask_app():
                     row_vals[jira_i] = key
                     if story_i   is not None: row_vals[story_i]   = summary
                     if type_i    is not None: row_vals[type_i]    = issue_type
+                    if it_i      is not None: row_vals[it_i]      = issue_type
                     if stat_i    is not None: row_vals[stat_i]    = status
                     if dev_i     is not None: row_vals[dev_i]     = assignee
                     if sp_i      is not None: row_vals[sp_i]      = sp_val
@@ -28774,6 +28795,24 @@ def create_flask_app():
             else:
                 sheets[LOG_SHEET] = {"columns": _LOG_COLS, "rows": []}
             wb.close()
+            # Ensure "Issue Type" (after Story) exists on Sprint Board and Adhoc Task
+            for _it_sheet in ("Sprint Board", "Adhoc Task"):
+                _it_d = sheets.get(_it_sheet, {})
+                _it_cols = _it_d.get("columns", [])
+                if not _it_cols or "Issue Type" in _it_cols or "Story" not in _it_cols:
+                    continue
+                try:
+                    _wb_it = _xl.load_workbook(str(target))
+                    if _it_sheet in _wb_it.sheetnames and _ensure_issue_type_col(_wb_it[_it_sheet]):
+                        _wb_it.save(str(target))
+                    _wb_it.close()
+                    _at = _it_cols.index("Story") + 1
+                    _ti = _it_cols.index("Type") if "Type" in _it_cols else -1
+                    for _rw_it in _it_d.get("rows", []):
+                        _rw_it.insert(_at, _rw_it[_ti] if 0 <= _ti < len(_rw_it) else "")
+                    _it_cols.insert(_at, "Issue Type")
+                except Exception:
+                    pass
             # Ensure the DevDays / QADays / carry-over helper columns exist on Sprint Board and Adhoc Task
             for _en_sheet, _en_need in (("Sprint Board", ["DevDays", "InDevSince", "QADays", "InQASince", "Carried Over"]),
                                         ("Adhoc Task",   ["DevDays", "QADays", "InQASince", "Carried Over"])):
@@ -28939,12 +28978,44 @@ def create_flask_app():
                     dev_map[_k]["done"]    += 1
                     dev_map[_k]["sp_done"] += _r["sp"]
 
+            _n = lambda v: int(v) if v == int(v) else v
+            adhoc_sp = sum(r["sp"] for r in all_rows_sd if r["source"] == "Adhoc Task")
             overview = [
-                {"metric": "Total Stories",          "value": total_s},
-                {"metric": "Total Story Points",     "value": int(total_sp) if total_sp == int(total_sp) else total_sp},
-                {"metric": "Completed Stories",      "value": done_s},
-                {"metric": "Completed Story Points", "value": int(done_sp)  if done_sp  == int(done_sp)  else done_sp},
-                {"metric": "Adhoc Stories Added",    "value": adhoc_count},
+                {"metric": "Total Stories",               "value": total_s},
+                {"metric": "Total Story Points",          "value": _n(total_sp)},
+                {"metric": "Completed Stories",           "value": done_s},
+                {"metric": "Completed Story Points",      "value": _n(done_sp)},
+                {"metric": "Adhoc Stories Added",         "value": adhoc_count},
+                {"metric": "Adhoc Story Points Added",    "value": _n(adhoc_sp)},
+            ]
+            # Row groups for the Overview table; each carries every Sprint Board column (Adhoc rows mapped by name)
+            _sbws = wb["Sprint Board"] if "Sprint Board" in wb.sheetnames else None
+            _grp_head = [str(c.value).strip() for c in next(_sbws.iter_rows(min_row=1, max_row=1)) if c.value] if _sbws is not None else []
+            _grp_all = []
+            for _sh in ("Sprint Board", "Adhoc Task"):
+                if _sh not in wb.sheetnames:
+                    continue
+                _all2 = list(wb[_sh].iter_rows(values_only=True))
+                if not _all2:
+                    continue
+                _h2 = [str(h or "").strip() for h in _all2[0]]
+                _st2 = _h2.index("Status") if "Status" in _h2 else -1
+                for _r2 in _all2[1:]:
+                    if not any(v for v in _r2):
+                        continue
+                    _row2 = [("" if (_h in _h2 and _h2.index(_h) < len(_r2) and _r2[_h2.index(_h)] is None) else
+                              (str(_r2[_h2.index(_h)]) if _h in _h2 and _h2.index(_h) < len(_r2) else "")) for _h in _grp_head]
+                    _done2 = _st2 >= 0 and _st2 < len(_r2) and str(_r2[_st2] or "").strip().lower() in DONE_STATUS
+                    _grp_all.append((_row2, _done2, _sh == "Adhoc Task"))
+            groups = {
+                "total":     {"head": _grp_head, "rows": [r for r, d, a in _grp_all]},
+                "completed": {"head": _grp_head, "rows": [r for r, d, a in _grp_all if d]},
+                "adhoc":     {"head": _grp_head, "rows": [r for r, d, a in _grp_all if a]},
+            }
+            overview_rows = [
+                {"key": "total",     "label": "Total",     "stories": total_s, "sp": _n(total_sp)},
+                {"key": "completed", "label": "Completed", "stories": done_s,  "sp": _n(done_sp)},
+                {"key": "adhoc",     "label": "Adhoc Added", "stories": adhoc_count, "sp": _n(adhoc_sp)},
             ]
 
             status_breakdown = [
@@ -29041,6 +29112,8 @@ def create_flask_app():
             return jsonify({
                 "ok": True,
                 "overview": overview,
+                "overview_rows": overview_rows,
+                "groups": groups,
                 "status_breakdown": status_breakdown,
                 "sprint_label": sprint_label,
             })
@@ -30009,7 +30082,7 @@ def create_flask_app():
                 _m_rb = _re_rb.match(r'^(.+?)_\d{4}-\d{2}-\d{2}_', target.stem)
                 _team_rb = _m_rb.group(1) if _m_rb else ""
                 # Ensure Adhoc Task sheet exists with correct headers (incl. Date Added)
-                _ADHOC_HEADERS = ["JIRA ID", "Story", "Type", "Status", "Developer",
+                _ADHOC_HEADERS = ["JIRA ID", "Story", "Issue Type", "Type", "Status", "Developer",
                                    "Story Point", "PRs", "PR Status", "Date Added"]
                 if "Adhoc Task" not in wb.sheetnames:
                     _aws = wb.create_sheet("Adhoc Task")
