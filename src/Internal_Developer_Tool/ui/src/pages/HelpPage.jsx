@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 const PANELS = [
-  { kind: 'features', title: 'Wishlist', noun: 'feature', statuses: ['requested', 'implemented'], done: 'implemented' },
-  { kind: 'bugs',     title: 'Bugs',     noun: 'bug',     statuses: ['filed', 'fixed'],           done: 'fixed' },
+  { kind: 'features', title: 'Wishlist', noun: 'feature', statuses: ['requested', 'implemented'], done: 'implemented', action: 'Implement' },
+  { kind: 'bugs',     title: 'Bugs',     noun: 'bug',     statuses: ['filed', 'fixed'],           done: 'fixed',       action: 'Fix It' },
 ]
 
 const fieldStyle = {
@@ -11,7 +11,7 @@ const fieldStyle = {
   fontFamily: 'inherit',
 }
 
-function Panel({ kind, title, noun, statuses, done }) {
+function Panel({ kind, title, noun, statuses, done, action }) {
   const [items, setItems]   = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr]       = useState('')
@@ -19,6 +19,38 @@ function Panel({ kind, title, noun, statuses, done }) {
   const [editId, setEditId] = useState(null)
   const [edit, setEdit]     = useState({ title: '', description: '' })
   const [busy, setBusy]     = useState(false)
+  const [jobs, setJobs]     = useState({})        // item id -> latest AI job
+  const [openLog, setOpenLog] = useState({})      // item id -> log expanded
+  const timer = useRef(null)
+
+  const loadJobs = useCallback(() => {
+    fetch(`/api/help/${kind}/ai-jobs`).then(r => r.json())
+      .then(d => { if (d.ok) setJobs(d.jobs || {}) }).catch(() => {})
+  }, [kind])
+  useEffect(() => { loadJobs() }, [loadJobs])
+  // poll while any run is in progress
+  useEffect(() => {
+    clearInterval(timer.current)
+    if (Object.values(jobs).some(j => j.status === 'running')) {
+      timer.current = setInterval(() => { loadJobs(); load() }, 3000)
+    }
+    return () => clearInterval(timer.current)
+  }, [jobs])
+
+  const runAi = async it => {
+    setErr('')
+    try {
+      const r = await fetch(`/api/help/${kind}/${it.id}/ai-run`, { method: 'POST' })
+      const d = await r.json()
+      if (!d.ok) { setErr(d.error || 'Could not start the AI agent'); return }
+      setOpenLog(o => ({ ...o, [it.id]: true }))
+      loadJobs()
+    } catch { setErr('Could not start the AI agent') }
+  }
+  const abortAi = async job => {
+    await fetch(`/api/project-management/sonar-report/ai-abort/${job.job_id}`, { method: 'POST' }).catch(() => {})
+    loadJobs()
+  }
 
   const load = useCallback(() => {
     fetch(`/api/help/${kind}`).then(r => r.json())
@@ -97,9 +129,34 @@ function Panel({ kind, title, noun, statuses, done }) {
               {it.description && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{it.description}</div>}
               <div style={{ display: 'flex', alignItems: 'center', marginTop: 6, gap: 6 }}>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>Added {it.created}{it.updated !== it.created ? ` · updated ${it.updated}` : ''}</span>
+                {(() => {
+                  const job = jobs[it.id]
+                  const running = job?.status === 'running'
+                  return (
+                    <>
+                      {job && <button className="btn btn-sm" onClick={() => setOpenLog(o => ({ ...o, [it.id]: !o[it.id] }))}
+                        title="Show / hide the AI agent log">{openLog[it.id] ? '▾' : '▸'} AI log</button>}
+                      {running
+                        ? <button className="btn btn-sm btn-danger" onClick={() => abortAi(job)}>Abort</button>
+                        : it.status !== done && <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => runAi(it)}
+                            title={`Run the AI agent to ${action === 'Fix It' ? 'fix this bug' : 'implement this feature'}`}>{action}</button>}
+                    </>
+                  )
+                })()}
                 <button className="btn btn-sm" onClick={() => { setEditId(it.id); setEdit({ title: it.title, description: it.description }) }}>✎ Edit</button>
                 <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => remove(it)}>Delete</button>
               </div>
+              {jobs[it.id] && (
+                <div style={{ marginTop: 6, fontSize: 11, color: jobs[it.id].status === 'error' ? 'var(--danger, #c62828)' : 'var(--text-muted)' }}>
+                  {jobs[it.id].status === 'running' && <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> {jobs[it.id].label} — running…</>}
+                  {jobs[it.id].status === 'done' && '✓ AI run finished'}
+                  {jobs[it.id].status === 'error' && '✗ AI run failed — see log'}
+                  {jobs[it.id].status === 'aborted' && 'AI run aborted'}
+                </div>
+              )}
+              {jobs[it.id] && openLog[it.id] && (
+                <pre style={{ marginTop: 6, maxHeight: 260, overflow: 'auto', background: '#1e1e1e', color: '#ddd', fontSize: 11, padding: 8, borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{jobs[it.id].output || '…'}</pre>
+              )}
             </>
           )}
         </div>
@@ -109,9 +166,28 @@ function Panel({ kind, title, noun, statuses, done }) {
 }
 
 export default function HelpPage() {
+  const [session, setSession] = useState('')
+  const [sessMsg, setSessMsg] = useState('')
+  useEffect(() => {
+    fetch('/api/help/config').then(r => r.json()).then(d => { if (d.ok) setSession(d.session_name) }).catch(() => {})
+  }, [])
+  const saveSession = async () => {
+    try {
+      const r = await fetch('/api/help/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_name: session }) })
+      const d = await r.json()
+      if (d.ok) { setSession(d.session_name); setSessMsg('Saved') } else setSessMsg(d.error || 'Failed')
+    } catch { setSessMsg('Failed') }
+    setTimeout(() => setSessMsg(''), 2000)
+  }
   return (
     <div>
       <div className="page-header"><h1 className="page-title">ERD</h1></div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 13 }}>
+        <span style={{ color: 'var(--text-muted)' }}>AI agent session:</span>
+        <input type="text" value={session} onChange={e => setSession(e.target.value)} onBlur={saveSession}
+          onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }} style={{ ...fieldStyle, width: 260 }} />
+        <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{sessMsg || 'Implement / Fix It run in this session (saved in features_and_bugs.xlsx)'}</span>
+      </div>
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         {PANELS.map(p => <Panel key={p.kind} {...p} />)}
       </div>

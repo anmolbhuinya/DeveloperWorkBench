@@ -31151,6 +31151,11 @@ def create_flask_app():
                 return job
             if rc == 0:
                 job["status"] = "done"
+                if job["kind"] == "help":
+                    try:
+                        _help_mark_done(job)
+                    except Exception:
+                        pass
                 if job["kind"] == "fix":
                     rp = _resolve_report_path(job["filepath"])
                     if rp is not None:
@@ -31252,6 +31257,134 @@ def create_flask_app():
         header = f"$ lai  → cd {workspace}\n$ {command}{add_dir} -p\n\n--- prompt ---\n{prompt}\n--------------\n"
         jid = _spawn_job(kind, ps_cmd, header, filepath, app_name, label, issue_nums, project,
                          baseline=_dirty_snapshot(project) if project and Path(project).exists() else {})
+        return jsonify({"ok": True, "job_id": jid})
+
+    # ── ERD page: Wishlist "Implement" / Bug "Fix It" run the AI agent (same launcher as `lai`) in a named session ──
+    _HELP_DEFAULT_SESSION = "Developer_WorkBenchV3"
+
+    def _help_cfg_sheet(wb):
+        if "config" not in wb.sheetnames:
+            ws = wb.create_sheet("config")
+            ws.append(["key", "value"])
+            ws.append(["session_name", _HELP_DEFAULT_SESSION])
+            ws.append(["started_sessions", _HELP_DEFAULT_SESSION])
+        return wb["config"]
+
+    def _help_cfg_get(ws, key, default=""):
+        for r in ws.iter_rows(min_row=2, values_only=True):
+            if r and r[0] == key:
+                return "" if r[1] is None else str(r[1])
+        return default
+
+    def _help_cfg_set(ws, key, value):
+        for r in ws.iter_rows(min_row=2):
+            if r[0].value == key:
+                r[1].value = value
+                return
+        ws.append([key, value])
+
+    @app.route("/api/help/config", methods=["GET", "PUT"])
+    def api_help_config():
+        with _help_lock:
+            wb, path = _help_load()
+            ws = _help_cfg_sheet(wb)
+            if request.method == "PUT":
+                name = str((request.get_json(silent=True) or {}).get("session_name", "")).strip()
+                if not name or not _jre.fullmatch(r"[A-Za-z0-9_.\- ]{1,80}", name):
+                    return jsonify({"ok": False, "error": "Session name: letters, digits, space, _ . - only"}), 400
+                _help_cfg_set(ws, "session_name", name)
+                try:
+                    _help_save(wb, path)
+                except PermissionError:
+                    return jsonify({"ok": False, "error": "features_and_bugs.xlsx is open — close it and retry"}), 500
+            return jsonify({"ok": True, "session_name": _help_cfg_get(ws, "session_name", _HELP_DEFAULT_SESSION) or _HELP_DEFAULT_SESSION})
+
+    def _help_mark_done(job):
+        _, kind, item_id = (job.get("filepath") or "").split("/", 2)
+        cfg = _HELP_KINDS[kind]
+        import datetime as _dt_h
+        with _help_lock:
+            wb, path = _help_load()
+            ws = wb[cfg["sheet"]]
+            row = next((r for r in ws.iter_rows(min_row=2) if str(r[0].value or "") == item_id), None)
+            if row is not None:
+                row[3].value = cfg["statuses"][1]
+                row[5].value = _dt_h.datetime.now().strftime("%Y-%m-%d %H:%M")
+                _help_save(wb, path)
+
+    @app.route("/api/help/<kind>/ai-jobs", methods=["GET"])
+    def api_help_ai_jobs(kind):
+        """Latest AI job per item of this kind: {item_id: job view}."""
+        if kind not in _HELP_KINDS:
+            return jsonify({"ok": False, "error": "Unknown kind"}), 404
+        latest = {}
+        if _AI_JOBS_DIR.exists():
+            for jf in _AI_JOBS_DIR.glob("*.json"):
+                j = _job_load(jf.stem)
+                fp = (j or {}).get("filepath") or ""
+                if j and j.get("kind") == "help" and fp.startswith(f"help/{kind}/") and not j.get("dismissed"):
+                    iid = fp.split("/", 2)[2]
+                    if iid not in latest or j.get("created", 0) > latest[iid].get("created", 0):
+                        latest[iid] = j
+        out = {}
+        for iid, j in latest.items():
+            j = _job_refresh(j["id"]) or j
+            v = _job_view(j)
+            v.pop("follow", None)
+            out[iid] = v
+        return jsonify({"ok": True, "jobs": out})
+
+    @app.route("/api/help/<kind>/<item_id>/ai-run", methods=["POST"])
+    def api_help_ai_run(kind, item_id):
+        cfg = _HELP_KINDS.get(kind)
+        if not cfg:
+            return jsonify({"ok": False, "error": "Unknown kind"}), 404
+        ai_cfg    = _read_ai_agent_config()
+        workspace = ai_cfg.get("Workspace", "").strip()
+        command   = ai_cfg.get("Command", "").strip()
+        if not workspace or not command:
+            return jsonify({"ok": False, "error": "Workspace or Command not configured in AI_Agent.xlsx"})
+        with _help_lock:
+            wb, path = _help_load()
+            ws = wb[cfg["sheet"]]
+            row = next((r for r in ws.iter_rows(min_row=2, values_only=True) if r and str(r[0] or "") == item_id), None)
+            if row is None:
+                return jsonify({"ok": False, "error": "Not found"}), 404
+            title, desc = str(row[1] or ""), str(row[2] or "")
+            cws = _help_cfg_sheet(wb)
+            session = (_help_cfg_get(cws, "session_name", _HELP_DEFAULT_SESSION) or _HELP_DEFAULT_SESSION).strip()
+            started = [x for x in _help_cfg_get(cws, "started_sessions", "").split("|") if x]
+            first   = session not in started
+            if first:
+                _help_cfg_set(cws, "started_sessions", "|".join(started + [session]))
+                try:
+                    _help_save(wb, path)
+                except PermissionError:
+                    return jsonify({"ok": False, "error": "features_and_bugs.xlsx is open — close it and retry"}), 500
+        for j in (_job_load(f.stem) for f in (_AI_JOBS_DIR.glob("*.json") if _AI_JOBS_DIR.exists() else [])):
+            if j and j.get("kind") == "help" and j.get("filepath") == f"help/{kind}/{item_id}" and _job_refresh(j["id"]).get("status") == "running":
+                return jsonify({"ok": False, "error": "An AI run for this item is already in progress"})
+        repo = PROJECTS_HOME.parent / "DWB_Workspace"
+        what = "implement the following Wishlist feature" if kind == "features" else "fix the following bug"
+        prompt = (
+            f"In the Developer Workbench (DWB) application, {what}.\n\n"
+            f"Title: {title}\n"
+            f"Description: {desc or '(none)'}\n\n"
+            f"The source repository is {repo} (UI in src\\Internal_Developer_Tool\\ui, server in "
+            f"src\\Internal_Developer_Tool\\scripts\\idp_core.py). Make the minimal, correct change, "
+            f"build with build.ps1 and publish with Deploy.exe from that folder, and summarise what changed when done."
+        )
+        _AI_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        pf = _AI_JOBS_DIR / f"prompt_{_uuid_mod.uuid4().hex}.txt"
+        pf.write_text(prompt, encoding="utf-8")
+        flag = "--name" if first else "--resume"
+        sess_arg = f" {flag} '{session}'" if "claude" in command.lower() else ""
+        add_dir = f" --add-dir '{repo}'" if repo.exists() and "claude" in command.lower() else ""
+        ps_cmd = (f"Set-Location '{workspace}'; "
+                  f"Get-Content -Raw -Encoding UTF8 '{pf}' | {command}{sess_arg}{add_dir} -p --verbose --output-format stream-json")
+        header = (f"$ lai  → cd {workspace}\n$ {command}{sess_arg}{add_dir} -p\n"
+                  f"(session: {session}{' - new' if first else ' - resumed'})\n\n--- prompt ---\n{prompt}\n--------------\n")
+        jid = _spawn_job("help", ps_cmd, header, f"help/{kind}/{item_id}", "DWB", ("Implementing: " if kind == "features" else "Fixing: ") + title[:60])
         return jsonify({"ok": True, "job_id": jid})
 
     @app.route("/api/project-management/sonar-report/ai-resolve/<path:filepath>", methods=["POST"])
