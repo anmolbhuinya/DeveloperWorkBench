@@ -44,10 +44,13 @@ export default function JqassistantPanel({ onClose }) {
   const [sbomApps, setSbomApps] = useState({})
   const [sbom, setSbom] = useState(null)
   const timer = useRef(null)
+  const [loc, setLoc] = useState('')
+  const [locPick, setLocPick] = useState(false)
+  const [clone, setClone] = useState({ url: '', branch: '', name: '' })
   const [pickIdx, setPickIdx] = useState(null)   // row whose folder is being browsed
 
   const load = () => fetch('/api/jqassistant/config').then(r => r.json()).then(d => {
-    if (d.ok) { setCfg(d); setApps(d.apps.length ? d.apps : [{ name: '', path: '' }]); if (!sel && d.apps[0]) setSel(d.apps[0].name) }
+    if (d.ok) { setCfg(d); setLoc(d.project_location); setApps(d.apps.length ? d.apps : [{ name: '', path: '' }]); if (!sel && d.apps[0]) setSel(d.apps[0].name) }
   })
   useEffect(() => { load(); return () => clearInterval(timer.current) }, [])
   useEffect(() => {
@@ -69,6 +72,24 @@ export default function JqassistantPanel({ onClose }) {
       fetch(`/api/jqassistant/job/${r.job}`).then(x => x.json()).then(j => {
         setJob({ id: r.job, label: j.label, status: j.status, output: j.output })
         if (j.status !== 'running') { clearInterval(timer.current); load() }
+      }).catch(() => {})
+    }, 1500)
+  }
+  const saveLoc = async () => {
+    setMsg('')
+    const r = await fetch('/api/jqassistant/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_location: loc }) }).then(r => r.json())
+    if (r.ok) { setCfg(r); setLoc(r.project_location); setMsg('Project location saved') } else setMsg(r.error || 'Failed')
+  }
+  const doClone = async () => {
+    if (job?.status === 'running') return
+    const r = await fetch('/api/jqassistant/clone', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clone) }).then(r => r.json())
+    if (!r.ok) { setJob({ label: 'clone', status: 'failed', output: r.error }); return }
+    setJob({ id: r.job, label: 'clone', status: 'running', output: '' })
+    clearInterval(timer.current)
+    timer.current = setInterval(() => {
+      fetch(`/api/jqassistant/job/${r.job}`).then(x => x.json()).then(j => {
+        setJob({ id: r.job, label: j.label, status: j.status, output: j.output })
+        if (j.status !== 'running') { clearInterval(timer.current); if (j.status === 'success') setClone({ url: '', branch: '', name: '' }); load() }
       }).catch(() => {})
     }, 1500)
   }
@@ -94,7 +115,27 @@ export default function JqassistantPanel({ onClose }) {
 
       {tab === 'code' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Configure the code bases (application folders) jQAssistant should scan. Add several applications for a combined SBOM.</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Project location</span>
+            <input style={{ ...field, flex: 1, minWidth: 240 }} value={loc} onChange={e => setLoc(e.target.value)} placeholder="~/hebb" />
+            <button className="btn" onClick={() => setLocPick(true)}>Browse…</button>
+            <button className="btn btn-primary" onClick={saveLoc}>Save location</button>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{cfg.project_location_abs} · stored in Setup\Dev_Softwares\jQAssistant\config.xlsx</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Add from git</span>
+            <input style={{ ...field, flex: 1, minWidth: 260 }} placeholder="Repository URL (https://… or git@…)" value={clone.url} onChange={e => setClone(c => ({ ...c, url: e.target.value }))} />
+            <input style={{ ...field, width: 130 }} placeholder="Branch (optional)" value={clone.branch} onChange={e => setClone(c => ({ ...c, branch: e.target.value }))} />
+            <input style={{ ...field, width: 150 }} placeholder="Folder name (optional)" value={clone.name} onChange={e => setClone(c => ({ ...c, name: e.target.value }))} />
+            <button className="btn btn-primary" disabled={!clone.url.trim() || job?.status === 'running'} onClick={doClone}>Clone</button>
+          </div>
+          {job && job.label.startsWith('clone') && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: job.status === 'failed' ? 'var(--danger)' : job.status === 'success' ? 'var(--success)' : 'var(--text)' }}>{job.label} — {job.status}</div>
+              <pre style={{ margin: 0, maxHeight: 200, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>{job.output || 'Starting…'}</pre>
+            </div>
+          )}
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Code bases jQAssistant should scan (cloned projects are added automatically). Add several applications for a combined SBOM.</div>
           {apps.map((a, i) => (
             <div key={i} style={{ display: 'flex', gap: 8 }}>
               <input style={{ ...field, width: 180 }} placeholder="Application name" value={a.name} onChange={e => setApps(x => x.map((y, j) => j === i ? { ...y, name: e.target.value } : y))} />
@@ -110,8 +151,9 @@ export default function JqassistantPanel({ onClose }) {
           </div>
         </div>
       )}
+      {locPick && <FolderPicker start={cfg.project_location_abs} onCancel={() => setLocPick(false)} onPick={p => { setLoc(p); setLocPick(false) }} />}
       {pickIdx !== null && (
-        <FolderPicker start={apps[pickIdx]?.path} onCancel={() => setPickIdx(null)}
+        <FolderPicker start={apps[pickIdx]?.path || cfg.project_location_abs} onCancel={() => setPickIdx(null)}
           onPick={p => {
             setApps(x => x.map((y, j) => j === pickIdx ? { ...y, path: p, name: y.name || p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() } : y))
             setPickIdx(null)

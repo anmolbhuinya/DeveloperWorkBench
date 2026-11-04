@@ -34680,6 +34680,43 @@ def create_flask_app():
     def _jqa_cmd():
         return INSTALLED_SOFTWARES / "jQAssistant" / "bin" / "jqassistant.cmd"
 
+    # Setup\Dev_Softwares\<software>\config.xlsx - one folder per dev software, settings on the "config" sheet
+    _JQA_XLSX = SETUP_ROOT / "Dev_Softwares" / "jQAssistant" / "config.xlsx"
+    _JQA_DEFAULT_LOC = "~/hebb"
+
+    def _jqa_xlsx(key=None, value=None):
+        """Read (or, with a value, write) a key on the jQAssistant config sheet; the file is created on first use."""
+        import openpyxl as _xl
+        if _JQA_XLSX.exists():
+            wb = _xl.load_workbook(str(_JQA_XLSX))
+        else:
+            wb = _xl.Workbook()
+            wb.active.title = "config"
+            wb.active.append(["key", "value", "description"])
+            wb.active.append(["project_location", _JQA_DEFAULT_LOC, "Folder holding the projects; git clones go here"])
+            _JQA_XLSX.parent.mkdir(parents=True, exist_ok=True)
+            wb.save(str(_JQA_XLSX))
+        ws = wb["config"] if "config" in wb.sheetnames else wb.active
+        for r in ws.iter_rows(min_row=2):
+            if r[0].value == key:
+                if value is not None:
+                    r[1].value = value
+                    wb.save(str(_JQA_XLSX))
+                return "" if r[1].value is None else str(r[1].value)
+        if value is not None:
+            ws.append([key, value])
+            wb.save(str(_JQA_XLSX))
+            return value
+        return ""
+
+    def _jqa_location():
+        return os.path.expanduser(_jqa_xlsx("project_location") or _JQA_DEFAULT_LOC)
+
+    try:
+        _jqa_xlsx()          # create Setup\Dev_Softwares\jQAssistant\config.xlsx up front
+    except Exception:
+        pass
+
     def _jqa_cfg():
         import json as _j
         try:
@@ -34719,8 +34756,16 @@ def create_flask_app():
     def api_jqa_config():
         import json as _j
         if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            if "project_location" in body:
+                loc = str(body["project_location"]).strip()
+                if not loc:
+                    return jsonify({"ok": False, "error": "Project location is required"}), 400
+                _jqa_xlsx("project_location", loc)
+            if "apps" not in body:
+                body["apps"] = _jqa_cfg()["apps"]
             apps = []
-            for a in (request.get_json(silent=True) or {}).get("apps", []):
+            for a in body.get("apps", []):
                 name, path = str(a.get("name", "")).strip(), str(a.get("path", "")).strip()
                 if not name or not path:
                     continue
@@ -34738,6 +34783,7 @@ def create_flask_app():
             except Exception:
                 res[a["name"]] = {}
         return jsonify({"ok": True, "apps": cfg["apps"], "installed": st["installed_here"], "version": st["version"],
+                        "project_location": _jqa_xlsx("project_location") or _JQA_DEFAULT_LOC, "project_location_abs": _jqa_location(),
                         "results": {k: {"scanned": v.get("scanned"), "analyzed": v.get("analyzed")} for k, v in res.items()}})
 
     def _jqa_write_yml(work, version):
@@ -34909,6 +34955,43 @@ def create_flask_app():
 
         jid = _jqa_job_start(step + " " + name, _scan if step == "scan" else _analyze)
         return jsonify({"ok": True, "job": jid})
+
+    @app.route("/api/jqassistant/clone", methods=["POST"])
+    def api_jqa_clone():
+        """git clone a repository into the configured project location and add it as a code base."""
+        import re as _r, json as _j
+        body = request.get_json(silent=True) or {}
+        url, branch = str(body.get("url", "")).strip(), str(body.get("branch", "")).strip()
+        if not url or not _r.fullmatch(r"[\w.@:/\\~+-]+", url) or url.startswith("-"):
+            return jsonify({"ok": False, "error": "Enter a valid git repository URL"}), 400
+        if branch and (not _r.fullmatch(r"[\w./-]+", branch) or branch.startswith("-")):
+            return jsonify({"ok": False, "error": "Invalid branch name"}), 400
+        name = str(body.get("name", "")).strip() or _r.sub(r"\.git$", "", url.rstrip("/\\").replace("\\", "/").split("/")[-1].split(":")[-1])
+        if not name or not _r.fullmatch(r"[\w.-]+", name):
+            return jsonify({"ok": False, "error": "Invalid project folder name"}), 400
+        git = shutil.which("git")
+        if not git:
+            return jsonify({"ok": False, "error": "git is not installed or not on PATH"}), 400
+        loc = Path(_jqa_location())
+        dest = loc / name
+        if dest.exists():
+            return jsonify({"ok": False, "error": "Folder already exists: %s" % dest}), 400
+
+        def _clone(job):
+            loc.mkdir(parents=True, exist_ok=True)
+            argv = [git, "clone", "--progress"] + (["-b", branch] if branch else []) + ["--", url, str(dest)]
+            rc = _jqa_stream(job, argv, loc)
+            if rc != 0:
+                return False
+            cfg = _jqa_cfg()
+            if not any(a["name"] == name for a in cfg["apps"]):
+                cfg["apps"].append({"name": name, "path": str(dest)})
+                _JQA_HOME.mkdir(parents=True, exist_ok=True)
+                (_JQA_HOME / "config.json").write_text(_j.dumps(cfg, indent=1), encoding="utf-8")
+            job["output"] += "\nCloned into %s and added to the code bases.\n" % dest
+            return True
+
+        return jsonify({"ok": True, "job": _jqa_job_start("clone " + name, _clone)})
 
     @app.route("/api/jqassistant/job/<jid>")
     def api_jqa_job(jid):
