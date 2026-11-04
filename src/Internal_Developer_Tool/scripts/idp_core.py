@@ -35065,7 +35065,7 @@ def create_flask_app():
         names = (request.get_json(silent=True) or {}).get("apps") or []
         if len(names) < 2:
             return jsonify({"ok": False, "error": "Select at least two applications to compare"}), 400
-        usage, analyzed = {}, []        # (group, artifact) -> {version: {app, ...}}
+        usage, analyzed = {}, []        # (group, artifact) -> {app: {version, ...}}
         for n in names:
             try:
                 r = _j.loads((_JQA_HOME / "results" / (_jqa_safe(n) + ".json")).read_text(encoding="utf-8"))
@@ -35076,14 +35076,15 @@ def create_flask_app():
             analyzed.append(n)
             for m in r["modules"]:
                 for d in m["deps"]:
-                    usage.setdefault((d["group"], d["artifact"]), {}).setdefault(d["version"], set()).add(n)
+                    usage.setdefault((d["group"], d["artifact"]), {}).setdefault(n, set()).add(d["version"])
         if len(analyzed) < 2:
             return jsonify({"ok": False, "error": "At least two of the selected applications must be analyzed first"}), 400
         diffs = []
-        for (g, a), vers in sorted(usage.items()):
-            if len(vers) > 1:
-                diffs.append({"group": g, "artifact": a,
-                              "versions": [{"version": v, "apps": sorted(ap)} for v, ap in sorted(vers.items())]})
+        for (g, a), per_app in sorted(usage.items()):
+            # a difference = the applications that use the library do not all use the same version(s);
+            # several modules of ONE application using different versions is not an application-to-application difference
+            if len({frozenset(v) for v in per_app.values()}) > 1:
+                diffs.append({"group": g, "artifact": a, "apps": {ap: sorted(v) for ap, v in per_app.items()}})
         stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         out = _JQA_HOME / "sbom"
         out.mkdir(parents=True, exist_ok=True)
@@ -35092,21 +35093,125 @@ def create_flask_app():
             w = _csv.writer(f)
             w.writerow(["Group", "Artifact"] + analyzed)
             for d in diffs:
-                byapp = {ap: v["version"] for v in d["versions"] for ap in v["apps"]}
-                w.writerow([d["group"], d["artifact"]] + [byapp.get(ap, "-") for ap in analyzed])
+                w.writerow([d["group"], d["artifact"]] + [", ".join(d["apps"].get(ap, [])) or "-" for ap in analyzed])
         html = ["<html><head><meta charset='utf-8'><title>SBOM Diff</title><style>body{font-family:Segoe UI,Arial;margin:24px}table{border-collapse:collapse;font-size:13px}"
                 "td,th{border:1px solid #ccc;padding:4px 8px}th{background:#1565c0;color:#fff}td.d{background:#fff3e0}</style></head><body>",
                 "<h2>SBOM Diff &mdash; libraries with different versions</h2><p>%s &middot; %s &middot; %d libraries differ</p>" % (
                     _dt.datetime.now().strftime("%Y-%m-%d %H:%M"), _h.escape(", ".join(analyzed)), len(diffs)),
                 "<table><tr><th>Group</th><th>Artifact</th>" + "".join("<th>%s</th>" % _h.escape(a) for a in analyzed) + "</tr>"]
         for d in diffs:
-            byapp = {ap: v["version"] for v in d["versions"] for ap in v["apps"]}
             html.append("<tr><td>%s</td><td>%s</td>%s</tr>" % (_h.escape(d["group"]), _h.escape(d["artifact"]),
-                        "".join("<td class='d'>%s</td>" % _h.escape(byapp.get(ap, "-")) for ap in analyzed)))
+                        "".join("<td class='d'>%s</td>" % _h.escape(", ".join(d["apps"].get(ap, [])) or "-") for ap in analyzed)))
         html.append("</table></body></html>")
         (out / f"sbomdiff-{stamp}.html").write_text("\n".join(html), encoding="utf-8")
         return jsonify({"ok": True, "applications": analyzed, "differences": diffs,
                         "files": {k: f"sbomdiff-{stamp}.{k}" for k in ("json", "csv", "html")}})
+
+    # ── Architecture: module structure of the code base (from the Maven POMs) + Neo4j Browser over the jQAssistant store ──
+    def _jqa_modules(root):
+        """{artifactId: {path, packaging, deps:[artifactId...], java_files}} for every pom.xml under root."""
+        import xml.etree.ElementTree as _et
+        skip = {"target", "node_modules", ".git", ".idea", "build", "dist"}
+        poms, out = [], {}
+        base = Path(root)
+        for dp, dns, fns in os.walk(base):
+            dns[:] = [d for d in dns if d not in skip and not d.startswith(".")]
+            if "pom.xml" in fns and len(Path(dp).relative_to(base).parts) <= 6:
+                poms.append(Path(dp))
+        for d in poms:
+            try:
+                r = _et.parse(str(d / "pom.xml")).getroot()
+            except Exception:
+                continue
+            loc = lambda e: e.tag.split("}")[-1]
+            kid = lambda e, n: next((c for c in e if loc(c) == n), None)
+            txt = lambda e, n: ((kid(e, n).text or "").strip() if kid(e, n) is not None else "")
+            aid = txt(r, "artifactId")
+            if not aid:
+                continue
+            deps = []
+            dsec = kid(r, "dependencies")
+            if dsec is not None:
+                deps = [txt(x, "artifactId") for x in dsec if loc(x) == "dependency"]
+            nj = sum(1 for _ in (d / "src").rglob("*.java")) if (d / "src").is_dir() else 0
+            out[aid] = {"path": str(d), "packaging": txt(r, "packaging") or "jar", "deps": [x for x in deps if x], "java_files": nj}
+        return out
+
+    @app.route("/api/jqassistant/architecture", methods=["POST"])
+    def api_jqa_architecture():
+        import json as _j, re
+        name = str((request.get_json(silent=True) or {}).get("app", ""))
+        a = next((x for x in _jqa_cfg()["apps"] if x["name"] == name), None)
+        if not a:
+            return jsonify({"ok": False, "error": "Unknown application"}), 400
+        mods = _jqa_modules(a["path"])
+        if not mods:
+            return jsonify({"ok": False, "error": "No Maven modules (pom.xml) found under " + a["path"]}), 400
+        edges = sorted({(m, d) for m, v in mods.items() for d in v["deps"] if d in mods and d != m})
+        level = {m: 0 for m in mods}
+        for _ in range(len(mods)):                      # longest-path layering: a module sits above everything it depends on
+            changed = False
+            for m, d in edges:
+                if level[m] < level[d] + 1:
+                    level[m] = level[d] + 1
+                    changed = True
+            if not changed:
+                break
+        nodes = [{"id": m, "packaging": v["packaging"], "level": level[m], "java_files": v["java_files"],
+                  "path": v["path"]} for m, v in sorted(mods.items())]
+        mm = ["graph TD"] + ['  %s["%s (%s)"]' % (re.sub(r"\W", "_", n["id"]), n["id"], n["packaging"]) for n in nodes] + \
+             ["  %s --> %s" % (re.sub(r"\W", "_", m), re.sub(r"\W", "_", d)) for m, d in edges]
+        out = _JQA_HOME / "architecture"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / (_jqa_safe(name) + ".mmd")).write_text("\n".join(mm), encoding="utf-8")
+        (out / (_jqa_safe(name) + ".json")).write_text(_j.dumps({"nodes": nodes, "edges": edges}, indent=1), encoding="utf-8")
+        return jsonify({"ok": True, "nodes": nodes, "edges": edges, "mermaid": "\n".join(mm)})
+
+    _jqa_neo = {}      # app -> subprocess of `jqassistant server`
+
+    def _port_open(port):
+        import socket as _s
+        try:
+            with _s.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        except OSError:
+            return False
+
+    @app.route("/api/jqassistant/neo4j", methods=["GET", "POST"])
+    def api_jqa_neo4j():
+        """Start / stop jQAssistant's embedded Neo4j server (the store of a scanned app) - Neo4j Browser is at http://localhost:7474."""
+        body = request.get_json(silent=True) or {}
+        port = 7474
+        if request.method == "GET":
+            return jsonify({"ok": True, "running": _port_open(port), "url": "http://localhost:%d" % port,
+                            "app": next((k for k, p in _jqa_neo.items() if p.poll() is None), "")})
+        name, action = str(body.get("app", "")), str(body.get("action", ""))
+        if action == "stop":
+            for k, p in list(_jqa_neo.items()):
+                if p.poll() is None:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True, creationflags=0x08000000)
+                _jqa_neo.pop(k, None)
+            return jsonify({"ok": True, "running": _port_open(port)})
+        a = next((x for x in _jqa_cfg()["apps"] if x["name"] == name), None)
+        cmd = _jqa_cmd()
+        if not a or not cmd.exists():
+            return jsonify({"ok": False, "error": "Unknown application or jQAssistant not installed"}), 400
+        work = _JQA_HOME / "work" / _jqa_safe(name)
+        if not (work / "store").exists():
+            return jsonify({"ok": False, "error": "Scan this application first (Scan & Analyze tab) - there is no store to browse yet"}), 400
+        if _port_open(port):
+            return jsonify({"ok": False, "error": "A Neo4j server is already running on port %d - stop it first" % port}), 400
+        log = open(work / "neo4j-server.log", "wb")
+        _jqa_neo[name] = subprocess.Popen([str(cmd), "server"], cwd=str(work), stdout=log, stderr=subprocess.STDOUT,
+                                          creationflags=0x08000000)
+        import time as _t
+        for _ in range(60):
+            if _port_open(port):
+                break
+            if _jqa_neo[name].poll() is not None:
+                return jsonify({"ok": False, "error": "jQAssistant server exited - see " + str(work / "neo4j-server.log")}), 500
+            _t.sleep(0.5)
+        return jsonify({"ok": True, "running": _port_open(port), "url": "http://localhost:%d" % port})
 
     @app.route("/api/jqassistant/sbom/download")
     def api_jqa_sbom_download():

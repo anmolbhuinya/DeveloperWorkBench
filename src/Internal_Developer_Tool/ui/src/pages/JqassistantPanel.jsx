@@ -32,6 +32,38 @@ function FolderPicker({ start, onPick, onCancel }) {
   )
 }
 
+// Layered module diagram: modules that depend on others sit higher; arrows point to the dependency
+function ArchDiagram({ nodes, edges, svgRef }) {
+  const levels = {}
+  nodes.forEach(n => { (levels[n.level] = levels[n.level] || []).push(n) })
+  const top = Math.max(...nodes.map(n => n.level))
+  const W = 190, H = 44, GX = 24, GY = 70
+  const widest = Math.max(...Object.values(levels).map(l => l.length))
+  const width = widest * (W + GX) + GX, height = (top + 1) * (H + GY) + GY / 2
+  const pos = {}
+  Object.entries(levels).forEach(([lv, arr]) => arr.forEach((n, i) => {
+    const rowW = arr.length * (W + GX) - GX
+    pos[n.id] = { x: (width - rowW) / 2 + i * (W + GX), y: (top - lv) * (H + GY) + GY / 4 }
+  }))
+  const col = p => p === 'pom' ? '#fff3e0' : p === 'war' || p === 'ear' ? '#e8f5e9' : '#e3f2fd'
+  return (
+    <svg ref={svgRef} xmlns="http://www.w3.org/2000/svg" width={width} height={height} style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 6 }}>
+      <defs><marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#78909c" /></marker></defs>
+      {edges.map(([m, d], i) => {
+        const a = pos[m], b = pos[d]
+        return <line key={i} x1={a.x + W / 2} y1={a.y + H} x2={b.x + W / 2} y2={b.y} stroke="#90a4ae" strokeWidth="1" markerEnd="url(#ah)" />
+      })}
+      {nodes.map(n => (
+        <g key={n.id}>
+          <rect x={pos[n.id].x} y={pos[n.id].y} width={W} height={H} rx="6" fill={col(n.packaging)} stroke="#1565c0" />
+          <text x={pos[n.id].x + W / 2} y={pos[n.id].y + 18} textAnchor="middle" fontSize="11" fontWeight="700" fill="#0d47a1">{n.id.length > 28 ? n.id.slice(0, 27) + '…' : n.id}</text>
+          <text x={pos[n.id].x + W / 2} y={pos[n.id].y + 33} textAnchor="middle" fontSize="10" fill="#546e7a">{n.packaging} · {n.java_files} java files</text>
+        </g>
+      ))}
+    </svg>
+  )
+}
+
 export default function JqassistantPanel({ onClose }) {
   const [tab, setTab] = useState('code')
   const [cfg, setCfg] = useState({ apps: [], installed: true, version: '', results: {} })
@@ -44,7 +76,11 @@ export default function JqassistantPanel({ onClose }) {
   const [sbomApps, setSbomApps] = useState({})
   const [sbom, setSbom] = useState(null)
   const [diff, setDiff] = useState(null)
+  const [arch, setArch] = useState(null)
+  const [archBusy, setArchBusy] = useState(false)
+  const [neo, setNeo] = useState({ running: false, url: 'http://localhost:7474', msg: '' })
   const timer = useRef(null)
+  const svgRef = useRef(null)
   const [loc, setLoc] = useState('')
   const [locPick, setLocPick] = useState(false)
   const [clone, setClone] = useState({ url: '', branch: '', name: '' })
@@ -94,6 +130,23 @@ export default function JqassistantPanel({ onClose }) {
       }).catch(() => {})
     }, 1500)
   }
+  const genArch = async () => {
+    setArchBusy(true); setArch(null)
+    try { setArch(await fetch('/api/jqassistant/architecture', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app: sel }) }).then(r => r.json())) }
+    finally { setArchBusy(false) }
+  }
+  const neoCall = async action => {
+    setNeo(n => ({ ...n, msg: action === 'start' ? 'Starting Neo4j (can take up to 30 s)…' : 'Stopping…' }))
+    const r = await fetch('/api/jqassistant/neo4j', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app: sel, action }) }).then(r => r.json())
+    if (!r.ok) { setNeo(n => ({ ...n, msg: r.error })); return }
+    setNeo({ running: r.running, url: r.url || 'http://localhost:7474', msg: r.running ? 'Neo4j is running' : 'Stopped' })
+    if (action === 'start' && r.running) window.open(r.url, '_blank')
+  }
+  useEffect(() => { if (tab === 'arch') fetch('/api/jqassistant/neo4j').then(r => r.json()).then(d => { if (d.ok) setNeo(n => ({ ...n, running: d.running, url: d.url })) }).catch(() => {}) }, [tab])
+  const downloadText = (name, text, type) => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  }
   const makeDiff = async () => {
     const names = Object.keys(sbomApps).filter(k => sbomApps[k])
     setDiff(await fetch('/api/jqassistant/sbom-diff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apps: names }) }).then(r => r.json()))
@@ -114,7 +167,7 @@ export default function JqassistantPanel({ onClose }) {
     <div className="card" style={{ marginTop: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <div style={{ flex: 1, fontWeight: 700, fontSize: 16 }}>🔍 jQAssistant {cfg.version && <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}>v{cfg.version}</span>}</div>
-        {tabBtn('code', '1. Code base')}{tabBtn('analyze', '2. Scan & Analyze')}{tabBtn('sbom', '3. SBOM')}
+        {tabBtn('code', '1. Code base')}{tabBtn('analyze', '2. Scan & Analyze')}{tabBtn('sbom', '3. SBOM')}{tabBtn('arch', '4. Architecture')}
         <button className="btn" onClick={onClose}>✕</button>
       </div>
 
@@ -201,6 +254,33 @@ export default function JqassistantPanel({ onClose }) {
         </div>
       )}
 
+      {tab === 'arch' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {cfg.apps.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Configure a code base first.</div>}
+          {cfg.apps.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <select style={field} value={sel} onChange={e => { setSel(e.target.value); setArch(null) }}>{cfg.apps.map(a => <option key={a.name}>{a.name}</option>)}</select>
+              <button className="btn btn-primary" disabled={archBusy || !sel} onClick={genArch}>{archBusy ? 'Generating…' : 'Generate architecture'}</button>
+              <span style={{ borderLeft: '1px solid var(--border)', height: 22 }} />
+              <button className="btn" disabled={!sel} onClick={() => neoCall('start')} title="Starts jQAssistant's embedded Neo4j on the scanned store and opens Neo4j Browser">Open Neo4j Browser</button>
+              {neo.running && <><a href={neo.url} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>{neo.url}</a><button className="btn" onClick={() => neoCall('stop')}>Stop Neo4j</button></>}
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{neo.msg}</span>
+            </div>
+          )}
+          {arch && !arch.ok && <div className="alert alert-danger">{arch.error}</div>}
+          {arch?.ok && (
+            <>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{arch.nodes.length} modules · {arch.edges.length} dependencies between them (top = depends on the ones below)</span>
+                <button className="btn" onClick={() => downloadText(`${sel}_architecture.svg`, new XMLSerializer().serializeToString(svgRef.current), 'image/svg+xml')}>Download SVG</button>
+                <button className="btn" onClick={() => downloadText(`${sel}_architecture.mmd`, arch.mermaid, 'text/plain')}>Download Mermaid</button>
+              </div>
+              <div style={{ overflow: 'auto', maxHeight: 560 }}><ArchDiagram nodes={arch.nodes} edges={arch.edges} svgRef={svgRef} /></div>
+            </>
+          )}
+        </div>
+      )}
+
       {tab === 'sbom' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Pick the applications to include (each must be analyzed). One SBOM (CycloneDX JSON) plus CSV and HTML reports are generated across them.</div>
@@ -226,8 +306,8 @@ export default function JqassistantPanel({ onClose }) {
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <thead><tr>{['Group', 'Artifact', ...diff.applications].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
                       <tbody>{diff.differences.map((d, i) => {
-                        const by = {}; d.versions.forEach(v => v.apps.forEach(a => { by[a] = v.version }))
-                        return <tr key={i}><td style={td}>{d.group}</td><td style={td}>{d.artifact}</td>{diff.applications.map(a => <td key={a} style={{ ...td, background: by[a] ? 'rgba(255,152,0,0.12)' : 'transparent' }}>{by[a] || '-'}</td>)}</tr>
+                        const by = d.apps
+                        return <tr key={i}><td style={td}>{d.group}</td><td style={td}>{d.artifact}</td>{diff.applications.map(a => <td key={a} style={{ ...td, background: by[a] ? 'rgba(255,152,0,0.12)' : 'transparent' }}>{by[a] ? by[a].join(', ') : '-'}</td>)}</tr>
                       })}</tbody>
                     </table>
                   </div>)}
