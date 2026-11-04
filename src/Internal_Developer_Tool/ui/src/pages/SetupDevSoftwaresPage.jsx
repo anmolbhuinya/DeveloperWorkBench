@@ -4,6 +4,14 @@ import JqassistantPanel from './JqassistantPanel'
 
 const ICONS = { intellij: '🧠', postman: '📮', soapui: '🧼', fiddler: '🕵️', docker: '🐳', dbeaver: '🗄️', jqassistant: '🔍' }
 
+// true when version a is newer than b (dotted numbers)
+const isNewer = (a, b) => {
+  if (!a || !b) return false
+  const x = a.split('.').map(Number), y = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0) }
+  return false
+}
+
 export default function SetupDevSoftwaresPage() {
   const navigate = useNavigate()
   const [data, setData]       = useState({ root: '', items: [], winget: true })
@@ -81,6 +89,11 @@ export default function SetupDevSoftwaresPage() {
             {!it.installed_here && (
               <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant')} onClick={e => { e.stopPropagation(); install(it) }}>
                 {running(it.key) ? 'Installing…' : 'Install'}
+              </button>
+            )}
+            {it.installed_here && isNewer(it.latest, it.version) && (
+              <button className="btn btn-primary" style={{ marginRight: 8 }} disabled={running(it.key)} onClick={e => { e.stopPropagation(); install(it) }}>
+                {running(it.key) && jobs[it.key]?.action !== 'uninstall' ? 'Updating…' : `Update to v${it.latest}`}
               </button>
             )}
             {it.installed_here && (

@@ -34499,9 +34499,9 @@ def create_flask_app():
         {"key": "jqassistant", "title": "jQAssistant", "sub": "jQAssistant", "winget": "",
          "desc": "Code structure analysis CLI (downloaded from Maven Central; needs Java)", "exe": ["bin/jqassistant.cmd"], "known": [],
          "zip": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/2.0.10/jqassistant-commandline-distribution-2.0.10-bin.zip",
-         "zip_tpl": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/{v}/jqassistant-commandline-distribution-{v}-bin.zip",
-         "zip_meta": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-distribution/maven-metadata.xml",
-         "zip_fallback_version": "2.0.10"},
+         "zip_tpl": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-neo4jv5/{v}/jqassistant-commandline-neo4jv5-{v}-distribution.zip",
+         "zip_meta": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-neo4jv5/maven-metadata.xml",
+         "zip_fallback_version": "2.9.1"},
     ]
 
     # Version managers that can be installed by the Workbench, into Installed_Softwares\<sub>
@@ -34524,8 +34524,17 @@ def create_flask_app():
             for j in sorted((base / "lib").glob("com.buschmais.jqassistant.cli-application-*.jar")):
                 m = _rev.search(r"application-(.+)\.jar$", j.name)
                 ver = m.group(1) if m else ver
+        latest = ""
+        if here and d.get("zip_meta"):
+            import time as _tl
+            c = _ds_latest_cache.get(d["key"])
+            if not c or _tl.time() - c[0] > 3600:
+                c = _ds_latest_cache[d["key"]] = (_tl.time(), _maven_latest(d["zip_meta"], ""))
+            latest = c[1]
         return {"key": d["key"], "title": d["title"], "desc": d["desc"], "winget": d["winget"],
-                "target": str(base), "installed_here": bool(here), "installed_elsewhere": there, "version": ver}
+                "target": str(base), "installed_here": bool(here), "installed_elsewhere": there, "version": ver, "latest": latest}
+
+    _ds_latest_cache = {}
 
     def _maven_latest(meta_url, fallback=""):
         """Newest stable version listed in a Maven Central maven-metadata.xml."""
