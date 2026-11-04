@@ -67,6 +67,7 @@ const SECTIONS = [
     path: '/project-management',
     items: [
       { label: 'Sprint', path: '/project-management/sprint' },
+      { label: 'Resource And Skill', path: '/project-management/resource-skill' },
     ],
   },
   {

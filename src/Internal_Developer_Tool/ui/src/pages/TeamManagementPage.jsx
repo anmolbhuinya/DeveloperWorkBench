@@ -7,6 +7,12 @@ const CARDS = [
     title: 'Sprint',
     desc: 'Create and manage sprint planning files',
   },
+  {
+    path: '/project-management/resource-skill',
+    icon: '🧠',
+    title: 'Resource And Skill',
+    desc: 'Skill matrix and completed JIRA work per developer',
+  },
 ]
 
 export default function TeamManagementPage() {

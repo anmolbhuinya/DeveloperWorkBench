@@ -29250,6 +29250,10 @@ def create_flask_app():
 
             wb.save(str(src))
             wb.close()
+            try:
+                _rs_capture(src, filename)       # Resource_And_Skill: completed tickets per developer
+            except Exception:
+                pass
 
             # ── Move to PreviousSprints/{team} ──────────────────────────────
             team = _team_from_sprint_filename(filename)
@@ -29262,6 +29266,205 @@ def create_flask_app():
             return jsonify({"ok": True})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
+
+    # ── Resource And Skill ─────────────────────────────────────────────────────
+    # Resource_And_Skill/Skill_Matrix.xlsx + Resource/<Developer>.xlsx (tabs: skill, JIRA)
+    import re
+    RS_ROOT     = TEAM_MGMT_ROOT / "Resource_And_Skill"
+    RS_RESOURCE = RS_ROOT / "Resource"
+    RS_MATRIX   = RS_ROOT / "Skill_Matrix.xlsx"
+    _RS_JIRA_COLS = ["JIRA ID", "Story", "Story Point", "Days", "Module", "Quarter", "Sprint"]
+    _rs_lock = _threading.Lock()
+
+    def _rs_safe(name):
+        n = re.sub(r'[\\/:*?"<>|]+', "_", str(name or "").strip())
+        return n[:80]
+
+    def _rs_file(name):
+        return RS_RESOURCE / f"{_rs_safe(name)}.xlsx"
+
+    def _rs_open(name):
+        import openpyxl as _xl
+        f = _rs_file(name)
+        if f.exists():
+            wb = _xl.load_workbook(str(f))
+        else:
+            wb = _xl.Workbook()
+            wb.active.title = "skill"
+        if "skill" not in wb.sheetnames:
+            wb.create_sheet("skill", 0)
+        if "JIRA" not in wb.sheetnames:
+            wb.create_sheet("JIRA")
+        if [c.value for c in wb["skill"][1]][:2] != ["Skill", "Proficiency"]:
+            wb["skill"].cell(1, 1).value = "Skill"
+            wb["skill"].cell(1, 2).value = "Proficiency"
+        if [c.value for c in wb["JIRA"][1]][:len(_RS_JIRA_COLS)] != _RS_JIRA_COLS:
+            for i, h in enumerate(_RS_JIRA_COLS, 1):
+                wb["JIRA"].cell(1, i).value = h
+        return wb, f
+
+    def _rs_read_skills(wb):
+        out = []
+        for r in wb["skill"].iter_rows(min_row=2, values_only=True):
+            if r and r[0] and str(r[0]).strip():
+                try:
+                    prof = float(r[1]) if r[1] not in (None, "") else 0
+                except (TypeError, ValueError):
+                    prof = 0
+                out.append({"skill": str(r[0]).strip(), "proficiency": int(prof) if prof == int(prof) else prof})
+        return out
+
+    def _rs_rebuild_matrix():
+        """Skill_Matrix.xlsx: one row per developer (Resource file), one column per skill, cell = proficiency."""
+        import openpyxl as _xl
+        from openpyxl.styles import Font as _F, PatternFill as _P
+        RS_RESOURCE.mkdir(parents=True, exist_ok=True)
+        people, skills = [], []
+        for f in sorted(RS_RESOURCE.glob("*.xlsx"), key=lambda x: x.stem.lower()):
+            if f.name.startswith("~$"):
+                continue
+            try:
+                wb = _xl.load_workbook(str(f), read_only=True, data_only=True)
+                rows = [r for r in wb["skill"].iter_rows(min_row=2, values_only=True)] if "skill" in wb.sheetnames else []
+                wb.close()
+            except Exception:
+                continue
+            sc = {}
+            for r in rows:
+                if r and r[0] and str(r[0]).strip():
+                    sc[str(r[0]).strip()] = r[1]
+                    if str(r[0]).strip() not in skills:
+                        skills.append(str(r[0]).strip())
+            people.append((f.stem, sc))
+        wb = _xl.Workbook()
+        ws = wb.active
+        ws.title = "Skill Matrix"
+        ws.append(["Developer"] + skills)
+        for c in ws[1]:
+            c.font = _F(bold=True, color="FFFFFF")
+            c.fill = _P("solid", fgColor="4472C4")
+        for name, sc in people:
+            ws.append([name] + [sc.get(k) for k in skills])
+        ws.freeze_panes = "B2"
+        ws.column_dimensions["A"].width = 28
+        RS_ROOT.mkdir(parents=True, exist_ok=True)
+        wb.save(str(RS_MATRIX))
+
+    def _rs_quarter(d):
+        return f"Q{(d.month - 1) // 3 + 1} {d.year}"
+
+    def _rs_capture(src, filename):
+        """Sprint completed: record each developer's completed tickets (story points, days, quarter) in Resource/<dev>.xlsx."""
+        import openpyxl as _xl
+        from datetime import date as _d
+        DONE = {"done", "closed", "released", "completed", "deployed", "merged"}
+        m = re.search(r"_(\d{4})-(\d{2})-(\d{2})_", filename)
+        quarter = _rs_quarter(_d(int(m.group(1)), int(m.group(2)), int(m.group(3)))) if m else _rs_quarter(_d.today())
+        sprint = Path(filename).stem
+        wb_s = _xl.load_workbook(str(src), data_only=True)
+        per = {}
+        for sh in ("Sprint Board", "Adhoc Task"):
+            if sh not in wb_s.sheetnames:
+                continue
+            rows = list(wb_s[sh].iter_rows(values_only=True))
+            if not rows:
+                continue
+            hd = [str(h or "").strip() for h in rows[0]]
+            ix = {h: i for i, h in enumerate(hd) if h}
+            for r in rows[1:]:
+                g = lambda k: r[ix[k]] if k in ix and ix[k] < len(r) else None
+                dev, key = str(g("Developer") or "").strip(), str(g("JIRA ID") or "").strip()
+                if not dev or not key or str(g("Status") or "").strip().lower() not in DONE:
+                    continue
+                try:
+                    sp = float(g("Story Point")) if g("Story Point") not in (None, "") else 0
+                except (TypeError, ValueError):
+                    sp = 0
+                days = g("DevDays")
+                per.setdefault(dev, []).append([key, g("Story") or "", sp, days if days not in (None, "") else "", g("Module") or "", quarter, sprint])
+        wb_s.close()
+        with _rs_lock:
+            RS_RESOURCE.mkdir(parents=True, exist_ok=True)
+            for dev, items in per.items():
+                wb, f = _rs_open(dev)
+                ws = wb["JIRA"]
+                have = {(str(r[0].value), str(r[6].value)): r[0].row for r in ws.iter_rows(min_row=2) if r[0].value}
+                for it in items:
+                    k = (str(it[0]), str(it[6]))
+                    if k in have:
+                        for ci, v in enumerate(it, 1):
+                            ws.cell(have[k], ci).value = v
+                    else:
+                        ws.append(it)
+                wb.save(str(f))
+            # developers with no completed tickets still get a file so they appear in the matrix
+            _rs_rebuild_matrix()
+
+    @app.route("/api/project-management/resource-skill/matrix", methods=["GET"])
+    def api_rs_matrix():
+        import openpyxl as _xl
+        with _rs_lock:
+            if not RS_MATRIX.exists():
+                _rs_rebuild_matrix()
+            wb = _xl.load_workbook(str(RS_MATRIX), read_only=True, data_only=True)
+            rows = list(wb.active.iter_rows(values_only=True))
+            wb.close()
+        skills = [str(c) for c in (rows[0][1:] if rows else []) if c]
+        res = [{"name": str(r[0]), "scores": {sk: r[i + 1] for i, sk in enumerate(skills) if i + 1 < len(r) and r[i + 1] not in (None, "")}}
+               for r in rows[1:] if r and r[0]]
+        return jsonify({"ok": True, "skills": skills, "resources": res, "path": str(RS_ROOT)})
+
+    @app.route("/api/project-management/resource-skill/resource", methods=["POST"])
+    def api_rs_add_resource():
+        name = _rs_safe((request.get_json(silent=True) or {}).get("name"))
+        if not name:
+            return jsonify({"ok": False, "error": "Name is required"}), 400
+        with _rs_lock:
+            wb, f = _rs_open(name)
+            RS_RESOURCE.mkdir(parents=True, exist_ok=True)
+            try:
+                wb.save(str(f))
+                _rs_rebuild_matrix()
+            except PermissionError:
+                return jsonify({"ok": False, "error": "A resource file is open in Excel — close it and retry"}), 500
+        return jsonify({"ok": True})
+
+    @app.route("/api/project-management/resource-skill/resource/<name>", methods=["GET"])
+    def api_rs_resource(name):
+        if not _rs_file(name).exists():
+            return jsonify({"ok": False, "error": "Resource not found"}), 404
+        with _rs_lock:
+            wb, _ = _rs_open(name)
+            skills = _rs_read_skills(wb)
+            jira = [dict(zip(_RS_JIRA_COLS, ["" if v is None else v for v in r]))
+                    for r in wb["JIRA"].iter_rows(min_row=2, values_only=True) if r and r[0]]
+            wb.close()
+        return jsonify({"ok": True, "name": _rs_safe(name), "skills": skills, "jira": jira})
+
+    @app.route("/api/project-management/resource-skill/resource/<name>/skills", methods=["PUT"])
+    def api_rs_save_skills(name):
+        items = (request.get_json(silent=True) or {}).get("skills") or []
+        with _rs_lock:
+            wb, f = _rs_open(name)
+            ws = wb["skill"]
+            ws.delete_rows(2, max(ws.max_row, 2))
+            seen = set()
+            for it in items:
+                sk = str(it.get("skill", "")).strip()
+                if not sk or sk.lower() in seen:
+                    continue
+                seen.add(sk.lower())
+                try:
+                    pr = float(it.get("proficiency") or 0)
+                except (TypeError, ValueError):
+                    pr = 0
+                ws.append([sk, int(pr) if pr == int(pr) else pr])
+            try:
+                wb.save(str(f))
+                _rs_rebuild_matrix()
+            except PermissionError:
+                return jsonify({"ok": False, "error": "A resource file is open in Excel — close it and retry"}), 500
+        return jsonify({"ok": True})
 
     @app.route("/api/project-management/sprint/delete", methods=["POST"])
     def api_tm_sprint_delete():

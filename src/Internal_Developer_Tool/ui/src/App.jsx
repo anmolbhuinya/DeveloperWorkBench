@@ -42,6 +42,7 @@ const RemoteEnrollmentPage = lazy(() => import('./pages/RemoteEnrollmentPage'))
 const RemotePIKPage        = lazy(() => import('./pages/RemotePIKPage'))
 const ProjectManagementPage = lazy(() => import('./pages/TeamManagementPage'))
 const SprintPage           = lazy(() => import('./pages/SprintPage'))
+const ResourceSkillPage    = lazy(() => import('./pages/ResourceSkillPage'))
 const ToolsPage            = lazy(() => import('./pages/ToolsPage'))
 const SonarReportPage      = lazy(() => import('./pages/SonarReportPage'))
 const AIAnalyzerPage      = lazy(() => import('./pages/AIAnalyzerPage'))
@@ -220,6 +221,7 @@ export default function App() {
               <Route path="/tools/rpb"           element={<RpbPage />} />
               <Route path="/project-management"               element={<ProjectManagementPage />} />
               <Route path="/project-management/sprint"       element={<SprintPage />} />
+              <Route path="/project-management/resource-skill" element={<ResourceSkillPage />} />
               <Route path="/developer-tools"                    element={<ToolsPage />} />
               <Route path="/developer-tools/sonar-report"     element={<SonarReportPage />} />
               <Route path="/developer-tools/ai-analyzer"      element={<AIAnalyzerPage />} />
