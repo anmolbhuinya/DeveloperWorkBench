@@ -22,20 +22,21 @@ function Panel({ kind, title, noun, statuses, done, action }) {
   const [jobs, setJobs]     = useState({})        // item id -> latest AI job
   const [openLog, setOpenLog] = useState({})      // item id -> log expanded
   const timer = useRef(null)
+  const [offline, setOffline] = useState(false)
 
   const loadJobs = useCallback(() => {
     fetch(`/api/help/${kind}/ai-jobs`).then(r => r.json())
-      .then(d => { if (d.ok) setJobs(d.jobs || {}) }).catch(() => {})
+      .then(d => { if (d.ok) { setJobs(d.jobs || {}); setOffline(false) } }).catch(() => setOffline(true))
   }, [kind])
   useEffect(() => { loadJobs() }, [loadJobs])
   // poll while any run is in progress
   useEffect(() => {
     clearInterval(timer.current)
-    if (Object.values(jobs).some(j => j.status === 'running')) {
+    if (offline || Object.values(jobs).some(j => j.status === 'running')) {
       timer.current = setInterval(() => { loadJobs(); load() }, 3000)
     }
     return () => clearInterval(timer.current)
-  }, [jobs])
+  }, [jobs, offline])
 
   const runAi = async it => {
     setErr('')
@@ -84,6 +85,19 @@ function Panel({ kind, title, noun, statuses, done, action }) {
     const next = it.status === done ? statuses[0] : done
     if (await call(`/api/help/${kind}/${it.id}`, 'PUT', { status: next })) load()
   }
+  const move = async (it, dir) => {
+    if (await call(`/api/help/${kind}/${it.id}/move`, 'POST', { dir })) load()
+  }
+  const gitPush = async it => {
+    setBusy(true); setErr('')
+    try {
+      const r = await fetch(`/api/help/${kind}/${it.id}/git-push`, { method: 'POST' })
+      const d = await r.json()
+      if (!d.ok) setErr(`${d.error || 'Git push failed'}${d.log ? '\n' + d.log : ''}`)
+      load()
+    } catch { setErr('Git push failed') }
+    finally { setBusy(false) }
+  }
   const remove = async it => {
     if (!window.confirm(`Delete this ${noun}?\n\n${it.title}`)) return
     if (await call(`/api/help/${kind}/${it.id}`, 'DELETE')) load()
@@ -102,11 +116,11 @@ function Panel({ kind, title, noun, statuses, done, action }) {
         <div><button className="btn btn-sm btn-primary" disabled={busy || !draft.title.trim()} onClick={add}>+ Add {noun}</button></div>
       </div>
 
-      {err && <div className="alert alert-error">{err}</div>}
+      {err && <div className="alert alert-error" style={{ whiteSpace: 'pre-wrap' }}>{err}</div>}
       {loading && <span className="spinner" />}
       {!loading && items.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Nothing here yet.</div>}
 
-      {items.map(it => (
+      {items.map((it, ix) => (
         <div key={it.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10 }}>
           {editId === it.id ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -125,6 +139,8 @@ function Panel({ kind, title, noun, statuses, done, action }) {
                   style={{ cursor: 'pointer', border: 'none' }} disabled={busy}
                   title={`Click to mark ${it.status === done ? statuses[0] : done}`}
                   onClick={() => toggle(it)}>{it.status}</button>
+                <button className="btn btn-sm" disabled={busy || ix === 0} title="Move up" onClick={() => move(it, 'up')}>▲</button>
+                <button className="btn btn-sm" disabled={busy || ix === items.length - 1} title="Move down" onClick={() => move(it, 'down')}>▼</button>
               </div>
               {it.description && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{it.description}</div>}
               <div style={{ display: 'flex', alignItems: 'center', marginTop: 6, gap: 6 }}>
@@ -143,12 +159,18 @@ function Panel({ kind, title, noun, statuses, done, action }) {
                     </>
                   )
                 })()}
-                <button className="btn btn-sm" onClick={() => { setEditId(it.id); setEdit({ title: it.title, description: it.description }) }}>✎ Edit</button>
+                {it.status === done
+                  ? (it.pushed
+                      ? <span className="badge badge-success" title={`Pushed ${it.pushed}`}>✓ Git Pushed</span>
+                      : <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => gitPush(it)}
+                          title={`git add . / commit "${kind === 'features' ? 'Wishlist' : 'Bug'}:${it.title}" / push (in DWB_Workspace)`}>GitPush</button>)
+                  : <button className="btn btn-sm" onClick={() => { setEditId(it.id); setEdit({ title: it.title, description: it.description }) }}>✎ Edit</button>}
                 <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => remove(it)}>Delete</button>
               </div>
               {jobs[it.id] && (
                 <div style={{ marginTop: 6, fontSize: 11, color: jobs[it.id].status === 'error' ? 'var(--danger, #c62828)' : 'var(--text-muted)' }}>
-                  {jobs[it.id].status === 'running' && <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> {jobs[it.id].label} — running…</>}
+                  {jobs[it.id].status === 'running' && offline && 'Workbench is restarting — reconnecting…'}
+                  {jobs[it.id].status === 'running' && !offline && <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> {jobs[it.id].label} — running…</>}
                   {jobs[it.id].status === 'done' && '✓ AI run finished'}
                   {jobs[it.id].status === 'error' && '✗ AI run failed — see log'}
                   {jobs[it.id].status === 'aborted' && 'AI run aborted'}

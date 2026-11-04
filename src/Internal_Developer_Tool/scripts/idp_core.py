@@ -16780,7 +16780,7 @@ def create_flask_app():
         "features": {"sheet": "features", "statuses": ("requested", "implemented")},
         "bugs":     {"sheet": "bugs",     "statuses": ("filed", "fixed")},
     }
-    _HELP_COLS = ["id", "title", "description", "status", "created", "updated"]
+    _HELP_COLS = ["id", "title", "description", "status", "created", "updated", "pushed"]
     _help_lock = _threading.Lock()
 
     def _help_load():
@@ -16794,6 +16794,8 @@ def create_flask_app():
         for k in _HELP_KINDS.values():
             if k["sheet"] not in wb.sheetnames:
                 wb.create_sheet(k["sheet"]).append(_HELP_COLS)
+            elif wb[k["sheet"]].cell(1, 7).value != "pushed":
+                wb[k["sheet"]].cell(1, 7).value = "pushed"
         return wb, path
 
     def _help_rows(ws):
@@ -31312,6 +31314,33 @@ def create_flask_app():
                 row[5].value = _dt_h.datetime.now().strftime("%Y-%m-%d %H:%M")
                 _help_save(wb, path)
 
+    @app.route("/api/help/<kind>/<item_id>/move", methods=["POST"])
+    def api_help_move(kind, item_id):
+        """Reorder: move an item one place up/down (row order in the sheet is the display order)."""
+        cfg = _HELP_KINDS.get(kind)
+        if not cfg:
+            return jsonify({"ok": False, "error": "Unknown kind"}), 404
+        direction = str((request.get_json(silent=True) or {}).get("dir", "")).lower()
+        if direction not in ("up", "down"):
+            return jsonify({"ok": False, "error": "dir must be up or down"}), 400
+        with _help_lock:
+            wb, path = _help_load()
+            ws = wb[cfg["sheet"]]
+            rows = [r for r in ws.iter_rows(min_row=2) if r[0].value]
+            idx = next((i for i, r in enumerate(rows) if str(r[0].value) == item_id), None)
+            if idx is None:
+                return jsonify({"ok": False, "error": "Not found"}), 404
+            j = idx - 1 if direction == "up" else idx + 1
+            if 0 <= j < len(rows):
+                a, b = rows[idx], rows[j]
+                for ca, cb in zip(a, b):
+                    ca.value, cb.value = cb.value, ca.value
+                try:
+                    _help_save(wb, path)
+                except PermissionError:
+                    return jsonify({"ok": False, "error": "features_and_bugs.xlsx is open — close it and retry"}), 500
+            return jsonify({"ok": True})
+
     @app.route("/api/help/<kind>/ai-jobs", methods=["GET"])
     def api_help_ai_jobs(kind):
         """Latest AI job per item of this kind: {item_id: job view}."""
@@ -31333,6 +31362,67 @@ def create_flask_app():
             v.pop("follow", None)
             out[iid] = v
         return jsonify({"ok": True, "jobs": out})
+
+    def _help_sweep_jobs():
+        """On startup: finalise AI help jobs that finished while the Workbench was down (e.g. the agent redeployed it)."""
+        try:
+            if _AI_JOBS_DIR.exists():
+                for jf in list(_AI_JOBS_DIR.glob("*.json")):
+                    j = _job_load(jf.stem)
+                    if j and j.get("kind") == "help" and j.get("status") == "running":
+                        _job_refresh(j["id"])
+        except Exception:
+            pass
+    _ai_th.Thread(target=_help_sweep_jobs, daemon=True).start()
+
+    @app.route("/api/help/<kind>/<item_id>/git-push", methods=["POST"])
+    def api_help_git_push(kind, item_id):
+        import subprocess as _sp_g, datetime as _dt_g
+        cfg = _HELP_KINDS.get(kind)
+        if not cfg:
+            return jsonify({"ok": False, "error": "Unknown kind"}), 404
+        with _help_lock:
+            wb, path = _help_load()
+            ws = wb[cfg["sheet"]]
+            row = next((r for r in ws.iter_rows(min_row=2) if str(r[0].value or "") == item_id), None)
+            if row is None:
+                return jsonify({"ok": False, "error": "Not found"}), 404
+            title, status = str(row[1].value or ""), str(row[3].value or "")
+        if status != cfg["statuses"][1]:
+            return jsonify({"ok": False, "error": f"Only {cfg['statuses'][1]} items can be pushed"})
+        repo = PROJECTS_HOME.parent / "DWB_Workspace"
+        if not (repo / ".git").exists():
+            return jsonify({"ok": False, "error": f"Not a git repository: {repo}"})
+        msg = f"{'Wishlist' if kind == 'features' else 'Bug'}:{title}"
+        cf = getattr(_sp_g, "CREATE_NO_WINDOW", 0)
+        log = []
+        def _g(*args):
+            r = _sp_g.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=180, creationflags=cf)
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            log.append(f"$ git {' '.join(args[:2])}\n{out}")
+            return r.returncode, out
+        try:
+            rc, out = _g("add", ".")
+            if rc != 0:
+                return jsonify({"ok": False, "error": "git add failed", "log": "\n".join(log)})
+            rc, out = _g("commit", "-m", msg)
+            if rc != 0 and "nothing to commit" not in out.lower():
+                return jsonify({"ok": False, "error": "git commit failed", "log": "\n".join(log)})
+            rc, out = _g("push")
+            if rc != 0 and ("no upstream" in out.lower() or "set-upstream" in out.lower()):
+                rc, out = _g("push", "--set-upstream", "origin", "HEAD")
+            if rc != 0:
+                return jsonify({"ok": False, "error": "git push failed", "log": "\n".join(log)})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e), "log": "\n".join(log)})
+        with _help_lock:
+            wb, path = _help_load()
+            ws = wb[cfg["sheet"]]
+            row = next((r for r in ws.iter_rows(min_row=2) if str(r[0].value or "") == item_id), None)
+            if row is not None:
+                ws.cell(row[0].row, 7).value = _dt_g.datetime.now().strftime("%Y-%m-%d %H:%M")
+                _help_save(wb, path)
+        return jsonify({"ok": True, "log": "\n".join(log)})
 
     @app.route("/api/help/<kind>/<item_id>/ai-run", methods=["POST"])
     def api_help_ai_run(kind, item_id):
