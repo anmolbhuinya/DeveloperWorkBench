@@ -397,9 +397,7 @@ export default function CoPilotReviewPage() {
   ) ?? []
 
   return (
-    <div style={{ padding: '24px 28px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>
-    <div style={{ flex: '1 1 0', minWidth: 0, maxWidth: 860 }}>
-
+    <div style={{ padding: '24px 28px' }}>
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: 'var(--text)' }}>
@@ -410,18 +408,8 @@ export default function CoPilotReviewPage() {
         </div>
       </div>
 
-      {/* Dependency analyzer settings (stored in Tools\AI_PR_Review_Tool\config.xlsx) */}
-      <div className="card" style={{ marginBottom: 16, display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-          <input type="checkbox" checked={prrCfg.dependency_analyzer} onChange={e => savePrr({ dependency_analyzer: e.target.checked ? 'on' : 'off' })} />
-          Dependency analyzer
-        </label>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Baseline project</span>
-        <input list="prr-apps" value={prrCfg.baseline_project} onChange={e => setPrrCfg(c => ({ ...c, baseline_project: e.target.value }))}
-          onBlur={e => savePrr({ baseline_project: e.target.value })} style={{ ...{ fontSize: 13, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }, width: 200 }} />
-        <datalist id="prr-apps">{prrCfg.jqassistant_apps.map(a => <option key={a} value={a} />)}</datalist>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>A jQAssistant code base (analyzed). PR dependency versions are compared with it.</span>
-      </div>
+    <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+    <div style={{ flex: '1 1 0', minWidth: 0, maxWidth: 860 }}>
 
       {/* URL shortcut */}
       <div className="card" style={{ marginBottom: 16 }}>
@@ -622,9 +610,24 @@ export default function CoPilotReviewPage() {
       )}
     </div>
 
-    {/* Right-hand: dependency report of the PR */}
+    {/* Right-hand column: dependency analyzer panel (level with Paste PR URL), dependency report below it */}
+    <div style={{ flex: '0 0 560px', minWidth: 0 }}>
+      {/* Dependency analyzer settings (stored in Tools\AI_PR_Review_Tool\config.xlsx) */}
+      <div className="card" style={{ marginBottom: 16, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+          <input type="checkbox" checked={prrCfg.dependency_analyzer} onChange={e => savePrr({ dependency_analyzer: e.target.checked ? 'on' : 'off' })} />
+          Dependency analyzer
+        </label>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Baseline project</span>
+        <input list="prr-apps" value={prrCfg.baseline_project} onChange={e => setPrrCfg(c => ({ ...c, baseline_project: e.target.value }))}
+          onBlur={e => savePrr({ baseline_project: e.target.value })} style={{ ...{ fontSize: 13, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }, width: 200 }} />
+        <datalist id="prr-apps">{prrCfg.jqassistant_apps.map(a => <option key={a} value={a} />)}</datalist>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>A jQAssistant code base (analyzed). PR dependency versions are compared with it.</span>
+      </div>
+
+
     {(result || depsLoading) && prrCfg.dependency_analyzer && (
-      <div className="card" style={{ flex: '0 0 560px', position: 'sticky', top: 16, maxHeight: 'calc(100vh - 40px)', overflow: 'auto' }}>
+      <div className="card" style={{ maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>📦 Dependency report</div>
           {deps?.ok && ['json', 'html', 'csv'].map(f => (
@@ -662,7 +665,12 @@ export default function CoPilotReviewPage() {
                       {(k === 'dup_module' || k === 'dup_repo') && <th style={th}>Line</th>}
                       {k === 'dup_repo' && <th style={th}>File</th>}
                     </tr></thead>
-                    <tbody>{rows.map((e, i) => (
+                    <tbody>{rows.map((e, i) => [
+                      k === 'dup_module' && (i === 0 || rows[i - 1].module !== e.module || rows[i - 1].group !== e.group || rows[i - 1].artifact !== e.artifact) && (
+                        <tr key={'g' + i}><td colSpan={6} style={{ ...td, background: 'rgba(106,27,154,0.08)', fontWeight: 700, color: '#6A1B9A' }}>
+                          {e.module} — {e.group}:{e.artifact} <span style={{ fontWeight: 400 }}>({rows.filter(r => r.module === e.module && r.group === e.group && r.artifact === e.artifact).length} declarations in {e.file})</span>
+                        </td></tr>
+                      ),
                       <tr key={i} title={e.file} style={e.baseline_status === 'MISMATCH' ? { background: '#FFEBEE', color: '#B71C1C', fontWeight: 600 } : undefined}>
                         <td style={td}>{e.module}</td><td style={td}>{e.group}</td><td style={td}>{e.artifact}</td>
                         {k === 'updated'
@@ -672,7 +680,7 @@ export default function CoPilotReviewPage() {
                         {(k === 'dup_module' || k === 'dup_repo') && <td style={td}>{e.line}</td>}
                         {k === 'dup_repo' && <td style={{ ...td, fontFamily: 'monospace' }}>{e.file}</td>}
                       </tr>
-                    ))}</tbody>
+                    ])}</tbody>
                   </table>
                 </div>
               )}
@@ -681,6 +689,8 @@ export default function CoPilotReviewPage() {
         })}
       </div>
     )}
+    </div>
+    </div>
     </div>
   )
 }
