@@ -33065,7 +33065,7 @@ def create_flask_app():
                     ("dup_module", "Duplicate Dependencies - same module"), ("dup_repo", "Duplicate Dependencies - version mismatch in repository")]
         cols = ["Section", "Module", "File", "Group", "Artifact", "Version / From", "To", "Scope / From", "To Scope", "Line",
                 "Placeholder", "Baseline Version(s)", "Baseline Status", "Caused by PR"]
-        PH_COLS = ["Placeholder", "Value", "Base Value", "Mismatch", "Defined In", "Line", "Used By", "Caused by PR"]
+        PH_COLS = ["Placeholder", "Used By", "Value", "Base Value", "Mismatch", "Defined In", "Line", "Caused by PR"]
         scope = str(body.get("scope", "all")).lower()      # all = overall issues, pr = issues caused by the PR only
         yn = lambda e: "yes" if e.get("pr") else "no"
 
@@ -33081,7 +33081,7 @@ def create_flask_app():
             return [e for e in rep.get(sec, []) if not only_pr or e.get("pr") or sec in ("added", "removed", "updated")]
 
         def ph_rows(only_pr):
-            return [[p.get("key"), p.get("value"), p.get("base_value", ""), "MISMATCH" if p.get("mismatch") else "", p.get("file"), p.get("line"), p.get("used_by"), yn(p)]
+            return [[p.get("key"), p.get("used_by"), p.get("value"), p.get("base_value", ""), "MISMATCH" if p.get("mismatch") else "", p.get("file"), p.get("line"), yn(p)]
                     for p in rep.get("placeholders", []) if not only_pr or p.get("pr")]
         if fmt == "json":
             # json: the report as is, plus an "issues" block that splits overall issues from the ones caused by the PR
@@ -33101,7 +33101,7 @@ def create_flask_app():
                 ws2.append(PH_COLS)
                 for r_ in ph_rows(only_pr):
                     ws2.append(r_)
-                    if r_[3] == "MISMATCH":
+                    if r_[4] == "MISMATCH":
                         for c in ws2[ws2.max_row]:
                             c.font = _F(color="B71C1C", bold=True)
                             c.fill = _P("solid", fgColor="FFEBEE")
@@ -33167,7 +33167,7 @@ def create_flask_app():
                 out.append("<h3>Placeholders (%d)</h3>" % len(prs))
                 if prs:
                     out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in PH_COLS) + "</tr>" +
-                               "".join("<tr%s>" % (" style='background:#ffebee;color:#b71c1c;font-weight:600'" if r_[3] == "MISMATCH" else "") + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in r_) + "</tr>" for r_ in prs) + "</table>")
+                               "".join("<tr%s>" % (" style='background:#ffebee;color:#b71c1c;font-weight:600'" if r_[4] == "MISMATCH" else "") + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in r_) + "</tr>" for r_ in prs) + "</table>")
                 else:
                     out.append("<p>None</p>")
                 for sec, title in SECTIONS:

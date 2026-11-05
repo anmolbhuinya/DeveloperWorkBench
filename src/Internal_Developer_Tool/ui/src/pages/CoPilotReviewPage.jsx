@@ -661,9 +661,9 @@ export default function CoPilotReviewPage() {
               {rows.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>None</div> : (
                 <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead><tr><th style={th}>Placeholder</th><th style={th}>Value</th><th style={th}>Base version</th><th style={th}>Defined in</th><th style={th}>Line</th><th style={th}>Used by</th></tr></thead>
+                    <thead><tr><th style={th}>Placeholder</th><th style={th}>Used by</th><th style={th}>Value</th><th style={th}>Base version</th><th style={th}>Defined in</th><th style={th}>Line</th></tr></thead>
                     <tbody>{rows.map((p, i) => (
-                      <tr key={i} style={p.mismatch ? { background: '#FFEBEE', color: '#B71C1C', fontWeight: 600 } : undefined}><td style={{ ...td, fontFamily: 'monospace' }}>${'{'}{p.key}{'}'}</td><td style={td}>{p.value}{p.mismatch ? ' ⚠' : ''}</td><td style={td}>{p.base_value}</td><td style={{ ...td, fontFamily: 'monospace' }}>{p.file}</td><td style={td}>{p.line}</td><td style={td}>{p.used_by}</td></tr>
+                      <tr key={i} style={p.mismatch ? { background: '#FFEBEE', color: '#B71C1C', fontWeight: 600 } : undefined}><td style={{ ...td, fontFamily: 'monospace' }}>${'{'}{p.key}{'}'}</td><td style={td}>{p.used_by}</td><td style={td}>{p.value}{p.mismatch ? ' ⚠' : ''}</td><td style={td}>{p.base_value}</td><td style={{ ...td, fontFamily: 'monospace' }}>{p.file}</td><td style={td}>{p.line}</td></tr>
                     ))}</tbody>
                   </table>
                 </div>
