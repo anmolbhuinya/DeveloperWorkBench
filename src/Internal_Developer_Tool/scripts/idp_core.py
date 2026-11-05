@@ -35046,14 +35046,36 @@ def create_flask_app():
         for r in rows:
             per.setdefault(r[0], set()).add((r[2], r[3], r[4]))
         html = ["<html><head><meta charset='utf-8'><title>SBOM</title><style>body{font-family:Segoe UI,Arial;margin:24px}table{border-collapse:collapse;font-size:13px}"
-                "td,th{border:1px solid #ccc;padding:4px 8px}th{background:#1565c0;color:#fff}</style></head><body>",
+                "td,th{border:1px solid #ccc;padding:4px 8px}th{background:#1565c0;color:#fff}"
+                ".f{position:sticky;top:0;background:#e3f2fd;padding:10px 12px;margin:8px 0;border-radius:6px}.f input{padding:4px 8px;margin-right:12px;width:220px}"
+                ".f button{padding:4px 14px;cursor:pointer}tr.h{display:none}</style></head><body>",
                 "<h2>Software Bill of Materials</h2><p>Generated %s &middot; %d applications &middot; %d unique components</p>" % (
                     _dt.datetime.now().strftime("%Y-%m-%d %H:%M"), len(per), len(comps)),
+                "<div class='f'><b>Group</b> <input id='fg' placeholder='e.g. com.squareup.okio'> <b>Artifact</b> <input id='fa' placeholder='e.g. okio'> "
+                "<button id='fc'>Clear</button> <span id='fm'></span></div>",
                 "<h3>Per application</h3><table><tr><th>Application</th><th>Unique libraries</th></tr>"]
         html += ["<tr><td>%s</td><td>%d</td></tr>" % (_h.escape(k), len(v)) for k, v in sorted(per.items())]
-        html.append("</table><h3>Components</h3><table><tr>" + "".join("<th>%s</th>" % x for x in hdr) + "</tr>")
+        html.append("</table><div id='comp'><h3>Components</h3><table><tr>" + "".join("<th>%s</th>" % x for x in hdr) + "</tr>")
         html += ["<tr>" + "".join("<td>%s</td>" % _h.escape(str(c)) for c in r) + "</tr>" for r in rows]
-        html.append("</table></body></html>")
+        html.append("</table></div>")
+        html.append("""<script>
+(function(){
+  var rows=[].slice.call(document.querySelectorAll('#comp tr')).slice(1),comp=document.getElementById('comp');
+  var g=document.getElementById('fg'),a=document.getElementById('fa'),m=document.getElementById('fm');
+  m.textContent=rows.length+' components - type a group and/or artifact above to filter.';
+  function find(){
+    var gv=g.value.trim().toLowerCase(),av=a.value.trim().toLowerCase(),n=0;
+    rows.forEach(function(r){
+      var c=r.children,ok=c[2].textContent.toLowerCase().indexOf(gv)>=0&&c[3].textContent.toLowerCase().indexOf(av)>=0;
+      r.className=ok?'':'h'; if(ok)n++;
+    });
+    comp.style.display='';
+    m.textContent=n+' of '+rows.length+' components match';
+  }
+  document.getElementById('fc').onclick=function(){g.value='';a.value='';find();};
+  [g,a].forEach(function(i){i.addEventListener('input',find);});
+})();
+</script></body></html>""")
         (out / f"sbom-{stamp}.html").write_text("\n".join(html), encoding="utf-8")
         return jsonify({"ok": True, "components": len(comps), "entries": len(rows), "applications": len(per),
                         "files": {k: f"sbom-{stamp}.{k}" for k in ("json", "csv", "html")}})
