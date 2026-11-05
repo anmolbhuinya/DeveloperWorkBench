@@ -308,6 +308,8 @@ export default function CoPilotReviewPage() {
   const [fileFilter, setFileFilter] = useState('')
   const [deps, setDeps]         = useState(null)    // dependency changes of the PR (right-hand panel)
   const [depsLoading, setDepsLoading] = useState(false)
+  const [tests, setTests] = useState(null)
+  const [testsLoading, setTestsLoading] = useState(false)
   const [depTab, setDepTab] = useState('all')   // all = overall issues, pr = issues caused by this PR
   const [prrCfg, setPrrCfg] = useState({ baseline_project: '', dependency_analyzer: true, jqassistant_apps: [] })
   useEffect(() => { fetch('/api/tools/ai-pr-review/config').then(r => r.json()).then(d => { if (d.ok) setPrrCfg(d) }).catch(() => {}) }, [])
@@ -325,7 +327,23 @@ export default function CoPilotReviewPage() {
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   }
 
+  const exportTests = async fmt => {
+    const res = await fetch(`${API}/tests/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ format: fmt, report: tests }) })
+    if (!res.ok) { alert('Export failed'); return }
+    const blob = await res.blob()
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+    a.download = `testcase-report-${(tests.pr?.repo || 'repo').replace('/', '_')}-pr${tests.pr?.number || ''}.${fmt}`
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  }
+  const loadTests = (o, r, p) => {
+    setTests(null); setTestsLoading(true)
+    fetch(`${API}/tests`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: o, repo: r, pr: p }) })
+      .then(x => x.json()).then(setTests).catch(e => setTests({ ok: false, error: String(e) }))
+      .finally(() => setTestsLoading(false))
+  }
+
   const loadDeps = (o, r, p) => {
+    loadTests(o, r, p)
     setDeps(null)
     if (!prrCfg.dependency_analyzer) return
     setDepsLoading(true)
@@ -712,6 +730,40 @@ export default function CoPilotReviewPage() {
                         {k === 'dup_repo' && <td style={{ ...td, fontFamily: 'monospace' }}>{e.file}</td>}
                       </tr>
                     ])}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )}
+
+    {(result || testsLoading) && (
+      <div className="card" style={{ marginTop: 16, maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🧪 Test case analyzer</div>
+          {tests?.ok && ['json', 'html', 'csv', 'xlsx'].map(f => (
+            <button key={f} onClick={() => exportTests(f)} style={{ fontSize: 11, padding: '3px 9px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>{f.toUpperCase()}</button>
+          ))}
+        </div>
+        {testsLoading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}><span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Analyzing test cases …</div>}
+        {tests && !tests.ok && <div style={{ fontSize: 12, color: '#B71C1C' }}>⚠ {tests.error}</div>}
+        {tests?.ok && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>{tests.totals.test_files} test file(s) changed</div>}
+        {tests?.ok && [['added', 'New Test Cases Added', '#2E7D32'], ['deleted', 'Test Cases Deleted', '#C62828'], ['modified', 'Test Cases Modified', '#E65100']].map(([k, title, color]) => {
+          const rows = tests[k] || []
+          const th = { textAlign: 'left', padding: '3px 6px', fontSize: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
+          const td = { padding: '3px 6px', fontSize: 11, borderBottom: '1px solid var(--border)', wordBreak: 'break-all' }
+          return (
+            <div key={k} style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color, borderBottom: `2px solid ${color}`, paddingBottom: 2, marginBottom: 4 }}>{title} ({rows.length})</div>
+              {rows.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>None</div> : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr><th style={th}>Test case</th><th style={th}>Class</th><th style={th}>Module</th><th style={th}>Line</th><th style={th}>File</th></tr></thead>
+                    <tbody>{rows.map((e, i) => (
+                      <tr key={i}><td style={td}>{e.test}</td><td style={td}>{e.class}</td><td style={td}>{e.module}</td><td style={td}>{k === 'modified' && e.old_line !== e.line ? `${e.old_line} → ${e.line}` : e.line}</td><td style={{ ...td, fontFamily: 'monospace' }}>{e.file}</td></tr>
+                    ))}</tbody>
                   </table>
                 </div>
               )}

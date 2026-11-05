@@ -413,7 +413,7 @@ def fetch_dependency_changes(owner, repo, pr_number, token):
         grp = {}
         for e in after:
             if e["section"] in ("dependencies", "dependencyManagement"):
-                grp.setdefault((e["section"], e["group"], e["artifact"]), []).append(e)
+                grp.setdefault((e["section"], e["group"], e["artifact"], e["scope"]), []).append(e)
         for k, v in grp.items():
             if len(v) > 1:
                 dup_module += v
@@ -437,8 +437,8 @@ def fetch_dependency_changes(owner, repo, pr_number, token):
             for e in allents:
                 if e["section"] in ("dependencies", "dependencyManagement") and (e["group"], e["artifact"]) in touched \
                         and not e["version"].startswith("("):
-                    occ.setdefault((e["group"], e["artifact"]), []).append(e)
-            for (g, a), v in sorted(occ.items()):
+                    occ.setdefault((e["group"], e["artifact"], e["scope"]), []).append(e)
+            for (g, a, _sc), v in sorted(occ.items()):
                 vers = sorted({x["version"] for x in v})
                 if len(vers) > 1:
                     dup_repo += [{**x, "versions": vers} for x in sorted(v, key=lambda x: (x["version"], x["file"], x["line"]))]
@@ -499,15 +499,123 @@ def fetch_dependency_changes(owner, repo, pr_number, token):
     }
 
 
+def _is_test_file(path):
+    low = path.lower()
+    name = low.rsplit("/", 1)[-1]
+    if low.endswith(".java") or low.endswith(".kt") or low.endswith(".groovy"):
+        return "/src/test/" in low or re.search(r"(tests?|it|itcase)\.(java|kt|groovy)$", name) or name.startswith("test")
+    if low.endswith(".py"):
+        return name.startswith("test_") or name.endswith("_test.py") or "/tests/" in low
+    if re.search(r"\.(js|jsx|ts|tsx)$", low):
+        return ".test." in name or ".spec." in name or "/__tests__/" in low
+    return False
+
+
+def _brace_body(text, start):
+    """Text of the {...} block whose opening brace is at or after `start`."""
+    i = text.find("{", start)
+    if i < 0:
+        return ""
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[i:j + 1]
+    return text[i:]
+
+
+def _extract_tests(path, text):
+    """{test name: {"line": n, "body": normalised body}} for the test methods found in one file."""
+    out = {}
+    if not text:
+        return out
+    ln = lambda pos: text.count("\n", 0, pos) + 1
+    norm = lambda b: re.sub(r"\s+", "", re.sub(r"//[^\n]*|/\*.*?\*/", "", b, flags=re.S))
+    low = path.lower()
+    if low.endswith(".py"):
+        lines = text.split("\n")
+        for i, l in enumerate(lines):
+            m = re.match(r"^(\s*)(?:async\s+)?def\s+(test\w*)\s*\(", l)
+            if not m:
+                continue
+            ind, body = len(m.group(1)), [l]
+            for l2 in lines[i + 1:]:
+                if l2.strip() and len(l2) - len(l2.lstrip()) <= ind:
+                    break
+                body.append(l2)
+            out.setdefault(m.group(2), {"line": i + 1, "body": norm("".join(body))})
+    elif re.search(r"\.(js|jsx|ts|tsx)$", low):
+        for m in re.finditer(r"\b(?:it|test)(?:\.\w+)?\s*\(\s*(['\"`])(.+?)\1\s*,", text):
+            out.setdefault(m.group(2), {"line": ln(m.start()), "body": norm(_brace_body(text, m.end()))})
+    else:
+        pat = (r"@(?:Test|ParameterizedTest|RepeatedTest|TestFactory)\b[^\n]*\n(?:\s*@[^\n]*\n)*\s*(?:public|protected|private)?\s*(?:static\s+)?"
+               r"(?:[\w<>\[\],?. ]+\s+)?(\w+)\s*\([^)]*\)[^{;]*\{")
+        for m in re.finditer(pat, text):
+            out.setdefault(m.group(1), {"line": ln(m.start(1)), "body": norm(_brace_body(text, m.end() - 1))})
+        for m in re.finditer(r"\bvoid\s+(test\w*)\s*\([^)]*\)[^{;]*\{", text):
+            out.setdefault(m.group(1), {"line": ln(m.start(1)), "body": norm(_brace_body(text, m.end() - 1))})
+    return out
+
+
+def fetch_test_changes(owner, repo, pr_number, token):
+    """Test case report of a PR: new, deleted and modified test methods in the changed test files."""
+    import requests, urllib3
+    urllib3.disable_warnings()
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({"Authorization": f"token {token}", "Accept": "application/vnd.github+json",
+                            "X-GitHub-Api-Version": "2022-11-28"})
+    base = f"https://api.github.com/repos/{owner}/{repo}"
+    meta = _gh_get(session, f"{base}/pulls/{pr_number}")
+    base_sha, head_sha = meta["base"]["sha"], meta["head"]["sha"]
+    files = _paginate(session, f"{base}/pulls/{pr_number}/files")
+
+    def fetch(path, sha):
+        r = session.get(f"{base}/contents/{path}", params={"ref": sha}, timeout=30, verify=False,
+                        headers={"Accept": "application/vnd.github.raw"})
+        return r.text if r.status_code == 200 else ""
+
+    added, deleted, modified, nfiles = [], [], [], 0
+    for f in files:
+        path = f.get("filename", "")
+        if not _is_test_file(path):
+            continue
+        nfiles += 1
+        st = f.get("status")
+        before = {} if st == "added" else _extract_tests(path, fetch(f.get("previous_filename") or path, base_sha))
+        after = {} if st == "removed" else _extract_tests(path, fetch(path, head_sha))
+        cls = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        mod = path.split("/src/test/")[0] if "/src/test/" in path else path.rsplit("/", 1)[0] if "/" in path else ""
+        mk = lambda n, line, **kw: {"file": path, "module": mod, "class": cls, "test": n, "line": line, **kw}
+        for n, t in after.items():
+            if n not in before:
+                added.append(mk(n, t["line"]))
+            elif before[n]["body"] != t["body"]:
+                modified.append(mk(n, t["line"], old_line=before[n]["line"]))
+        for n, t in before.items():
+            if n not in after:
+                deleted.append(mk(n, t["line"]))
+    return {"pr": {"number": pr_number, "title": meta.get("title", ""), "url": meta.get("html_url", ""), "repo": f"{owner}/{repo}"},
+            "added": added, "deleted": deleted, "modified": modified,
+            "totals": {"added": len(added), "deleted": len(deleted), "modified": len(modified), "test_files": nfiles}}
+
+
 if __name__ == "__main__":
     import argparse, json
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True, help="GitHub PR URL")
     parser.add_argument("--deps", action="store_true", help="print dependency changes instead of the review")
+    parser.add_argument("--tests", action="store_true", help="print test case changes instead of the review")
     args = parser.parse_args()
 
     token = read_github_token()
     owner, repo, pr_num = parse_pr_url(args.url)
+    if args.tests:
+        print(json.dumps(fetch_test_changes(owner, repo, pr_num, token), indent=2))
+        sys.exit(0)
     if args.deps:
         print(json.dumps(fetch_dependency_changes(owner, repo, pr_num, token), indent=2))
         sys.exit(0)

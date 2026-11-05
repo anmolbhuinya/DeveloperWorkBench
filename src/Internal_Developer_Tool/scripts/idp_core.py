@@ -33192,6 +33192,90 @@ def create_flask_app():
         from flask import Response as _Resp
         return _Resp(data, mimetype=mime + ("" if ext == "xlsx" else "; charset=utf-8"), headers={"Content-Disposition": 'attachment; filename="%s.%s"' % (fname, ext)})
 
+    @app.route("/api/tools/copilot-review/tests", methods=["POST"])
+    def api_copilot_review_tests():
+        """Test case report of a PR: new / deleted / modified test cases."""
+        import subprocess as _sp, sys as _sys, json as _json
+        body = request.get_json() or {}
+        owner, repo, pr = (str(body.get(k) or "").strip() for k in ("owner", "repo", "pr"))
+        if not owner or not repo or not pr:
+            return jsonify({"ok": False, "error": "owner, repo and pr are required"})
+        if not _COPILOT_REVIEW_SCRIPT.exists():
+            return jsonify({"ok": False, "error": f"Script not found: {_COPILOT_REVIEW_SCRIPT}"})
+        try:
+            r = _sp.run([_sys.executable, str(_COPILOT_REVIEW_SCRIPT), "--tests", "--url", f"https://github.com/{owner}/{repo}/pull/{pr}"],
+                        capture_output=True, text=True, timeout=180, creationflags=0x08000000)
+        except _sp.TimeoutExpired:
+            return jsonify({"ok": False, "error": "Request timed out"})
+        if r.returncode != 0:
+            return jsonify({"ok": False, "error": (r.stderr or r.stdout or "Unknown error").strip()[-600:]})
+        try:
+            return jsonify({"ok": True, **_json.loads(r.stdout)})
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Failed to parse output: {e}"})
+
+    @app.route("/api/tools/copilot-review/tests/export", methods=["POST"])
+    def api_copilot_review_tests_export():
+        """Export the test case report (sent back by the page) as json / html / csv / xlsx."""
+        import json as _j, csv as _csv, io as _io, html as _h, datetime as _dt
+        body = request.get_json() or {}
+        fmt, rep = str(body.get("format", "json")).lower(), body.get("report") or {}
+        pr = rep.get("pr") or {}
+        fname = "testcase-report-%s-pr%s" % (str(pr.get("repo", "repo")).replace("/", "_"), pr.get("number", ""))
+        SEG = [("added", "New Test Cases Added"), ("deleted", "Test Cases Deleted"), ("modified", "Test Cases Modified")]
+        cols = ["Segment", "Module", "File", "Class", "Test Case", "Line", "Previous Line"]
+        row = lambda k, e: [k, e.get("module"), e.get("file"), e.get("class"), e.get("test"), e.get("line"), e.get("old_line", "")]
+        if fmt == "json":
+            data, mime, ext = _j.dumps(rep, indent=2), "application/json", "json"
+        elif fmt == "csv":
+            buf = _io.StringIO()
+            w = _csv.writer(buf)
+            w.writerow(cols)
+            for k, _t in SEG:
+                for e in rep.get(k, []):
+                    w.writerow(row(k, e))
+            data, mime, ext = "\ufeff" + buf.getvalue(), "text/csv", "csv"
+        elif fmt == "xlsx":
+            import openpyxl as _xl
+            from openpyxl.styles import Font as _F, PatternFill as _P
+            wb = _xl.Workbook()
+            wb.remove(wb.active)
+            for k, t in SEG:
+                ws = wb.create_sheet(t[:31])
+                ws.append(cols[1:])
+                for e in rep.get(k, []):
+                    ws.append(row(k, e)[1:])
+                for c in ws[1]:
+                    c.font = _F(bold=True, color="FFFFFF")
+                    c.fill = _P("solid", fgColor="1565C0")
+                for col in ws.columns:
+                    ws.column_dimensions[col[0].column_letter].width = min(70, max(10, max(len(str(c.value or "")) for c in col) + 2))
+                ws.freeze_panes = "A2"
+            buf = _io.BytesIO()
+            wb.save(buf)
+            data, mime, ext = buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
+        elif fmt == "html":
+            out = ["<html><head><meta charset='utf-8'><title>Test case report</title><style>body{font-family:Segoe UI,Arial;margin:24px}"
+                   "table{border-collapse:collapse;font-size:13px;margin-bottom:22px}td,th{border:1px solid #ccc;padding:4px 8px}"
+                   "th{background:#1565c0;color:#fff}</style></head><body>",
+                   "<h2>Test case report - %s PR #%s</h2><p>%s &middot; generated %s</p>" % (
+                       _h.escape(str(pr.get("repo", ""))), _h.escape(str(pr.get("number", ""))), _h.escape(str(pr.get("title", ""))),
+                       _dt.datetime.now().strftime("%Y-%m-%d %H:%M"))]
+            for k, t in SEG:
+                items = rep.get(k, [])
+                out.append("<h3>%s (%d)</h3>" % (t, len(items)))
+                if not items:
+                    out.append("<p>None</p>")
+                    continue
+                out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in cols[1:]) + "</tr>" +
+                           "".join("<tr>" + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in row(k, e)[1:]) + "</tr>" for e in items) + "</table>")
+            out.append("</body></html>")
+            data, mime, ext = "\n".join(out), "text/html", "html"
+        else:
+            return jsonify({"ok": False, "error": "Unknown format"}), 400
+        from flask import Response as _Resp
+        return _Resp(data, mimetype=mime + ("" if ext == "xlsx" else "; charset=utf-8"), headers={"Content-Disposition": 'attachment; filename="%s.%s"' % (fname, ext)})
+
     # ── M2 Repo Cleaner ──────────────────────────────────────────────────────
     _M2_BASE_DIR   = WORKFLOWS_ROOT / "Tools" / "M2RepoCleaner"
     _M2_CFG_FILE   = _M2_BASE_DIR / "config.xlsx"
