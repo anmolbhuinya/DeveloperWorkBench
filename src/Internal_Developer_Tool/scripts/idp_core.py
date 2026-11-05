@@ -32931,6 +32931,28 @@ def create_flask_app():
         except Exception as e:
             return jsonify({"ok": False, "error": f"Failed to parse output: {e}\n{result.stdout[:300]}"})
 
+    @app.route("/api/tools/copilot-review/dependencies", methods=["POST"])
+    def api_copilot_review_dependencies():
+        """Dependencies added / removed / version-changed by a PR."""
+        import subprocess as _sp, sys as _sys, json as _json
+        body = request.get_json() or {}
+        owner, repo, pr = (str(body.get(k) or "").strip() for k in ("owner", "repo", "pr"))
+        if not owner or not repo or not pr:
+            return jsonify({"ok": False, "error": "owner, repo and pr are required"})
+        if not _COPILOT_REVIEW_SCRIPT.exists():
+            return jsonify({"ok": False, "error": f"Script not found: {_COPILOT_REVIEW_SCRIPT}"})
+        try:
+            r = _sp.run([_sys.executable, str(_COPILOT_REVIEW_SCRIPT), "--deps", "--url", f"https://github.com/{owner}/{repo}/pull/{pr}"],
+                        capture_output=True, text=True, timeout=180, creationflags=0x08000000)
+        except _sp.TimeoutExpired:
+            return jsonify({"ok": False, "error": "Request timed out"})
+        if r.returncode != 0:
+            return jsonify({"ok": False, "error": (r.stderr or r.stdout or "Unknown error").strip()[-600:]})
+        try:
+            return jsonify({"ok": True, **_json.loads(r.stdout)})
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Failed to parse output: {e}"})
+
     # ── M2 Repo Cleaner ──────────────────────────────────────────────────────
     _M2_BASE_DIR   = WORKFLOWS_ROOT / "Tools" / "M2RepoCleaner"
     _M2_CFG_FILE   = _M2_BASE_DIR / "config.xlsx"

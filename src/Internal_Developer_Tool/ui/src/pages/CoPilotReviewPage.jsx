@@ -306,6 +306,15 @@ export default function CoPilotReviewPage() {
   const [result,   setResult]     = useState(null)
   const [error,    setError]      = useState(null)
   const [fileFilter, setFileFilter] = useState('')
+  const [deps, setDeps]         = useState(null)    // dependency changes of the PR (right-hand panel)
+  const [depsLoading, setDepsLoading] = useState(false)
+
+  const loadDeps = (o, r, p) => {
+    setDeps(null); setDepsLoading(true)
+    fetch(`${API}/dependencies`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: o, repo: r, pr: p }) })
+      .then(x => x.json()).then(setDeps).catch(e => setDeps({ ok: false, error: String(e) }))
+      .finally(() => setDepsLoading(false))
+  }
 
   useEffect(() => {
     if (autoRan.current) return
@@ -322,7 +331,7 @@ export default function CoPilotReviewPage() {
       body: JSON.stringify({ owner: parsed.owner, repo: parsed.repo, pr: parsed.pr }),
     })
       .then(r => r.json())
-      .then(d => { if (d.ok) setResult(d); else setError(d.error || 'Failed to fetch Copilot review') })
+      .then(d => { if (d.ok) { setResult(d); loadDeps(parsed.owner, parsed.repo, parsed.pr) } else setError(d.error || 'Failed to fetch Copilot review') })
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false))
   }, [searchParams])
@@ -345,7 +354,7 @@ export default function CoPilotReviewPage() {
         body: JSON.stringify({ owner, repo, pr }),
       })
       const d = await r.json()
-      if (d.ok) setResult(d)
+      if (d.ok) { setResult(d); loadDeps(owner, repo, pr) }
       else      setError(d.error || 'Failed to fetch Copilot review')
     } catch (e) {
       setError(String(e))
@@ -371,7 +380,8 @@ export default function CoPilotReviewPage() {
   ) ?? []
 
   return (
-    <div style={{ padding: '24px 28px', maxWidth: 860 }}>
+    <div style={{ padding: '24px 28px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+    <div style={{ flex: '1 1 0', minWidth: 0, maxWidth: 860 }}>
 
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
@@ -580,6 +590,32 @@ export default function CoPilotReviewPage() {
           )}
         </>
       )}
+    </div>
+
+    {/* Right-hand: dependency changes in the PR */}
+    {(result || depsLoading) && (
+      <div className="card" style={{ flex: '0 0 380px', position: 'sticky', top: 16, maxHeight: 'calc(100vh - 40px)', overflow: 'auto' }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>📦 Dependency changes</div>
+        {depsLoading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}><span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Comparing pom.xml / package.json …</div>}
+        {deps && !deps.ok && <div style={{ fontSize: 12, color: '#B71C1C' }}>⚠ {deps.error}</div>}
+        {deps?.ok && deps.files.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>This PR changes no dependencies (no pom.xml / package.json dependency changes).</div>}
+        {deps?.ok && deps.files.length > 0 && (
+          <>
+            <div style={{ fontSize: 12, marginBottom: 10 }}>
+              <span style={{ color: '#2E7D32', fontWeight: 700 }}>+{deps.totals.added} added</span> · <span style={{ color: '#C62828', fontWeight: 700 }}>−{deps.totals.removed} removed</span> · <span style={{ color: '#E65100', fontWeight: 700 }}>{deps.totals.changed} version changed</span>
+            </div>
+            {deps.files.map(f => (
+              <div key={f.file} style={{ marginBottom: 12 }}>
+                <div style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)', wordBreak: 'break-all', marginBottom: 4 }}>{f.file}</div>
+                {f.added.map(d => <div key={'a' + d.name} style={{ fontSize: 12, padding: '2px 0' }}><span style={{ color: '#2E7D32', fontWeight: 700 }}>+ </span>{d.name} <span style={{ color: 'var(--text-muted)' }}>{d.version || '(managed)'}</span></div>)}
+                {f.removed.map(d => <div key={'r' + d.name} style={{ fontSize: 12, padding: '2px 0' }}><span style={{ color: '#C62828', fontWeight: 700 }}>− </span>{d.name} <span style={{ color: 'var(--text-muted)' }}>{d.version || '(managed)'}</span></div>)}
+                {f.changed.map(d => <div key={'c' + d.name} style={{ fontSize: 12, padding: '2px 0' }}><span style={{ color: '#E65100', fontWeight: 700 }}>~ </span>{d.name}<div style={{ paddingLeft: 14, color: 'var(--text-muted)' }}>{d.from || '(managed)'} <span style={{ color: 'var(--text)' }}>→</span> <b style={{ color: 'var(--text)' }}>{d.to || '(managed)'}</b></div></div>)}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    )}
     </div>
   )
 }

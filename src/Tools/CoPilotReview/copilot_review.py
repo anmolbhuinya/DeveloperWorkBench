@@ -200,13 +200,105 @@ def fetch_copilot_review(owner, repo, pr_number, token):
     }
 
 
+def _pom_deps(xml_text):
+    """{ 'group:artifact': version } for the dependencies / plugins / parent of a pom (properties resolved)."""
+    import xml.etree.ElementTree as ET
+    out = {}
+    try:
+        root = ET.fromstring(xml_text.encode("utf-8"))
+    except Exception:
+        return out
+    loc = lambda e: e.tag.split("}")[-1]
+    kid = lambda e, n: next((c for c in e if loc(c) == n), None)
+    txt = lambda e, n: ((kid(e, n).text or "").strip() if kid(e, n) is not None else "")
+    props = {}
+    pr = kid(root, "properties")
+    if pr is not None:
+        props = {loc(c): (c.text or "").strip() for c in pr}
+    par = kid(root, "parent")
+    if par is not None:
+        props.setdefault("project.version", txt(par, "version"))
+        props.setdefault("project.parent.version", txt(par, "version"))
+    if txt(root, "version"):
+        props["project.version"] = txt(root, "version")
+    res = lambda v: re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), v or "")
+    if par is not None:
+        out["%s:%s" % (txt(par, "groupId"), txt(par, "artifactId"))] = "parent " + res(txt(par, "version"))
+    for el in root.iter():
+        if loc(el) in ("dependency", "plugin") and kid(el, "artifactId") is not None:
+            g = txt(el, "groupId") or ("org.apache.maven.plugins" if loc(el) == "plugin" else "")
+            key = "%s:%s" % (g, txt(el, "artifactId"))
+            if loc(el) == "plugin":
+                key = "[plugin] " + key
+            v = res(txt(el, "version"))
+            if key not in out or (v and not out[key]):
+                out[key] = v
+    return out
+
+
+def _json_deps(text):
+    import json
+    try:
+        d = json.loads(text)
+    except Exception:
+        return {}
+    out = {}
+    for sec in ("dependencies", "devDependencies", "peerDependencies"):
+        for k, v in (d.get(sec) or {}).items():
+            out[k if sec == "dependencies" else "[%s] %s" % (sec, k)] = str(v)
+    return out
+
+
+def fetch_dependency_changes(owner, repo, pr_number, token):
+    """Dependencies added / removed / version-changed by a PR (pom.xml and package.json files)."""
+    import requests, urllib3
+    urllib3.disable_warnings()
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({"Authorization": f"token {token}", "Accept": "application/vnd.github+json",
+                            "X-GitHub-Api-Version": "2022-11-28"})
+    base = f"https://api.github.com/repos/{owner}/{repo}"
+    meta = _gh_get(session, f"{base}/pulls/{pr_number}")
+    base_sha, head_sha = meta["base"]["sha"], meta["head"]["sha"]
+    files = _paginate(session, f"{base}/pulls/{pr_number}/files")
+
+    def content(path, sha):
+        if not sha or not path:
+            return ""
+        r = session.get(f"{base}/contents/{path}", params={"ref": sha}, timeout=30, verify=False,
+                        headers={"Accept": "application/vnd.github.raw"})
+        return r.text if r.status_code == 200 else ""
+
+    changes = []
+    for f in files:
+        path = f.get("filename", "")
+        name = path.rsplit("/", 1)[-1]
+        if name not in ("pom.xml", "package.json"):
+            continue
+        parse = _pom_deps if name == "pom.xml" else _json_deps
+        before = {} if f.get("status") == "added" else parse(content(f.get("previous_filename") or path, base_sha))
+        after = {} if f.get("status") == "removed" else parse(content(path, head_sha))
+        added = [{"name": k, "version": after[k]} for k in sorted(after) if k not in before]
+        removed = [{"name": k, "version": before[k]} for k in sorted(before) if k not in after]
+        changed = [{"name": k, "from": before[k], "to": after[k]} for k in sorted(after) if k in before and before[k] != after[k]]
+        if added or removed or changed:
+            changes.append({"file": path, "added": added, "removed": removed, "changed": changed})
+    return {"files": changes,
+            "totals": {"added": sum(len(c["added"]) for c in changes), "removed": sum(len(c["removed"]) for c in changes),
+                       "changed": sum(len(c["changed"]) for c in changes)}}
+
+
 if __name__ == "__main__":
     import argparse, json
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True, help="GitHub PR URL")
+    parser.add_argument("--deps", action="store_true", help="print dependency changes instead of the review")
     args = parser.parse_args()
 
     token = read_github_token()
     owner, repo, pr_num = parse_pr_url(args.url)
+    if args.deps:
+        print(json.dumps(fetch_dependency_changes(owner, repo, pr_num, token), indent=2))
+        sys.exit(0)
     result = fetch_copilot_review(owner, repo, pr_num, token)
     print(json.dumps(result, indent=2))
