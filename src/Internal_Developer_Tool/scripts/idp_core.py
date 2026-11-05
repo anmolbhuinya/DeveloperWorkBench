@@ -16815,6 +16815,8 @@ def create_flask_app():
         cfg = _HELP_KINDS.get(kind)
         if not cfg:
             return jsonify({"ok": False, "error": "Unknown kind"}), 404
+        if request.method == "GET":
+            _help_sweep_jobs()     # finalise AI runs that finished meanwhile so their item shows Implemented / Fixed right away
         with _help_lock:
             wb, path = _help_load()
             ws = wb[cfg["sheet"]]

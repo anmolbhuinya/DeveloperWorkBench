@@ -19,6 +19,7 @@ function Panel({ kind, title, noun, statuses, done, action }) {
   const [editId, setEditId] = useState(null)
   const [edit, setEdit]     = useState({ title: '', description: '' })
   const [busy, setBusy]     = useState(false)
+  const [confirmDel, setConfirmDel] = useState(null)   // item awaiting delete confirmation
   const [jobs, setJobs]     = useState({})        // item id -> latest AI job
   const [openLog, setOpenLog] = useState({})      // item id -> log expanded
   const timer = useRef(null)
@@ -59,7 +60,7 @@ function Panel({ kind, title, noun, statuses, done, action }) {
       .catch(() => setErr('Failed to load'))
       .finally(() => setLoading(false))
   }, [kind])
-  useEffect(load, [load])
+  useEffect(() => { fetch(`/api/help/${kind}/ai-jobs`).then(r => r.json()).then(d => { if (d.ok) setJobs(d.jobs || {}) }).catch(() => {}).finally(load) }, [load])
 
   const call = async (url, method, body) => {
     setBusy(true); setErr('')
@@ -99,7 +100,7 @@ function Panel({ kind, title, noun, statuses, done, action }) {
     finally { setBusy(false) }
   }
   const remove = async it => {
-    if (!window.confirm(`Delete this ${noun}?\n\n${it.title}`)) return
+    setConfirmDel(null)
     if (await call(`/api/help/${kind}/${it.id}`, 'DELETE')) load()
   }
 
@@ -116,6 +117,24 @@ function Panel({ kind, title, noun, statuses, done, action }) {
         <div><button className="btn btn-sm btn-primary" disabled={busy || !draft.title.trim()} onClick={add}>+ Add {noun}</button></div>
       </div>
 
+      {confirmDel && (
+        <div onClick={() => setConfirmDel(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', backdropFilter: 'blur(2px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: 420, maxWidth: '90vw', background: 'var(--bg)', color: 'var(--text)', borderRadius: 14, boxShadow: '0 20px 50px rgba(0,0,0,0.35)', overflow: 'hidden' }}>
+            <div style={{ padding: '22px 24px 8px', display: 'flex', gap: 14 }}>
+              <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'rgba(198,40,40,0.12)', color: '#c62828', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>🗑</div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>Delete this {noun}?</div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>This cannot be undone.</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginTop: 10, padding: '8px 10px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, wordBreak: 'break-word' }}>{confirmDel.title}</div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '16px 24px 20px' }}>
+              <button className="btn" onClick={() => setConfirmDel(null)}>Cancel</button>
+              <button className="btn btn-danger" autoFocus disabled={busy} onClick={() => remove(confirmDel)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
       {err && <div className="alert alert-error" style={{ whiteSpace: 'pre-wrap' }}>{err}</div>}
       {loading && <span className="spinner" />}
       {!loading && items.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Nothing here yet.</div>}
@@ -165,7 +184,7 @@ function Panel({ kind, title, noun, statuses, done, action }) {
                       : <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => gitPush(it)}
                           title={`git add . / commit "${kind === 'features' ? 'Wishlist' : 'Bug'}:${it.title}" / push (in DWB_Workspace)`}>GitPush</button>)
                   : <button className="btn btn-sm" onClick={() => { setEditId(it.id); setEdit({ title: it.title, description: it.description }) }}>✎ Edit</button>}
-                <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => remove(it)}>Delete</button>
+                <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => setConfirmDel(it)}>Delete</button>
               </div>
               {jobs[it.id] && (
                 <div style={{ marginTop: 6, fontSize: 11, color: jobs[it.id].status === 'error' ? 'var(--danger, #c62828)' : 'var(--text-muted)' }}>
