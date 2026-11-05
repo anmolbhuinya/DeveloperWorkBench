@@ -309,6 +309,15 @@ export default function CoPilotReviewPage() {
   const [deps, setDeps]         = useState(null)    // dependency changes of the PR (right-hand panel)
   const [depsLoading, setDepsLoading] = useState(false)
 
+  const exportDeps = async fmt => {
+    const res = await fetch(`${API}/dependencies/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ format: fmt, report: deps }) })
+    if (!res.ok) { alert('Export failed'); return }
+    const blob = await res.blob()
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+    a.download = `dependency-report-${(deps.pr?.repo || 'repo').replace('/', '_')}-pr${deps.pr?.number || ''}.${fmt}`
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  }
+
   const loadDeps = (o, r, p) => {
     setDeps(null); setDepsLoading(true)
     fetch(`${API}/dependencies`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: o, repo: r, pr: p }) })
@@ -592,28 +601,56 @@ export default function CoPilotReviewPage() {
       )}
     </div>
 
-    {/* Right-hand: dependency changes in the PR */}
+    {/* Right-hand: dependency report of the PR */}
     {(result || depsLoading) && (
-      <div className="card" style={{ flex: '0 0 380px', position: 'sticky', top: 16, maxHeight: 'calc(100vh - 40px)', overflow: 'auto' }}>
-        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>📦 Dependency changes</div>
-        {depsLoading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}><span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Comparing pom.xml / package.json …</div>}
+      <div className="card" style={{ flex: '0 0 560px', position: 'sticky', top: 16, maxHeight: 'calc(100vh - 40px)', overflow: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>📦 Dependency report</div>
+          {deps?.ok && ['json', 'html', 'csv'].map(f => (
+            <button key={f} onClick={() => exportDeps(f)} style={{ fontSize: 11, padding: '3px 9px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>{f.toUpperCase()}</button>
+          ))}
+        </div>
+        {depsLoading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}><span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Resolving dependencies across the repository …</div>}
         {deps && !deps.ok && <div style={{ fontSize: 12, color: '#B71C1C' }}>⚠ {deps.error}</div>}
-        {deps?.ok && deps.files.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>This PR changes no dependencies (no pom.xml / package.json dependency changes).</div>}
-        {deps?.ok && deps.files.length > 0 && (
-          <>
-            <div style={{ fontSize: 12, marginBottom: 10 }}>
-              <span style={{ color: '#2E7D32', fontWeight: 700 }}>+{deps.totals.added} added</span> · <span style={{ color: '#C62828', fontWeight: 700 }}>−{deps.totals.removed} removed</span> · <span style={{ color: '#E65100', fontWeight: 700 }}>{deps.totals.changed} version changed</span>
+        {deps?.ok && deps.note && <div style={{ fontSize: 11, color: '#E65100', marginBottom: 8 }}>{deps.note}</div>}
+        {deps?.ok && [
+          ['added',      'New Dependencies Added',   '#2E7D32'],
+          ['removed',    'Dependencies Removed',     '#C62828'],
+          ['updated',    'Dependencies Updated',     '#E65100'],
+          ['dup_module', 'Duplicate Dependencies — same module', '#6A1B9A'],
+          ['dup_repo',   'Duplicate Dependencies — version mismatch in repository', '#00695C'],
+        ].map(([k, title, color]) => {
+          const rows = deps[k] || []
+          const th = { textAlign: 'left', padding: '3px 6px', fontSize: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
+          const td = { padding: '3px 6px', fontSize: 11, borderBottom: '1px solid var(--border)', wordBreak: 'break-all' }
+          return (
+            <div key={k} style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color, borderBottom: `2px solid ${color}`, paddingBottom: 2, marginBottom: 4 }}>{title} ({rows.length})</div>
+              {rows.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>None</div> : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr>
+                      <th style={th}>Module</th><th style={th}>Group</th><th style={th}>Artifact</th>
+                      {k === 'updated' ? <><th style={th}>Version (from → to)</th><th style={th}>Scope</th></> : <><th style={th}>Version</th><th style={th}>Scope</th></>}
+                      {(k === 'dup_module' || k === 'dup_repo') && <th style={th}>Line</th>}
+                      {k === 'dup_repo' && <th style={th}>File</th>}
+                    </tr></thead>
+                    <tbody>{rows.map((e, i) => (
+                      <tr key={i} title={e.file}>
+                        <td style={td}>{e.module}</td><td style={td}>{e.group}</td><td style={td}>{e.artifact}</td>
+                        {k === 'updated'
+                          ? <><td style={td}>{e.from_version} → <b>{e.to_version}</b></td><td style={td}>{e.from_scope === e.to_scope ? e.to_scope : `${e.from_scope} → ${e.to_scope}`}</td></>
+                          : <><td style={td}>{e.version}</td><td style={td}>{e.scope}</td></>}
+                        {(k === 'dup_module' || k === 'dup_repo') && <td style={td}>{e.line}</td>}
+                        {k === 'dup_repo' && <td style={{ ...td, fontFamily: 'monospace' }}>{e.file}</td>}
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
             </div>
-            {deps.files.map(f => (
-              <div key={f.file} style={{ marginBottom: 12 }}>
-                <div style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)', wordBreak: 'break-all', marginBottom: 4 }}>{f.file}</div>
-                {f.added.map(d => <div key={'a' + d.name} style={{ fontSize: 12, padding: '2px 0' }}><span style={{ color: '#2E7D32', fontWeight: 700 }}>+ </span>{d.name} <span style={{ color: 'var(--text-muted)' }}>{d.version || '(managed)'}</span></div>)}
-                {f.removed.map(d => <div key={'r' + d.name} style={{ fontSize: 12, padding: '2px 0' }}><span style={{ color: '#C62828', fontWeight: 700 }}>− </span>{d.name} <span style={{ color: 'var(--text-muted)' }}>{d.version || '(managed)'}</span></div>)}
-                {f.changed.map(d => <div key={'c' + d.name} style={{ fontSize: 12, padding: '2px 0' }}><span style={{ color: '#E65100', fontWeight: 700 }}>~ </span>{d.name}<div style={{ paddingLeft: 14, color: 'var(--text-muted)' }}>{d.from || '(managed)'} <span style={{ color: 'var(--text)' }}>→</span> <b style={{ color: 'var(--text)' }}>{d.to || '(managed)'}</b></div></div>)}
-              </div>
-            ))}
-          </>
-        )}
+          )
+        })}
       </div>
     )}
     </div>

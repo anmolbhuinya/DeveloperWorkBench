@@ -32953,6 +32953,60 @@ def create_flask_app():
         except Exception as e:
             return jsonify({"ok": False, "error": f"Failed to parse output: {e}"})
 
+    @app.route("/api/tools/copilot-review/dependencies/export", methods=["POST"])
+    def api_copilot_review_dependencies_export():
+        """Export the dependency report (sent back by the page) as json / csv / html."""
+        import json as _j, csv as _csv, io as _io, html as _h, datetime as _dt
+        body = request.get_json() or {}
+        fmt, rep = str(body.get("format", "json")).lower(), body.get("report") or {}
+        pr = rep.get("pr") or {}
+        fname = "dependency-report-%s-pr%s" % (str(pr.get("repo", "repo")).replace("/", "_"), pr.get("number", ""))
+        SECTIONS = [("added", "New Dependencies Added"), ("removed", "Dependencies Removed"), ("updated", "Dependencies Updated"),
+                    ("dup_module", "Duplicate Dependencies - same module"), ("dup_repo", "Duplicate Dependencies - version mismatch in repository")]
+        cols = ["Section", "Module", "File", "Group", "Artifact", "Version / From", "To", "Scope / From", "To Scope", "Line"]
+
+        def row(sec, e):
+            if sec == "updated":
+                return [sec, e.get("module"), e.get("file"), e.get("group"), e.get("artifact"), e.get("from_version"), e.get("to_version"),
+                        e.get("from_scope"), e.get("to_scope"), e.get("line")]
+            return [sec, e.get("module"), e.get("file"), e.get("group"), e.get("artifact"), e.get("version"), "", e.get("scope"), "", e.get("line")]
+        if fmt == "json":
+            data, mime, ext = _j.dumps(rep, indent=2), "application/json", "json"
+        elif fmt == "csv":
+            buf = _io.StringIO()
+            w = _csv.writer(buf)
+            w.writerow(cols)
+            for sec, _t in SECTIONS:
+                for e in rep.get(sec, []):
+                    w.writerow(row(sec, e))
+            data, mime, ext = "\ufeff" + buf.getvalue(), "text/csv", "csv"
+        elif fmt == "html":
+            out = ["<html><head><meta charset='utf-8'><title>Dependency report</title><style>body{font-family:Segoe UI,Arial;margin:24px}"
+                   "table{border-collapse:collapse;font-size:13px;margin-bottom:22px}td,th{border:1px solid #ccc;padding:4px 8px}"
+                   "th{background:#1565c0;color:#fff}h3{margin-bottom:6px}</style></head><body>",
+                   "<h2>Dependency report - %s PR #%s</h2><p>%s &middot; generated %s</p>" % (
+                       _h.escape(str(pr.get("repo", ""))), _h.escape(str(pr.get("number", ""))), _h.escape(str(pr.get("title", ""))),
+                       _dt.datetime.now().strftime("%Y-%m-%d %H:%M"))]
+            for sec, title in SECTIONS:
+                items = rep.get(sec, [])
+                out.append("<h3>%s (%d)</h3>" % (title, len(items)))
+                if not items:
+                    out.append("<p>None</p>")
+                    continue
+                hdr = cols[1:]
+                out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in hdr) + "</tr>")
+                for e in items:
+                    out.append("<tr>" + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in row(sec, e)[1:]) + "</tr>")
+                out.append("</table>")
+            if rep.get("note"):
+                out.append("<p><i>%s</i></p>" % _h.escape(rep["note"]))
+            out.append("</body></html>")
+            data, mime, ext = "\n".join(out), "text/html", "html"
+        else:
+            return jsonify({"ok": False, "error": "Unknown format"}), 400
+        from flask import Response as _Resp
+        return _Resp(data, mimetype=mime + "; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="%s.%s"' % (fname, ext)})
+
     # ── M2 Repo Cleaner ──────────────────────────────────────────────────────
     _M2_BASE_DIR   = WORKFLOWS_ROOT / "Tools" / "M2RepoCleaner"
     _M2_CFG_FILE   = _M2_BASE_DIR / "config.xlsx"
