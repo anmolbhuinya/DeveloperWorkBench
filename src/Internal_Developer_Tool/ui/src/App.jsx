@@ -45,6 +45,7 @@ const SprintPage           = lazy(() => import('./pages/SprintPage'))
 const ResourceSkillPage    = lazy(() => import('./pages/ResourceSkillPage'))
 const ToolsPage            = lazy(() => import('./pages/ToolsPage'))
 const SonarReportPage      = lazy(() => import('./pages/SonarReportPage'))
+const RegressionParityPage = lazy(() => import('./pages/RegressionParityPage'))
 const AIAnalyzerPage      = lazy(() => import('./pages/AIAnalyzerPage'))
 const CoPilotReviewPage    = lazy(() => import('./pages/CoPilotReviewPage'))
 const M2RepoCleanerPage    = lazy(() => import('./pages/M2RepoCleanerPage'))
@@ -225,6 +226,7 @@ export default function App() {
               <Route path="/project-management/resource-skill" element={<ResourceSkillPage />} />
               <Route path="/developer-tools"                    element={<ToolsPage />} />
               <Route path="/developer-tools/sonar-report"     element={<SonarReportPage />} />
+              <Route path="/developer-tools/regression-parity" element={<RegressionParityPage />} />
               <Route path="/developer-tools/ai-analyzer"      element={<AIAnalyzerPage />} />
               <Route path="/developer-tools/copilot-review"   element={<CoPilotReviewPage />} />
               <Route path="/developer-tools/m2-repo-cleaner"    element={<M2RepoCleanerPage />} />

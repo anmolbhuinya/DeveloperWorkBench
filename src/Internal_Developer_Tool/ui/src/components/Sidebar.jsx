@@ -76,6 +76,7 @@ const SECTIONS = [
     path: '/developer-tools',
     items: [
       { label: 'Sonar Report',  path: '/developer-tools/sonar-report'   },
+      { label: 'Regression Parity', path: '/developer-tools/regression-parity' },
       { label: 'AI PR Review',  path: '/developer-tools/copilot-review' },
       { label: 'AI Analyzer',   path: '/developer-tools/ai-analyzer'    },
       { label: 'M2 Repo Cleaner',   path: '/developer-tools/m2-repo-cleaner' },

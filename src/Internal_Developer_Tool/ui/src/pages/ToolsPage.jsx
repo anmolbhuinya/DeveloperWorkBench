@@ -10,6 +10,13 @@ const CARDS = [
     desc: 'Generate an Excel report from a SonarQube Pull Request analysis',
   },
   {
+    id: 'rparity',
+    path: '/developer-tools/regression-parity',
+    icon: '⚖️',
+    title: 'Regression Parity Checker',
+    desc: 'Compare a Jenkins regression job with a baseline job: failing, missing, disabled and new tests',
+  },
+  {
     id: 'copilot',
     path: '/developer-tools/copilot-review',
     icon: '🤖',

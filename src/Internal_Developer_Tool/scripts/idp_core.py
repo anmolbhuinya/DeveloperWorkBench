@@ -33276,6 +33276,154 @@ def create_flask_app():
         from flask import Response as _Resp
         return _Resp(data, mimetype=mime + ("" if ext == "xlsx" else "; charset=utf-8"), headers={"Content-Disposition": 'attachment; filename="%s.%s"' % (fname, ext)})
 
+    # ── Regression Parity Checker (Tools) ────────────────────────────────────
+    def _rpc_fetch(job_url, auth):
+        """{test id: {class, name, state}} from a Jenkins build's test report. state: passed / failed / disabled."""
+        import requests as _rq, re as _re, urllib3 as _u3
+        _u3.disable_warnings()
+        u = job_url.strip().split("?")[0].rstrip("/")
+        if "/testReport" in u:
+            u = u.split("/testReport")[0]
+        if not _re.search(r"/(\d+|last\w*Build)$", u):
+            u += "/lastCompletedBuild"
+        r = _rq.get(u + "/testReport/api/json", auth=auth, timeout=120, verify=False,
+                    params={"tree": "suites[cases[className,name,status,skipped]],childReports[result[suites[cases[className,name,status,skipped]]]]"})
+        if r.status_code == 404:
+            raise ValueError("No test report found at %s (is it a build with a published test report?)" % u)
+        if r.status_code in (401, 403):
+            raise ValueError("Jenkins rejected the credentials (HTTP %s) for %s" % (r.status_code, u))
+        r.raise_for_status()
+        d = r.json()
+        suites = list(d.get("suites") or [])
+        for ch in d.get("childReports") or []:
+            suites += (ch.get("result") or {}).get("suites") or []
+        out = {}
+        for su in suites:
+            for c in su.get("cases") or []:
+                st = str(c.get("status") or "").upper()
+                state = "disabled" if (c.get("skipped") or st == "SKIPPED") else ("failed" if st in ("FAILED", "REGRESSION") else "passed")
+                cls, nm = c.get("className") or "", c.get("name") or ""
+                tid = (cls + "." + nm) if cls else nm
+                prev = out.get(tid)
+                # a duplicate id keeps the worst outcome
+                if prev is None or (state == "failed") or (state == "disabled" and prev["state"] == "passed"):
+                    out[tid] = {"id": tid, "class": cls, "name": nm, "state": state}
+        return out
+
+    @app.route("/api/tools/regression-parity/check", methods=["POST"])
+    def api_regression_parity_check():
+        import openpyxl as _xl, datetime as _dt
+        b = request.get_json() or {}
+        bl_url, rg_url = str(b.get("baseline_url") or "").strip(), str(b.get("regression_url") or "").strip()
+        if not bl_url or not rg_url:
+            return jsonify({"ok": False, "error": "Baseline job URL and regression job URL are required"})
+        sec = {}
+        try:
+            if SECRETS_FILE.exists():
+                wb = _xl.load_workbook(str(SECRETS_FILE), read_only=True)
+                if "Jenkins" in wb.sheetnames:
+                    for r in wb["Jenkins"].iter_rows(min_row=2, values_only=True):
+                        if r[0] and r[1] is not None:
+                            sec[str(r[0]).strip()] = str(r[1]).strip()
+        except Exception:
+            pass
+        auth = (sec.get("jenkins_username"), sec.get("jenkins_api_token") or sec.get("jenkins_password") or "") if sec.get("jenkins_username") else None
+        try:
+            bl, rg = _rpc_fetch(bl_url, auth), _rpc_fetch(rg_url, auth)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)[:500]})
+        cnt = lambda m: {"total": len(m), "passed": sum(1 for t in m.values() if t["state"] == "passed"),
+                         "failed": sum(1 for t in m.values() if t["state"] == "failed"),
+                         "disabled": sum(1 for t in m.values() if t["state"] == "disabled")}
+        row = lambda t, bs, rs: {"id": t["id"], "class": t["class"], "name": t["name"], "baseline": bs, "regression": rs}
+        failing = [row(rg[i], bl[i]["state"], "failed") for i in sorted(rg) if i in bl and rg[i]["state"] == "failed" and bl[i]["state"] == "passed"]
+        missing = [row(bl[i], bl[i]["state"], "missing") for i in sorted(bl) if i not in rg]
+        disabled = [row(rg[i], bl[i]["state"], "disabled") for i in sorted(rg) if i in bl and rg[i]["state"] == "disabled" and bl[i]["state"] != "disabled"]
+        added = [row(rg[i], "", rg[i]["state"]) for i in sorted(rg) if i not in bl]
+        return jsonify({"ok": True, "baseline_url": bl_url, "regression_url": rg_url,
+                        "generated": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "baseline": cnt(bl), "regression": cnt(rg),
+                        "failing": failing, "missing": missing, "disabled": disabled, "added": added,
+                        "totals": {"failing": len(failing), "missing": len(missing), "disabled": len(disabled), "added": len(added)}})
+
+    @app.route("/api/tools/regression-parity/export", methods=["POST"])
+    def api_regression_parity_export():
+        import json as _j, csv as _csv, io as _io, html as _h
+        body = request.get_json() or {}
+        fmt, rep = str(body.get("format", "json")).lower(), body.get("report") or {}
+        SEG = [("failing", "Failing in regression, passing in baseline"), ("missing", "Missing in regression, present in baseline"),
+               ("disabled", "Disabled in regression, enabled in baseline"), ("added", "Newly added in regression")]
+        cols = ["Category", "Test Case", "Class", "Name", "Baseline", "Regression"]
+        row = lambda k, e: [k, e.get("id"), e.get("class"), e.get("name"), e.get("baseline"), e.get("regression")]
+        summ = [("Baseline total", rep.get("baseline", {}).get("total")), ("Regression total", rep.get("regression", {}).get("total")),
+                ("Failing in regression but passing in baseline", (rep.get("totals") or {}).get("failing")),
+                ("Missing in regression but present in baseline", (rep.get("totals") or {}).get("missing")),
+                ("Disabled in regression but enabled in baseline", (rep.get("totals") or {}).get("disabled")),
+                ("Newly added in regression", (rep.get("totals") or {}).get("added"))]
+        fname = "regression-parity-report"
+        if fmt == "json":
+            data, mime, ext = _j.dumps(rep, indent=2), "application/json", "json"
+        elif fmt == "csv":
+            buf = _io.StringIO()
+            w = _csv.writer(buf)
+            w.writerow(["Summary", "Count"])
+            for k, v in summ:
+                w.writerow([k, v])
+            w.writerow([])
+            w.writerow(cols)
+            for k, _t in SEG:
+                for e in rep.get(k, []):
+                    w.writerow(row(k, e))
+            data, mime, ext = "\ufeff" + buf.getvalue(), "text/csv", "csv"
+        elif fmt == "xlsx":
+            import openpyxl as _xl
+            from openpyxl.styles import Font as _F, PatternFill as _P
+            wb = _xl.Workbook()
+            ws = wb.active
+            ws.title = "Summary"
+            ws.append(["Summary", "Count"])
+            for k, v in summ:
+                ws.append([k, v])
+            ws.append(["Baseline job", rep.get("baseline_url", "")])
+            ws.append(["Regression job", rep.get("regression_url", "")])
+            sheets = [ws]
+            for k, t in SEG:
+                w2 = wb.create_sheet(k.capitalize())
+                w2.append(cols[1:])
+                for e in rep.get(k, []):
+                    w2.append(row(k, e)[1:])
+                sheets.append(w2)
+            for w_ in sheets:
+                for c in w_[1]:
+                    c.font = _F(bold=True, color="FFFFFF")
+                    c.fill = _P("solid", fgColor="1565C0")
+                for col in w_.columns:
+                    w_.column_dimensions[col[0].column_letter].width = min(80, max(10, max(len(str(c.value or "")) for c in col) + 2))
+            buf = _io.BytesIO()
+            wb.save(buf)
+            data, mime, ext = buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
+        elif fmt == "html":
+            e_ = _h.escape
+            out = ["<html><head><meta charset='utf-8'><title>Regression parity report</title><style>body{font-family:Segoe UI,Arial;margin:24px}"
+                   "table{border-collapse:collapse;font-size:13px;margin-bottom:22px}td,th{border:1px solid #ccc;padding:4px 8px}"
+                   "th{background:#1565c0;color:#fff;text-align:left}</style></head><body><h2>Regression parity report</h2>",
+                   "<p>Baseline: %s<br>Regression: %s<br>Generated %s</p>" % (e_(str(rep.get("baseline_url", ""))), e_(str(rep.get("regression_url", ""))), e_(str(rep.get("generated", "")))),
+                   "<table><tr><th>Summary</th><th>Count</th></tr>" + "".join("<tr><td>%s</td><td>%s</td></tr>" % (e_(k), e_(str(v))) for k, v in summ) + "</table>"]
+            for k, t in SEG:
+                items = rep.get(k, [])
+                out.append("<h3>%s (%d)</h3>" % (t, len(items)))
+                if not items:
+                    out.append("<p>None</p>")
+                    continue
+                out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in cols[1:]) + "</tr>" +
+                           "".join("<tr>" + "".join("<td>%s</td>" % e_(str(c if c is not None else "")) for c in row(k, e)[1:]) + "</tr>" for e in items) + "</table>")
+            out.append("</body></html>")
+            data, mime, ext = "\n".join(out), "text/html", "html"
+        else:
+            return jsonify({"ok": False, "error": "Unknown format"}), 400
+        from flask import Response as _Resp
+        return _Resp(data, mimetype=mime + ("" if ext == "xlsx" else "; charset=utf-8"), headers={"Content-Disposition": 'attachment; filename="%s.%s"' % (fname, ext)})
+
     # ── M2 Repo Cleaner ──────────────────────────────────────────────────────
     _M2_BASE_DIR   = WORKFLOWS_ROOT / "Tools" / "M2RepoCleaner"
     _M2_CFG_FILE   = _M2_BASE_DIR / "config.xlsx"
