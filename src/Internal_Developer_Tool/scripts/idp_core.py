@@ -20307,8 +20307,9 @@ def create_flask_app():
                             continue
                         if k == "deployment_container" and selected:
                             result["container"] = selected
-                        elif k in ("tomcat_manager_user", "tomcat_manager_pass", "tomcat_manager_port") and selected:
-                            result[k] = selected
+                        elif k in ("tomcat_manager_user", "tomcat_manager_pass", "tomcat_manager_port",
+                                   "karaf_home", "karaf_user", "karaf_password") and selected:
+                            result[k] = selected      # karaf_home differs per version (4.4.3 for <27, 4.4.11 for >=27)
         except Exception:
             pass
         return result
