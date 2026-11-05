@@ -311,7 +311,7 @@ export default function CoPilotReviewPage() {
   const [tests, setTests] = useState(null)
   const [testsLoading, setTestsLoading] = useState(false)
   const [depTab, setDepTab] = useState('all')   // all = overall issues, pr = issues caused by this PR
-  const [prrCfg, setPrrCfg] = useState({ baseline_project: '', dependency_analyzer: true, jqassistant_apps: [] })
+  const [prrCfg, setPrrCfg] = useState({ baseline_project: '', dependency_analyzer: true, test_case_analyzer: true, jqassistant_apps: [] })
   useEffect(() => { fetch('/api/tools/ai-pr-review/config').then(r => r.json()).then(d => { if (d.ok) setPrrCfg(d) }).catch(() => {}) }, [])
   const savePrr = async patch => {
     const r = await fetch('/api/tools/ai-pr-review/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).then(r => r.json())
@@ -336,7 +336,9 @@ export default function CoPilotReviewPage() {
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   }
   const loadTests = (o, r, p) => {
-    setTests(null); setTestsLoading(true)
+    setTests(null)
+    if (!prrCfg.test_case_analyzer) return
+    setTestsLoading(true)
     fetch(`${API}/tests`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: o, repo: r, pr: p }) })
       .then(x => x.json()).then(setTests).catch(e => setTests({ ok: false, error: String(e) }))
       .finally(() => setTestsLoading(false))
@@ -642,6 +644,10 @@ export default function CoPilotReviewPage() {
           onBlur={e => savePrr({ baseline_project: e.target.value })} style={{ ...{ fontSize: 13, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }, width: 200 }} />
         <datalist id="prr-apps">{prrCfg.jqassistant_apps.map(a => <option key={a} value={a} />)}</datalist>
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>A jQAssistant code base (analyzed). PR dependency versions are compared with it.</span>
+        <label style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flexBasis: '100%' }}>
+          <input type="checkbox" checked={prrCfg.test_case_analyzer} onChange={e => savePrr({ test_case_analyzer: e.target.checked ? 'on' : 'off' })} />
+          Test case analyzer
+        </label>
       </div>
 
 
@@ -739,7 +745,7 @@ export default function CoPilotReviewPage() {
       </div>
     )}
 
-    {(result || testsLoading) && (
+    {(result || testsLoading) && prrCfg.test_case_analyzer && (
       <div className="card" style={{ marginTop: 16, maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🧪 Test case analyzer</div>

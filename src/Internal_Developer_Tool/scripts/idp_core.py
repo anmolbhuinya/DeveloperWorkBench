@@ -32937,7 +32937,8 @@ def create_flask_app():
     # Tools\AI_PR_Review_Tool\config.xlsx: baseline project (a jQAssistant code base) + dependency analyzer on/off
     _PRR_XLSX = Path(__file__).parent.parent.parent / "Tools" / "AI_PR_Review_Tool" / "config.xlsx"
     _PRR_DEFAULTS = [("baseline_project", "payor", "jQAssistant application whose analyzed dependencies are the baseline"),
-                     ("dependency_analyzer", "on", "on / off - dependency report in AI PR Review")]
+                     ("dependency_analyzer", "on", "on / off - dependency report in AI PR Review"),
+                     ("test_case_analyzer", "on", "on / off - test case report in AI PR Review")]
 
     def _prr_cfg(updates=None):
         import openpyxl as _xl
@@ -32980,6 +32981,8 @@ def create_flask_app():
                 upd["baseline_project"] = str(b["baseline_project"]).strip()
             if "dependency_analyzer" in b:
                 upd["dependency_analyzer"] = "on" if str(b["dependency_analyzer"]).lower() in ("on", "true", "1", "yes") else "off"
+            if "test_case_analyzer" in b:
+                upd["test_case_analyzer"] = "on" if str(b["test_case_analyzer"]).lower() in ("on", "true", "1", "yes") else "off"
             if upd:
                 try:
                     _prr_cfg(upd)
@@ -32991,6 +32994,7 @@ def create_flask_app():
         except Exception:
             apps = []
         return jsonify({"ok": True, "baseline_project": cfg["baseline_project"], "dependency_analyzer": cfg["dependency_analyzer"].lower() != "off",
+                        "test_case_analyzer": cfg["test_case_analyzer"].lower() != "off",
                         "jqassistant_apps": apps, "config_file": str(_PRR_XLSX)})
 
     def _prr_baseline(name):
@@ -33196,6 +33200,8 @@ def create_flask_app():
     def api_copilot_review_tests():
         """Test case report of a PR: new / deleted / modified test cases."""
         import subprocess as _sp, sys as _sys, json as _json
+        if _prr_cfg()["test_case_analyzer"].lower() == "off":
+            return jsonify({"ok": True, "disabled": True})
         body = request.get_json() or {}
         owner, repo, pr = (str(body.get(k) or "").strip() for k in ("owner", "repo", "pr"))
         if not owner or not repo or not pr:
