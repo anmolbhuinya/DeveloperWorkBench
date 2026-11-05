@@ -33064,24 +33064,82 @@ def create_flask_app():
         SECTIONS = [("added", "New Dependencies Added"), ("removed", "Dependencies Removed"), ("updated", "Dependencies Updated"),
                     ("dup_module", "Duplicate Dependencies - same module"), ("dup_repo", "Duplicate Dependencies - version mismatch in repository")]
         cols = ["Section", "Module", "File", "Group", "Artifact", "Version / From", "To", "Scope / From", "To Scope", "Line",
-                "Baseline Version(s)", "Baseline Status"]
+                "Placeholder", "Baseline Version(s)", "Baseline Status", "Caused by PR"]
+        PH_COLS = ["Placeholder", "Value", "Defined In", "Line", "Used By", "Caused by PR"]
+        scope = str(body.get("scope", "all")).lower()      # all = overall issues, pr = issues caused by the PR only
+        yn = lambda e: "yes" if e.get("pr") else "no"
 
         def row(sec, e):
             if sec == "updated":
                 return [sec, e.get("module"), e.get("file"), e.get("group"), e.get("artifact"), e.get("from_version"), e.get("to_version"),
-                        e.get("from_scope"), e.get("to_scope"), e.get("line"), e.get("baseline_versions", ""), e.get("baseline_status", "")]
+                        e.get("from_scope"), e.get("to_scope"), e.get("line"), e.get("placeholder", ""),
+                        e.get("baseline_versions", ""), e.get("baseline_status", ""), yn(e)]
             return [sec, e.get("module"), e.get("file"), e.get("group"), e.get("artifact"), e.get("version"), "", e.get("scope"), "", e.get("line"),
-                    e.get("baseline_versions", ""), e.get("baseline_status", "")]
+                    e.get("placeholder", ""), e.get("baseline_versions", ""), e.get("baseline_status", ""), yn(e)]
+
+        def pick(sec, only_pr):
+            return [e for e in rep.get(sec, []) if not only_pr or e.get("pr") or sec in ("added", "removed", "updated")]
+
+        def ph_rows(only_pr):
+            return [[p.get("key"), p.get("value"), p.get("file"), p.get("line"), p.get("used_by"), yn(p)]
+                    for p in rep.get("placeholders", []) if not only_pr or p.get("pr")]
         if fmt == "json":
-            data, mime, ext = _j.dumps(rep, indent=2), "application/json", "json"
+            # json: the report as is, plus an "issues" block that splits overall issues from the ones caused by the PR
+            def view(only_pr):
+                v = {sec: pick(sec, only_pr) for sec, _t in SECTIONS}
+                v["placeholders"] = [p for p in rep.get("placeholders", []) if not only_pr or p.get("pr")]
+                v["counts"] = {k: len(x) for k, x in v.items()}
+                return v
+            data, mime, ext = _j.dumps({**rep, "issues": {"overall": view(False), "pr_only": view(True)}}, indent=2), "application/json", "json"
+        elif fmt == "xlsx":
+            import openpyxl as _xl
+            from openpyxl.styles import Font as _F, PatternFill as _P
+            wb = _xl.Workbook()
+            wb.remove(wb.active)
+            for sheet, only_pr in (("Overall", False), ("PR Only", True)):
+                ws = wb.create_sheet(sheet)
+                ws.append(cols)
+                for sec, _t in SECTIONS:
+                    for e in pick(sec, only_pr):
+                        ws.append(row(sec, e))
+                        if e.get("baseline_status") == "MISMATCH":
+                            for c in ws[ws.max_row]:
+                                c.font = _F(color="B71C1C", bold=True)
+                                c.fill = _P("solid", fgColor="FFEBEE")
+                ws.freeze_panes = "A2"
+                hdr = ws[1]
+                for c in hdr:
+                    c.font = _F(bold=True, color="FFFFFF")
+                    c.fill = _P("solid", fgColor="1565C0")
+                ws2 = wb.create_sheet("Placeholders" if not only_pr else "Placeholders (PR)")
+                ws2.append(PH_COLS)
+                for r_ in ph_rows(only_pr):
+                    ws2.append(r_)
+                for c in ws2[1]:
+                    c.font = _F(bold=True, color="FFFFFF")
+                    c.fill = _P("solid", fgColor="1565C0")
+            for w_ in wb.worksheets:
+                for col in w_.columns:
+                    w_.column_dimensions[col[0].column_letter].width = min(60, max(10, max(len(str(c.value or "")) for c in col) + 2))
+            buf = _io.BytesIO()
+            wb.save(buf)
+            data, mime, ext = buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
         elif fmt == "csv":
             buf = _io.StringIO()
             w = _csv.writer(buf)
+            only_pr = scope == "pr"
             w.writerow(cols)
             for sec, _t in SECTIONS:
-                for e in rep.get(sec, []):
+                for e in pick(sec, only_pr):
                     w.writerow(row(sec, e))
+            w.writerow([])
+            w.writerow(["Placeholders"])
+            w.writerow(PH_COLS)
+            for r_ in ph_rows(only_pr):
+                w.writerow(r_)
             data, mime, ext = "\ufeff" + buf.getvalue(), "text/csv", "csv"
+            if only_pr:
+                fname += "-pr-only"
         elif fmt == "html":
             out = ["<html><head><meta charset='utf-8'><title>Dependency report</title><style>body{font-family:Segoe UI,Arial;margin:24px}"
                    "table{border-collapse:collapse;font-size:13px;margin-bottom:22px}td,th{border:1px solid #ccc;padding:4px 8px}"
@@ -33093,19 +33151,34 @@ def create_flask_app():
                        _h.escape(str((rep.get("baseline") or {}).get("project", ""))),
                        "analysis available" if (rep.get("baseline") or {}).get("available") else "baseline not analyzed",
                        (rep.get("totals") or {}).get("baseline_mismatch", 0))]
-            for sec, title in SECTIONS:
-                items = rep.get(sec, [])
-                out.append("<h3>%s (%d)</h3>" % (title, len(items)))
-                if not items:
+            out[0] = out[0].replace("</style>", ".tab{display:none}.tab.on{display:block}.tb{padding:6px 14px;border:1px solid #1565c0;"
+                                    "background:#fff;color:#1565c0;cursor:pointer;font-weight:600}.tb.on{background:#1565c0;color:#fff}</style>", 1)
+            out.append("<div style='margin:12px 0'><button class='tb on' onclick=\"sw(0)\">Overall issues</button>"
+                          "<button class='tb' onclick=\"sw(1)\">Issues caused by this PR</button></div>"
+                          "<script>function sw(i){document.querySelectorAll('.tab').forEach(function(t,n){t.classList.toggle('on',n==i)});"
+                          "document.querySelectorAll('.tb').forEach(function(t,n){t.classList.toggle('on',n==i)})}</script>")
+            for ti, only_pr in enumerate((False, True)):
+                out.append("<div class='tab%s'>" % (" on" if ti == 0 else ""))
+                for sec, title in SECTIONS:
+                    items = pick(sec, only_pr)
+                    out.append("<h3>%s (%d)</h3>" % (title, len(items)))
+                    if not items:
+                        out.append("<p>None</p>")
+                        continue
+                    out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in cols[1:]) + "</tr>")
+                    for e in items:
+                        mm = e.get("baseline_status") == "MISMATCH"
+                        out.append("<tr%s>" % (" style='background:#ffebee;color:#b71c1c;font-weight:600'" if mm else "") +
+                                   "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in row(sec, e)[1:]) + "</tr>")
+                    out.append("</table>")
+                prs = ph_rows(only_pr)
+                out.append("<h3>Placeholders (%d)</h3>" % len(prs))
+                if prs:
+                    out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in PH_COLS) + "</tr>" +
+                               "".join("<tr>" + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in r_) + "</tr>" for r_ in prs) + "</table>")
+                else:
                     out.append("<p>None</p>")
-                    continue
-                hdr = cols[1:]
-                out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in hdr) + "</tr>")
-                for e in items:
-                    mm = e.get("baseline_status") == "MISMATCH"
-                    out.append("<tr%s>" % (" style='background:#ffebee;color:#b71c1c;font-weight:600'" if mm else "") +
-                               "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in row(sec, e)[1:]) + "</tr>")
-                out.append("</table>")
+                out.append("</div>")
             if rep.get("note"):
                 out.append("<p><i>%s</i></p>" % _h.escape(rep["note"]))
             out.append("</body></html>")
@@ -33113,7 +33186,7 @@ def create_flask_app():
         else:
             return jsonify({"ok": False, "error": "Unknown format"}), 400
         from flask import Response as _Resp
-        return _Resp(data, mimetype=mime + "; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="%s.%s"' % (fname, ext)})
+        return _Resp(data, mimetype=mime + ("" if ext == "xlsx" else "; charset=utf-8"), headers={"Content-Disposition": 'attachment; filename="%s.%s"' % (fname, ext)})
 
     # ── M2 Repo Cleaner ──────────────────────────────────────────────────────
     _M2_BASE_DIR   = WORKFLOWS_ROOT / "Tools" / "M2RepoCleaner"

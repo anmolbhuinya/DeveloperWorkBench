@@ -308,6 +308,7 @@ export default function CoPilotReviewPage() {
   const [fileFilter, setFileFilter] = useState('')
   const [deps, setDeps]         = useState(null)    // dependency changes of the PR (right-hand panel)
   const [depsLoading, setDepsLoading] = useState(false)
+  const [depTab, setDepTab] = useState('all')   // all = overall issues, pr = issues caused by this PR
   const [prrCfg, setPrrCfg] = useState({ baseline_project: '', dependency_analyzer: true, jqassistant_apps: [] })
   useEffect(() => { fetch('/api/tools/ai-pr-review/config').then(r => r.json()).then(d => { if (d.ok) setPrrCfg(d) }).catch(() => {}) }, [])
   const savePrr = async patch => {
@@ -316,11 +317,11 @@ export default function CoPilotReviewPage() {
   }
 
   const exportDeps = async fmt => {
-    const res = await fetch(`${API}/dependencies/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ format: fmt, report: deps }) })
+    const res = await fetch(`${API}/dependencies/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ format: fmt, report: deps, scope: depTab }) })
     if (!res.ok) { alert('Export failed'); return }
     const blob = await res.blob()
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
-    a.download = `dependency-report-${(deps.pr?.repo || 'repo').replace('/', '_')}-pr${deps.pr?.number || ''}.${fmt}`
+    a.download = `dependency-report-${(deps.pr?.repo || 'repo').replace('/', '_')}-pr${deps.pr?.number || ''}${fmt === 'csv' && depTab === 'pr' ? '-pr-only' : ''}.${fmt}`
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   }
 
@@ -630,7 +631,7 @@ export default function CoPilotReviewPage() {
       <div className="card" style={{ maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>📦 Dependency report</div>
-          {deps?.ok && ['json', 'html', 'csv'].map(f => (
+          {deps?.ok && ['json', 'html', 'csv', 'xlsx'].map(f => (
             <button key={f} onClick={() => exportDeps(f)} style={{ fontSize: 11, padding: '3px 9px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>{f.toUpperCase()}</button>
           ))}
         </div>
@@ -642,6 +643,14 @@ export default function CoPilotReviewPage() {
             Baseline: {deps.baseline.project || '—'}{deps.baseline.available ? ` · ${deps.totals?.baseline_mismatch || 0} version mismatch${deps.totals?.baseline_mismatch === 1 ? '' : 'es'} with the baseline` : ' · not analyzed'}
           </div>
         )}
+        {deps?.ok && (
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            {[['all', 'Overall issues'], ['pr', 'Caused by this PR']].map(([t, l]) => (
+              <button key={t} onClick={() => setDepTab(t)} style={{ fontSize: 12, padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontWeight: 600,
+                border: '1px solid var(--primary)', background: depTab === t ? 'var(--primary)' : 'var(--bg)', color: depTab === t ? '#fff' : 'var(--primary)' }}>{l}</button>
+            ))}
+          </div>
+        )}
         {deps?.ok && [
           ['added',      'New Dependencies Added',   '#2E7D32'],
           ['removed',    'Dependencies Removed',     '#C62828'],
@@ -649,7 +658,7 @@ export default function CoPilotReviewPage() {
           ['dup_module', 'Duplicate Dependencies — same module', '#6A1B9A'],
           ['dup_repo',   'Duplicate Dependencies — version mismatch in repository', '#00695C'],
         ].map(([k, title, color]) => {
-          const rows = deps[k] || []
+          const rows = (deps[k] || []).filter(e => depTab === 'all' || e.pr || k === 'added' || k === 'removed' || k === 'updated')
           const th = { textAlign: 'left', padding: '3px 6px', fontSize: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
           const td = { padding: '3px 6px', fontSize: 11, borderBottom: '1px solid var(--border)', wordBreak: 'break-all' }
           return (
@@ -661,13 +670,14 @@ export default function CoPilotReviewPage() {
                     <thead><tr>
                       <th style={th}>Module</th><th style={th}>Group</th><th style={th}>Artifact</th>
                       {k === 'updated' ? <><th style={th}>Version (from → to)</th><th style={th}>Scope</th></> : <><th style={th}>Version</th><th style={th}>Scope</th></>}
+                      <th style={th}>Placeholder</th>
                       {(k === 'added' || k === 'updated') && <th style={th}>Baseline</th>}
                       {(k === 'dup_module' || k === 'dup_repo') && <th style={th}>Line</th>}
                       {k === 'dup_repo' && <th style={th}>File</th>}
                     </tr></thead>
                     <tbody>{rows.map((e, i) => [
                       k === 'dup_module' && (i === 0 || rows[i - 1].module !== e.module || rows[i - 1].group !== e.group || rows[i - 1].artifact !== e.artifact) && (
-                        <tr key={'g' + i}><td colSpan={6} style={{ ...td, background: 'rgba(106,27,154,0.08)', fontWeight: 700, color: '#6A1B9A' }}>
+                        <tr key={'g' + i}><td colSpan={7} style={{ ...td, background: 'rgba(106,27,154,0.08)', fontWeight: 700, color: '#6A1B9A' }}>
                           {e.module} — {e.group}:{e.artifact} <span style={{ fontWeight: 400 }}>({rows.filter(r => r.module === e.module && r.group === e.group && r.artifact === e.artifact).length} declarations in {e.file})</span>
                         </td></tr>
                       ),
@@ -676,6 +686,7 @@ export default function CoPilotReviewPage() {
                         {k === 'updated'
                           ? <><td style={td}>{e.from_version} → <b>{e.to_version}</b></td><td style={td}>{e.from_scope === e.to_scope ? e.to_scope : `${e.from_scope} → ${e.to_scope}`}</td></>
                           : <><td style={td}>{e.version}</td><td style={td}>{e.scope}</td></>}
+                        <td style={{ ...td, fontFamily: 'monospace' }}>{e.placeholder}</td>
                         {(k === 'added' || k === 'updated') && <td style={td}>{e.baseline_status === 'MISMATCH' ? `⚠ baseline ${e.baseline_versions}` : (e.baseline_status || '')}</td>}
                         {(k === 'dup_module' || k === 'dup_repo') && <td style={td}>{e.line}</td>}
                         {k === 'dup_repo' && <td style={{ ...td, fontFamily: 'monospace' }}>{e.file}</td>}
@@ -687,6 +698,26 @@ export default function CoPilotReviewPage() {
             </div>
           )
         })}
+        {deps?.ok && (() => {
+          const rows = (deps.placeholders || []).filter(p => depTab === 'all' || p.pr)
+          const th = { textAlign: 'left', padding: '3px 6px', fontSize: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
+          const td = { padding: '3px 6px', fontSize: 11, borderBottom: '1px solid var(--border)', wordBreak: 'break-all' }
+          return (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color: '#455A64', borderBottom: '2px solid #455A64', paddingBottom: 2, marginBottom: 4 }}>Placeholders ({rows.length})</div>
+              {rows.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>None</div> : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr><th style={th}>Placeholder</th><th style={th}>Value</th><th style={th}>Defined in</th><th style={th}>Line</th><th style={th}>Used by</th></tr></thead>
+                    <tbody>{rows.map((p, i) => (
+                      <tr key={i}><td style={{ ...td, fontFamily: 'monospace' }}>${'{'}{p.key}{'}'}</td><td style={td}>{p.value}</td><td style={{ ...td, fontFamily: 'monospace' }}>{p.file}</td><td style={td}>{p.line}</td><td style={td}>{p.used_by}</td></tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )
+        })()}
       </div>
     )}
     </div>

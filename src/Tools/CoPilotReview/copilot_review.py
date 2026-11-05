@@ -246,7 +246,7 @@ class _PomContext:
     def __init__(self, fetch, path, sha, depth=0):
         import posixpath
         self.path, self.root = path, _parse_xml_lines(fetch(path, sha) or "")
-        self.props, self.managed = {}, {}
+        self.props, self.managed, self.props_src = {}, {}, {}
         self.module = self.group = self.version = ""
         if self.root is None:
             return
@@ -259,6 +259,7 @@ class _PomContext:
             pc = _PomContext(fetch, ppath, sha, depth + 1)
             if pc.root is not None:
                 self.props.update(pc.props)
+                self.props_src.update(pc.props_src)
                 self.managed.update(pc.managed)
             self.props.setdefault("project.parent.version", _txt(par, "version"))
             self.props["parent.version"] = _txt(par, "version")
@@ -267,6 +268,7 @@ class _PomContext:
         if pr is not None:
             for c in pr["children"]:
                 self.props[c["tag"]] = c["text"].strip()
+                self.props_src[c["tag"]] = (path, c["line"])
         self.module = _txt(self.root, "artifactId")
         self.group = _txt(self.root, "groupId") or (_txt(par, "groupId") if par else "")
         self.version = _txt(self.root, "version") or (_txt(par, "version") if par else "")
@@ -277,16 +279,26 @@ class _PomContext:
         dm = _kid(_kid(self.root, "dependencyManagement"), "dependencies")
         for d in (dm["children"] if dm else []):
             if d["tag"] == "dependency":
+                mv, mph = self.res_ph(_txt(d, "version"))
                 self.managed[(self.res(_txt(d, "groupId")), self.res(_txt(d, "artifactId")))] = {
-                    "version": self.res(_txt(d, "version")), "scope": self.res(_txt(d, "scope"))}
+                    "version": mv, "scope": self.res(_txt(d, "scope")), "ph": mph}
 
     def res(self, v):
+        return self.res_ph(v)[0]
+
+    def res_ph(self, v):
+        """Resolve ${placeholders}; also returns the placeholder keys that were used."""
+        keys = []
+
+        def sub(m):
+            keys.append(m.group(1))
+            return self.props.get(m.group(1), m.group(0))
         for _ in range(8):
-            n = re.sub(r"\$\{([^}]+)\}", lambda m: self.props.get(m.group(1), m.group(0)), v or "")
+            n = re.sub(r"\$\{([^}]+)\}", sub, v or "")
             if n == v:
                 break
             v = n
-        return v
+        return v, list(dict.fromkeys(keys))
 
     def entries(self):
         """Resolved dependency declarations of this pom: module, group, artifact, version, scope, line, section."""
@@ -302,7 +314,10 @@ class _PomContext:
                         continue
                     sec = "dependencyManagement" if "dependencyManagement" in anc else "dependencies"
                     mg = self.managed.get((g, a), {})
-                    v = self.res(_txt(c, "version")) or (mg.get("version") if sec == "dependencies" else "") or ""
+                    v, phk = self.res_ph(_txt(c, "version"))
+                    if not v and sec == "dependencies":
+                        v = mg.get("version") or ""
+                        phk = mg.get("ph", [])
                     sc = self.res(_txt(c, "scope")) or (mg.get("scope") if sec == "dependencies" else "") or "compile"
                     if not v:
                         v = "(managed by BOM/parent)"
@@ -310,7 +325,11 @@ class _PomContext:
                         v = "(unresolved) " + v
                     out.append({"file": self.path, "module": self.module, "group": g, "artifact": a, "version": v,
                                 "scope": sc, "line": c["line"], "section": sec, "type": self.res(_txt(c, "type")) or "jar",
-                                "classifier": self.res(_txt(c, "classifier"))})
+                                "classifier": self.res(_txt(c, "classifier")),
+                                "placeholder": ", ".join(phk),
+                                "_phk": [{"key": k, "value": self.props.get(k, "(undefined)"),
+                                          "file": (self.props_src.get(k) or ("(built-in)", ""))[0],
+                                          "line": (self.props_src.get(k) or ("", ""))[1]} for k in phk]})
                 else:
                     walk(c, anc + [c["tag"]])
         walk(self.root, [])
@@ -318,7 +337,8 @@ class _PomContext:
         if par is not None:
             v = self.res(_txt(par, "version"))
             out.append({"file": self.path, "module": self.module, "group": _txt(par, "groupId"), "artifact": _txt(par, "artifactId"),
-                        "version": v, "scope": "parent", "line": par["line"], "section": "parent", "type": "pom", "classifier": ""})
+                        "version": v, "scope": "parent", "line": par["line"], "section": "parent", "type": "pom", "classifier": "",
+                        "placeholder": "", "_phk": []})
         return out
 
 
@@ -332,7 +352,8 @@ def _json_deps(text, path):
     for sec in ("dependencies", "devDependencies", "peerDependencies"):
         for k, v in (d.get(sec) or {}).items():
             out.append({"file": path, "module": d.get("name") or path, "group": "", "artifact": k, "version": str(v),
-                        "scope": sec, "line": "", "section": sec, "type": "npm", "classifier": ""})
+                        "scope": sec, "line": "", "section": sec, "type": "npm", "classifier": "",
+                        "placeholder": "", "_phk": []})
     return out
 
 
@@ -423,16 +444,41 @@ def fetch_dependency_changes(owner, repo, pr_number, token):
                     dup_repo += [{**x, "versions": vers} for x in sorted(v, key=lambda x: (x["version"], x["file"], x["line"]))]
         except Exception as ex_:
             note = "Repository-wide check failed: %s" % ex_
-    keep = ("file", "module", "group", "artifact", "version", "scope", "line", "section")
+    # which issues were caused by this PR: the artifact is added/updated by it (duplicates inside a module also
+    # need the pom to be changed by the PR)
+    pr_art = {(e["group"], e["artifact"]) for e in added + updated}
+    changed_set = set(changed_pom_paths)
+    for e in dup_module:
+        e["pr"] = (e["group"], e["artifact"]) in pr_art and e["file"] in changed_set
+    for e in dup_repo:
+        e["pr"] = (e["group"], e["artifact"]) in pr_art
+    for e in added + removed + updated:
+        e["pr"] = True
+    # placeholders (${...}) the reported dependencies' versions come from
+    ph = {}
+    for sec_list in (added, removed, updated, dup_module, dup_repo):
+        for e in sec_list:
+            for p in e.get("_phk", []):
+                r = ph.setdefault((p["key"], p["file"]), {"key": p["key"], "value": p["value"], "file": p["file"], "line": p["line"],
+                                                           "used_by": set(), "pr": False})
+                r["used_by"].add("%s:%s" % (e["group"], e["artifact"]))
+                if e.get("pr"):
+                    r["pr"] = True
+    placeholders = [{**r, "used_by": ", ".join(sorted(r["used_by"])), "used_count": len(r["used_by"])}
+                    for r in sorted(ph.values(), key=lambda r: (not r["pr"], r["key"]))]
+    keep = ("file", "module", "group", "artifact", "version", "scope", "line", "section", "placeholder", "pr")
     slim = lambda lst, extra=(): [{k: e.get(k, "") for k in keep + tuple(extra)} for e in lst]
     return {
         "pr": {"number": pr_number, "title": meta.get("title", ""), "url": meta.get("html_url", ""), "repo": f"{owner}/{repo}"},
         "added": slim(added), "removed": slim(removed),
         "updated": slim(updated, ("from_version", "to_version", "from_scope", "to_scope")),
         "dup_module": slim(dup_module), "dup_repo": slim(dup_repo, ("versions",)),
+        "placeholders": placeholders,
         "note": note,
         "totals": {"added": len(added), "removed": len(removed), "updated": len(updated),
-                   "dup_module": len(dup_module), "dup_repo": len(dup_repo)},
+                   "dup_module": len(dup_module), "dup_repo": len(dup_repo), "placeholders": len(placeholders),
+                   "dup_module_pr": sum(1 for e in dup_module if e["pr"]), "dup_repo_pr": sum(1 for e in dup_repo if e["pr"]),
+                   "placeholders_pr": sum(1 for r in placeholders if r["pr"])},
     }
 
 
