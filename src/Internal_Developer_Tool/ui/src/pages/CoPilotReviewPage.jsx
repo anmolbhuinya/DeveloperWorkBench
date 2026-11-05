@@ -308,6 +308,12 @@ export default function CoPilotReviewPage() {
   const [fileFilter, setFileFilter] = useState('')
   const [deps, setDeps]         = useState(null)    // dependency changes of the PR (right-hand panel)
   const [depsLoading, setDepsLoading] = useState(false)
+  const [prrCfg, setPrrCfg] = useState({ baseline_project: '', dependency_analyzer: true, jqassistant_apps: [] })
+  useEffect(() => { fetch('/api/tools/ai-pr-review/config').then(r => r.json()).then(d => { if (d.ok) setPrrCfg(d) }).catch(() => {}) }, [])
+  const savePrr = async patch => {
+    const r = await fetch('/api/tools/ai-pr-review/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).then(r => r.json())
+    if (r.ok) setPrrCfg(r)
+  }
 
   const exportDeps = async fmt => {
     const res = await fetch(`${API}/dependencies/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ format: fmt, report: deps }) })
@@ -319,7 +325,9 @@ export default function CoPilotReviewPage() {
   }
 
   const loadDeps = (o, r, p) => {
-    setDeps(null); setDepsLoading(true)
+    setDeps(null)
+    if (!prrCfg.dependency_analyzer) return
+    setDepsLoading(true)
     fetch(`${API}/dependencies`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: o, repo: r, pr: p }) })
       .then(x => x.json()).then(setDeps).catch(e => setDeps({ ok: false, error: String(e) }))
       .finally(() => setDepsLoading(false))
@@ -400,6 +408,19 @@ export default function CoPilotReviewPage() {
         <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
           View GitHub Copilot review comments for a Pull Request
         </div>
+      </div>
+
+      {/* Dependency analyzer settings (stored in Tools\AI_PR_Review_Tool\config.xlsx) */}
+      <div className="card" style={{ marginBottom: 16, display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+          <input type="checkbox" checked={prrCfg.dependency_analyzer} onChange={e => savePrr({ dependency_analyzer: e.target.checked ? 'on' : 'off' })} />
+          Dependency analyzer
+        </label>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Baseline project</span>
+        <input list="prr-apps" value={prrCfg.baseline_project} onChange={e => setPrrCfg(c => ({ ...c, baseline_project: e.target.value }))}
+          onBlur={e => savePrr({ baseline_project: e.target.value })} style={{ ...{ fontSize: 13, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }, width: 200 }} />
+        <datalist id="prr-apps">{prrCfg.jqassistant_apps.map(a => <option key={a} value={a} />)}</datalist>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>A jQAssistant code base (analyzed). PR dependency versions are compared with it.</span>
       </div>
 
       {/* URL shortcut */}
@@ -602,7 +623,7 @@ export default function CoPilotReviewPage() {
     </div>
 
     {/* Right-hand: dependency report of the PR */}
-    {(result || depsLoading) && (
+    {(result || depsLoading) && prrCfg.dependency_analyzer && (
       <div className="card" style={{ flex: '0 0 560px', position: 'sticky', top: 16, maxHeight: 'calc(100vh - 40px)', overflow: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>📦 Dependency report</div>
@@ -613,6 +634,11 @@ export default function CoPilotReviewPage() {
         {depsLoading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}><span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Resolving dependencies across the repository …</div>}
         {deps && !deps.ok && <div style={{ fontSize: 12, color: '#B71C1C' }}>⚠ {deps.error}</div>}
         {deps?.ok && deps.note && <div style={{ fontSize: 11, color: '#E65100', marginBottom: 8 }}>{deps.note}</div>}
+        {deps?.ok && deps.baseline && (
+          <div style={{ fontSize: 11, marginBottom: 8, color: deps.totals?.baseline_mismatch ? '#B71C1C' : 'var(--text-muted)', fontWeight: deps.totals?.baseline_mismatch ? 700 : 400 }}>
+            Baseline: {deps.baseline.project || '—'}{deps.baseline.available ? ` · ${deps.totals?.baseline_mismatch || 0} version mismatch${deps.totals?.baseline_mismatch === 1 ? '' : 'es'} with the baseline` : ' · not analyzed'}
+          </div>
+        )}
         {deps?.ok && [
           ['added',      'New Dependencies Added',   '#2E7D32'],
           ['removed',    'Dependencies Removed',     '#C62828'],
@@ -632,15 +658,17 @@ export default function CoPilotReviewPage() {
                     <thead><tr>
                       <th style={th}>Module</th><th style={th}>Group</th><th style={th}>Artifact</th>
                       {k === 'updated' ? <><th style={th}>Version (from → to)</th><th style={th}>Scope</th></> : <><th style={th}>Version</th><th style={th}>Scope</th></>}
+                      {(k === 'added' || k === 'updated') && <th style={th}>Baseline</th>}
                       {(k === 'dup_module' || k === 'dup_repo') && <th style={th}>Line</th>}
                       {k === 'dup_repo' && <th style={th}>File</th>}
                     </tr></thead>
                     <tbody>{rows.map((e, i) => (
-                      <tr key={i} title={e.file}>
+                      <tr key={i} title={e.file} style={e.baseline_status === 'MISMATCH' ? { background: '#FFEBEE', color: '#B71C1C', fontWeight: 600 } : undefined}>
                         <td style={td}>{e.module}</td><td style={td}>{e.group}</td><td style={td}>{e.artifact}</td>
                         {k === 'updated'
                           ? <><td style={td}>{e.from_version} → <b>{e.to_version}</b></td><td style={td}>{e.from_scope === e.to_scope ? e.to_scope : `${e.from_scope} → ${e.to_scope}`}</td></>
                           : <><td style={td}>{e.version}</td><td style={td}>{e.scope}</td></>}
+                        {(k === 'added' || k === 'updated') && <td style={td}>{e.baseline_status === 'MISMATCH' ? `⚠ baseline ${e.baseline_versions}` : (e.baseline_status || '')}</td>}
                         {(k === 'dup_module' || k === 'dup_repo') && <td style={td}>{e.line}</td>}
                         {k === 'dup_repo' && <td style={{ ...td, fontFamily: 'monospace' }}>{e.file}</td>}
                       </tr>

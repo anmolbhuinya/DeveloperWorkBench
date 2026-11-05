@@ -32931,10 +32931,85 @@ def create_flask_app():
         except Exception as e:
             return jsonify({"ok": False, "error": f"Failed to parse output: {e}\n{result.stdout[:300]}"})
 
+    # Tools\AI_PR_Review_Tool\config.xlsx: baseline project (a jQAssistant code base) + dependency analyzer on/off
+    _PRR_XLSX = Path(__file__).parent.parent.parent / "Tools" / "AI_PR_Review_Tool" / "config.xlsx"
+    _PRR_DEFAULTS = [("baseline_project", "payor", "jQAssistant application whose analyzed dependencies are the baseline"),
+                     ("dependency_analyzer", "on", "on / off - dependency report in AI PR Review")]
+
+    def _prr_cfg(updates=None):
+        import openpyxl as _xl
+        if _PRR_XLSX.exists():
+            wb = _xl.load_workbook(str(_PRR_XLSX))
+        else:
+            wb = _xl.Workbook()
+            wb.active.title = "config"
+            wb.active.append(["key", "value", "description"])
+            for k, v, d in _PRR_DEFAULTS:
+                wb.active.append([k, v, d])
+            _PRR_XLSX.parent.mkdir(parents=True, exist_ok=True)
+            wb.save(str(_PRR_XLSX))
+        ws = wb["config"] if "config" in wb.sheetnames else wb.active
+        cfg = {str(r[0].value): ("" if r[1].value is None else str(r[1].value)) for r in ws.iter_rows(min_row=2) if r[0].value}
+        if updates:
+            for k, v in updates.items():
+                row = next((r for r in ws.iter_rows(min_row=2) if r[0].value == k), None)
+                if row:
+                    row[1].value = v
+                else:
+                    ws.append([k, v])
+                cfg[k] = v
+            wb.save(str(_PRR_XLSX))
+        for k, v, _d in _PRR_DEFAULTS:
+            cfg.setdefault(k, v)
+        return cfg
+
+    try:
+        _prr_cfg()          # create Tools\AI_PR_Review_Tool\config.xlsx up front
+    except Exception:
+        pass
+
+    @app.route("/api/tools/ai-pr-review/config", methods=["GET", "POST"])
+    def api_prr_config():
+        if request.method == "POST":
+            b = request.get_json(silent=True) or {}
+            upd = {}
+            if "baseline_project" in b:
+                upd["baseline_project"] = str(b["baseline_project"]).strip()
+            if "dependency_analyzer" in b:
+                upd["dependency_analyzer"] = "on" if str(b["dependency_analyzer"]).lower() in ("on", "true", "1", "yes") else "off"
+            if upd:
+                try:
+                    _prr_cfg(upd)
+                except PermissionError:
+                    return jsonify({"ok": False, "error": "config.xlsx is open - close it and retry"}), 500
+        cfg = _prr_cfg()
+        try:
+            apps = [a["name"] for a in _jqa_cfg()["apps"]]
+        except Exception:
+            apps = []
+        return jsonify({"ok": True, "baseline_project": cfg["baseline_project"], "dependency_analyzer": cfg["dependency_analyzer"].lower() != "off",
+                        "jqassistant_apps": apps, "config_file": str(_PRR_XLSX)})
+
+    def _prr_baseline(name):
+        """{ 'group:artifact': {versions} } from the analyzed jQAssistant baseline project, or None if not analyzed."""
+        import json as _j
+        try:
+            r = _j.loads((_JQA_HOME / "results" / (_jqa_safe(name) + ".json")).read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        out = {}
+        for m in r.get("modules", []):
+            for d in m.get("deps", []):
+                out.setdefault("%s:%s" % (d["group"], d["artifact"]), set()).add(d["version"])
+        return out or None
+
     @app.route("/api/tools/copilot-review/dependencies", methods=["POST"])
     def api_copilot_review_dependencies():
-        """Dependencies added / removed / version-changed by a PR."""
+        """Dependency report of a PR (added / removed / updated / duplicates), compared with the baseline project."""
         import subprocess as _sp, sys as _sys, json as _json
+        cfgd = _prr_cfg()
+        if cfgd["dependency_analyzer"].lower() == "off":
+            return jsonify({"ok": True, "disabled": True})
         body = request.get_json() or {}
         owner, repo, pr = (str(body.get(k) or "").strip() for k in ("owner", "repo", "pr"))
         if not owner or not repo or not pr:
@@ -32949,9 +33024,31 @@ def create_flask_app():
         if r.returncode != 0:
             return jsonify({"ok": False, "error": (r.stderr or r.stdout or "Unknown error").strip()[-600:]})
         try:
-            return jsonify({"ok": True, **_json.loads(r.stdout)})
+            rep = _json.loads(r.stdout)
         except Exception as e:
             return jsonify({"ok": False, "error": f"Failed to parse output: {e}"})
+        # compare the PR's new / updated versions with the baseline project's versions
+        bname = cfgd["baseline_project"].strip()
+        bl = _prr_baseline(bname) if bname else None
+        rep["baseline"] = {"project": bname, "available": bl is not None}
+        if bl is None:
+            rep["note"] = ((rep.get("note") or "") + " Baseline project '%s' has no analysis results - analyze it in jQAssistant to enable the baseline comparison." % bname).strip()
+        mism = 0
+        for sec, vkey in (("added", "version"), ("updated", "to_version")):
+            for e in rep.get(sec, []):
+                if bl is None:
+                    e["baseline_status"], e["baseline_versions"] = "", ""
+                    continue
+                bv = sorted(bl.get("%s:%s" % (e.get("group"), e.get("artifact")), []))
+                if not bv:
+                    e["baseline_status"], e["baseline_versions"] = "not in baseline", ""
+                elif e.get(vkey) in bv:
+                    e["baseline_status"], e["baseline_versions"] = "match", ", ".join(bv)
+                else:
+                    e["baseline_status"], e["baseline_versions"] = "MISMATCH", ", ".join(bv)
+                    mism += 1
+        rep["totals"]["baseline_mismatch"] = mism
+        return jsonify({"ok": True, **rep})
 
     @app.route("/api/tools/copilot-review/dependencies/export", methods=["POST"])
     def api_copilot_review_dependencies_export():
@@ -32963,13 +33060,15 @@ def create_flask_app():
         fname = "dependency-report-%s-pr%s" % (str(pr.get("repo", "repo")).replace("/", "_"), pr.get("number", ""))
         SECTIONS = [("added", "New Dependencies Added"), ("removed", "Dependencies Removed"), ("updated", "Dependencies Updated"),
                     ("dup_module", "Duplicate Dependencies - same module"), ("dup_repo", "Duplicate Dependencies - version mismatch in repository")]
-        cols = ["Section", "Module", "File", "Group", "Artifact", "Version / From", "To", "Scope / From", "To Scope", "Line"]
+        cols = ["Section", "Module", "File", "Group", "Artifact", "Version / From", "To", "Scope / From", "To Scope", "Line",
+                "Baseline Version(s)", "Baseline Status"]
 
         def row(sec, e):
             if sec == "updated":
                 return [sec, e.get("module"), e.get("file"), e.get("group"), e.get("artifact"), e.get("from_version"), e.get("to_version"),
-                        e.get("from_scope"), e.get("to_scope"), e.get("line")]
-            return [sec, e.get("module"), e.get("file"), e.get("group"), e.get("artifact"), e.get("version"), "", e.get("scope"), "", e.get("line")]
+                        e.get("from_scope"), e.get("to_scope"), e.get("line"), e.get("baseline_versions", ""), e.get("baseline_status", "")]
+            return [sec, e.get("module"), e.get("file"), e.get("group"), e.get("artifact"), e.get("version"), "", e.get("scope"), "", e.get("line"),
+                    e.get("baseline_versions", ""), e.get("baseline_status", "")]
         if fmt == "json":
             data, mime, ext = _j.dumps(rep, indent=2), "application/json", "json"
         elif fmt == "csv":
@@ -32986,7 +33085,11 @@ def create_flask_app():
                    "th{background:#1565c0;color:#fff}h3{margin-bottom:6px}</style></head><body>",
                    "<h2>Dependency report - %s PR #%s</h2><p>%s &middot; generated %s</p>" % (
                        _h.escape(str(pr.get("repo", ""))), _h.escape(str(pr.get("number", ""))), _h.escape(str(pr.get("title", ""))),
-                       _dt.datetime.now().strftime("%Y-%m-%d %H:%M"))]
+                       _dt.datetime.now().strftime("%Y-%m-%d %H:%M")),
+                   "<p>Baseline project: <b>%s</b> &middot; %s &middot; <span style='color:#b71c1c'><b>%s</b> version mismatch(es) with the baseline</span></p>" % (
+                       _h.escape(str((rep.get("baseline") or {}).get("project", ""))),
+                       "analysis available" if (rep.get("baseline") or {}).get("available") else "baseline not analyzed",
+                       (rep.get("totals") or {}).get("baseline_mismatch", 0))]
             for sec, title in SECTIONS:
                 items = rep.get(sec, [])
                 out.append("<h3>%s (%d)</h3>" % (title, len(items)))
@@ -32996,7 +33099,9 @@ def create_flask_app():
                 hdr = cols[1:]
                 out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in hdr) + "</tr>")
                 for e in items:
-                    out.append("<tr>" + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in row(sec, e)[1:]) + "</tr>")
+                    mm = e.get("baseline_status") == "MISMATCH"
+                    out.append("<tr%s>" % (" style='background:#ffebee;color:#b71c1c;font-weight:600'" if mm else "") +
+                               "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in row(sec, e)[1:]) + "</tr>")
                 out.append("</table>")
             if rep.get("note"):
                 out.append("<p><i>%s</i></p>" % _h.escape(rep["note"]))
