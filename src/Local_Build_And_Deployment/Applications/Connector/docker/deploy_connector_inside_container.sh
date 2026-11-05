@@ -29,6 +29,22 @@ if [[ -z "$JAVA_HOME" ]]; then
     exit 1
 fi
 export JAVA_HOME
+
+# Karaf's bin scripts (setenv etc.) may hard-code a JDK path that does not exist in this container
+# (e.g. /opt/java/jdk21-current -> "JAVA_HOME is not valid", Karaf never starts). Point them at the configured JAVA_HOME.
+fixKarafJavaHome() {
+    [[ -d "$KARAF_HOME/bin" && -d "$JAVA_HOME" ]] || return 0
+    local f p
+    for f in "$KARAF_HOME"/bin/setenv "$KARAF_HOME"/bin/*-service* "$KARAF_HOME"/bin/*.conf "$KARAF_HOME"/bin/karaf-wrapper*; do
+        [[ -f "$f" ]] || continue
+        for p in $(grep -oE '(/[A-Za-z0-9._-]+)+/(jdk|java|jre)[A-Za-z0-9._-]*' "$f" 2>/dev/null | sort -u); do
+            if [[ "$p" != "$JAVA_HOME" && ! -d "$p" && "$p" == /opt/java/* ]]; then
+                echo "Fixing stale JAVA_HOME ($p) in $f, using $JAVA_HOME instead"
+                sed -i "s|$p|$JAVA_HOME|g" "$f"
+            fi
+        done
+    done
+}
 ALL_CONFIG_FILE=${CONN_DOMAIN}/allFeatures.properties
 OLTP_HOST=payer-db-261
 OLTP_DB=DB19C
@@ -59,6 +75,7 @@ karafRunning() {
 
 stopConnectorServer() {
     echo "Stopping connector server ..."
+    fixKarafJavaHome
     if [[ -d "$KARAF_HOME/bin" ]]; then
         sh $KARAF_HOME/bin/stop 2>/dev/null || true
         START_COUNT=0
@@ -73,6 +90,7 @@ stopConnectorServer() {
 
 startConnectorServer() {
     echo "Starting connector server ..."
+    fixKarafJavaHome
     $KARAF_HOME/bin/start
     sleep 90
     START_COUNT=0
