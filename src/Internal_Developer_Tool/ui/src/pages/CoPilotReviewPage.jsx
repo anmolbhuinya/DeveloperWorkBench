@@ -651,6 +651,26 @@ export default function CoPilotReviewPage() {
             ))}
           </div>
         )}
+        {deps?.ok && (() => {
+          const rows = (deps.placeholders || []).filter(p => depTab === 'all' || p.pr)
+          const th = { textAlign: 'left', padding: '3px 6px', fontSize: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
+          const td = { padding: '3px 6px', fontSize: 11, borderBottom: '1px solid var(--border)', wordBreak: 'break-all' }
+          return (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color: '#455A64', borderBottom: '2px solid #455A64', paddingBottom: 2, marginBottom: 4 }}>Placeholders ({rows.length})</div>
+              {rows.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>None</div> : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr><th style={th}>Placeholder</th><th style={th}>Base version</th><th style={th}>Value</th><th style={th}>Defined in</th><th style={th}>Line</th><th style={th}>Used by</th></tr></thead>
+                    <tbody>{rows.map((p, i) => (
+                      <tr key={i} style={p.mismatch ? { background: '#FFEBEE', color: '#B71C1C', fontWeight: 600 } : undefined}><td style={{ ...td, fontFamily: 'monospace' }}>${'{'}{p.key}{'}'}</td><td style={td}>{p.base_value}</td><td style={td}>{p.value}{p.mismatch ? ' ⚠' : ''}</td><td style={{ ...td, fontFamily: 'monospace' }}>{p.file}</td><td style={td}>{p.line}</td><td style={td}>{p.used_by}</td></tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )
+        })()}
         {deps?.ok && [
           ['added',      'New Dependencies Added',   '#2E7D32'],
           ['removed',    'Dependencies Removed',     '#C62828'],
@@ -698,26 +718,6 @@ export default function CoPilotReviewPage() {
             </div>
           )
         })}
-        {deps?.ok && (() => {
-          const rows = (deps.placeholders || []).filter(p => depTab === 'all' || p.pr)
-          const th = { textAlign: 'left', padding: '3px 6px', fontSize: 10, background: 'var(--surface)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
-          const td = { padding: '3px 6px', fontSize: 11, borderBottom: '1px solid var(--border)', wordBreak: 'break-all' }
-          return (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontWeight: 700, fontSize: 12, color: '#455A64', borderBottom: '2px solid #455A64', paddingBottom: 2, marginBottom: 4 }}>Placeholders ({rows.length})</div>
-              {rows.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>None</div> : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead><tr><th style={th}>Placeholder</th><th style={th}>Value</th><th style={th}>Defined in</th><th style={th}>Line</th><th style={th}>Used by</th></tr></thead>
-                    <tbody>{rows.map((p, i) => (
-                      <tr key={i}><td style={{ ...td, fontFamily: 'monospace' }}>${'{'}{p.key}{'}'}</td><td style={td}>{p.value}</td><td style={{ ...td, fontFamily: 'monospace' }}>{p.file}</td><td style={td}>{p.line}</td><td style={td}>{p.used_by}</td></tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )
-        })()}
       </div>
     )}
     </div>

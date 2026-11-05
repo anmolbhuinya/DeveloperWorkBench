@@ -33065,7 +33065,7 @@ def create_flask_app():
                     ("dup_module", "Duplicate Dependencies - same module"), ("dup_repo", "Duplicate Dependencies - version mismatch in repository")]
         cols = ["Section", "Module", "File", "Group", "Artifact", "Version / From", "To", "Scope / From", "To Scope", "Line",
                 "Placeholder", "Baseline Version(s)", "Baseline Status", "Caused by PR"]
-        PH_COLS = ["Placeholder", "Value", "Defined In", "Line", "Used By", "Caused by PR"]
+        PH_COLS = ["Placeholder", "Base Value", "Value", "Mismatch", "Defined In", "Line", "Used By", "Caused by PR"]
         scope = str(body.get("scope", "all")).lower()      # all = overall issues, pr = issues caused by the PR only
         yn = lambda e: "yes" if e.get("pr") else "no"
 
@@ -33081,7 +33081,7 @@ def create_flask_app():
             return [e for e in rep.get(sec, []) if not only_pr or e.get("pr") or sec in ("added", "removed", "updated")]
 
         def ph_rows(only_pr):
-            return [[p.get("key"), p.get("value"), p.get("file"), p.get("line"), p.get("used_by"), yn(p)]
+            return [[p.get("key"), p.get("base_value", ""), p.get("value"), "MISMATCH" if p.get("mismatch") else "", p.get("file"), p.get("line"), p.get("used_by"), yn(p)]
                     for p in rep.get("placeholders", []) if not only_pr or p.get("pr")]
         if fmt == "json":
             # json: the report as is, plus an "issues" block that splits overall issues from the ones caused by the PR
@@ -33097,6 +33097,17 @@ def create_flask_app():
             wb = _xl.Workbook()
             wb.remove(wb.active)
             for sheet, only_pr in (("Overall", False), ("PR Only", True)):
+                ws2 = wb.create_sheet("Placeholders" if not only_pr else "Placeholders (PR)", 0 if not only_pr else 1)
+                ws2.append(PH_COLS)
+                for r_ in ph_rows(only_pr):
+                    ws2.append(r_)
+                    if r_[3] == "MISMATCH":
+                        for c in ws2[ws2.max_row]:
+                            c.font = _F(color="B71C1C", bold=True)
+                            c.fill = _P("solid", fgColor="FFEBEE")
+                for c in ws2[1]:
+                    c.font = _F(bold=True, color="FFFFFF")
+                    c.fill = _P("solid", fgColor="1565C0")
                 ws = wb.create_sheet(sheet)
                 ws.append(cols)
                 for sec, _t in SECTIONS:
@@ -33111,13 +33122,6 @@ def create_flask_app():
                 for c in hdr:
                     c.font = _F(bold=True, color="FFFFFF")
                     c.fill = _P("solid", fgColor="1565C0")
-                ws2 = wb.create_sheet("Placeholders" if not only_pr else "Placeholders (PR)")
-                ws2.append(PH_COLS)
-                for r_ in ph_rows(only_pr):
-                    ws2.append(r_)
-                for c in ws2[1]:
-                    c.font = _F(bold=True, color="FFFFFF")
-                    c.fill = _P("solid", fgColor="1565C0")
             for w_ in wb.worksheets:
                 for col in w_.columns:
                     w_.column_dimensions[col[0].column_letter].width = min(60, max(10, max(len(str(c.value or "")) for c in col) + 2))
@@ -33128,15 +33132,15 @@ def create_flask_app():
             buf = _io.StringIO()
             w = _csv.writer(buf)
             only_pr = scope == "pr"
-            w.writerow(cols)
-            for sec, _t in SECTIONS:
-                for e in pick(sec, only_pr):
-                    w.writerow(row(sec, e))
-            w.writerow([])
             w.writerow(["Placeholders"])
             w.writerow(PH_COLS)
             for r_ in ph_rows(only_pr):
                 w.writerow(r_)
+            w.writerow([])
+            w.writerow(cols)
+            for sec, _t in SECTIONS:
+                for e in pick(sec, only_pr):
+                    w.writerow(row(sec, e))
             data, mime, ext = "\ufeff" + buf.getvalue(), "text/csv", "csv"
             if only_pr:
                 fname += "-pr-only"
@@ -33159,6 +33163,13 @@ def create_flask_app():
                           "document.querySelectorAll('.tb').forEach(function(t,n){t.classList.toggle('on',n==i)})}</script>")
             for ti, only_pr in enumerate((False, True)):
                 out.append("<div class='tab%s'>" % (" on" if ti == 0 else ""))
+                prs = ph_rows(only_pr)
+                out.append("<h3>Placeholders (%d)</h3>" % len(prs))
+                if prs:
+                    out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in PH_COLS) + "</tr>" +
+                               "".join("<tr%s>" % (" style='background:#ffebee;color:#b71c1c;font-weight:600'" if r_[3] == "MISMATCH" else "") + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in r_) + "</tr>" for r_ in prs) + "</table>")
+                else:
+                    out.append("<p>None</p>")
                 for sec, title in SECTIONS:
                     items = pick(sec, only_pr)
                     out.append("<h3>%s (%d)</h3>" % (title, len(items)))
@@ -33171,13 +33182,6 @@ def create_flask_app():
                         out.append("<tr%s>" % (" style='background:#ffebee;color:#b71c1c;font-weight:600'" if mm else "") +
                                    "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in row(sec, e)[1:]) + "</tr>")
                     out.append("</table>")
-                prs = ph_rows(only_pr)
-                out.append("<h3>Placeholders (%d)</h3>" % len(prs))
-                if prs:
-                    out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in PH_COLS) + "</tr>" +
-                               "".join("<tr>" + "".join("<td>%s</td>" % _h.escape(str(c if c is not None else "")) for c in r_) + "</tr>" for r_ in prs) + "</table>")
-                else:
-                    out.append("<p>None</p>")
                 out.append("</div>")
             if rep.get("note"):
                 out.append("<p><i>%s</i></p>" % _h.escape(rep["note"]))

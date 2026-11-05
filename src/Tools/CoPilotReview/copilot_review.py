@@ -464,8 +464,25 @@ def fetch_dependency_changes(owner, repo, pr_number, token):
                 r["used_by"].add("%s:%s" % (e["group"], e["artifact"]))
                 if e.get("pr"):
                     r["pr"] = True
+    # base version of each placeholder: its value in the PR's base commit; a different value is a mismatch
+    base_ctx = {}
+    for r in ph.values():
+        f = r["file"]
+        if f.startswith("("):
+            r["base_value"], r["mismatch"] = "", False
+            continue
+        if f not in base_ctx:
+            try:
+                base_ctx[f] = _PomContext(fetch, f, base_sha)
+            except Exception:
+                base_ctx[f] = None
+        c = base_ctx[f]
+        r["base_value"] = (c.props.get(r["key"], "(not present)") if c is not None and c.root is not None else "(file not in base)")
+        r["mismatch"] = r["base_value"] != r["value"]
+        if r["mismatch"]:
+            r["pr"] = True
     placeholders = [{**r, "used_by": ", ".join(sorted(r["used_by"])), "used_count": len(r["used_by"])}
-                    for r in sorted(ph.values(), key=lambda r: (not r["pr"], r["key"]))]
+                    for r in sorted(ph.values(), key=lambda r: (not r["mismatch"], not r["pr"], r["key"]))]
     keep = ("file", "module", "group", "artifact", "version", "scope", "line", "section", "placeholder", "pr")
     slim = lambda lst, extra=(): [{k: e.get(k, "") for k in keep + tuple(extra)} for e in lst]
     return {
