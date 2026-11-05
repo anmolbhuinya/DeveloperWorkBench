@@ -33404,20 +33404,44 @@ def create_flask_app():
             data, mime, ext = buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
         elif fmt == "html":
             e_ = _h.escape
-            out = ["<html><head><meta charset='utf-8'><title>Regression parity report</title><style>body{font-family:Segoe UI,Arial;margin:24px}"
-                   "table{border-collapse:collapse;font-size:13px;margin-bottom:22px}td,th{border:1px solid #ccc;padding:4px 8px}"
-                   "th{background:#1565c0;color:#fff;text-align:left}</style></head><body><h2>Regression parity report</h2>",
-                   "<p>Baseline: %s<br>Regression: %s<br>Generated %s</p>" % (e_(str(rep.get("baseline_url", ""))), e_(str(rep.get("regression_url", ""))), e_(str(rep.get("generated", "")))),
-                   "<table><tr><th>Summary</th><th>Count</th></tr>" + "".join("<tr><td>%s</td><td>%s</td></tr>" % (e_(k), e_(str(v))) for k, v in summ) + "</table>"]
-            for k, t in SEG:
+            colors = {"failing": "#C62828", "missing": "#6A1B9A", "disabled": "#E65100", "added": "#2E7D32"}
+            tot, bl, rg = rep.get("totals") or {}, rep.get("baseline") or {}, rep.get("regression") or {}
+            out = ["<html><head><meta charset='utf-8'><title>Regression parity report</title><style>"
+                   "body{font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:24px 28px;background:#f5f6f8;color:#1f2937}"
+                   "h1{font-size:22px;margin:0}.sub{font-size:13px;color:#6b7280;margin:4px 0 16px}"
+                   ".card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px}"
+                   ".tiles{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}.tile{flex:1 1 170px;min-width:170px}"
+                   ".tile.click{cursor:pointer}.tile.on .card{outline:2px solid var(--c)}"
+                   ".lbl{font-size:11px;color:#6b7280}.val{font-size:24px;font-weight:700}"
+                   ".seg{display:none}.seg.on{display:block}"
+                   ".sh{font-weight:700;font-size:13px;padding-bottom:3px;margin-bottom:6px;border-bottom:2px solid}"
+                   "table{width:100%;border-collapse:collapse}th{text-align:left;padding:4px 8px;font-size:11px;background:#f3f4f6;border-bottom:1px solid #e5e7eb;white-space:nowrap}"
+                   "td{padding:4px 8px;font-size:12px;border-bottom:1px solid #e5e7eb;word-break:break-all}"
+                   ".foot{font-size:11px;color:#6b7280;margin-top:10px}.none{font-size:12px;color:#6b7280}</style></head><body>",
+                   "<h1>Regression Parity Checker</h1>",
+                   "<div class='sub'>Baseline: %s<br>Regression: %s<br>Generated %s</div>" % (
+                       e_(str(rep.get("baseline_url", ""))), e_(str(rep.get("regression_url", ""))), e_(str(rep.get("generated", "")))),
+                   "<div class='tiles'>",
+                   "<div class='tile'><div class='card'><div class='lbl'>Total tests - baseline</div><div class='val'>%s</div></div></div>" % e_(str(bl.get("total", ""))),
+                   "<div class='tile'><div class='card'><div class='lbl'>Total tests - regression</div><div class='val'>%s</div></div></div>" % e_(str(rg.get("total", "")))]
+            for i, (k, t) in enumerate(SEG):
+                out.append("<div class='tile click%s' id='t-%s' style='--c:%s' onclick=\"sw('%s')\"><div class='card'><div class='lbl'>%s</div>"
+                           "<div class='val' style='color:%s'>%s</div></div></div>" % (" on" if i == 0 else "", k, colors[k], k, e_(t), colors[k], e_(str(tot.get(k, 0)))))
+            out.append("</div>")
+            for i, (k, t) in enumerate(SEG):
                 items = rep.get(k, [])
-                out.append("<h3>%s (%d)</h3>" % (t, len(items)))
+                out.append("<div class='seg card%s' id='s-%s'><div class='sh' style='color:%s;border-color:%s'>%s (%d)</div>" % (" on" if i == 0 else "", k, colors[k], colors[k], e_(t), len(items)))
                 if not items:
-                    out.append("<p>None</p>")
-                    continue
-                out.append("<table><tr>" + "".join("<th>%s</th>" % x for x in cols[1:]) + "</tr>" +
-                           "".join("<tr>" + "".join("<td>%s</td>" % e_(str(c if c is not None else "")) for c in row(k, e)[1:]) + "</tr>" for e in items) + "</table>")
-            out.append("</body></html>")
+                    out.append("<div class='none'>None</div>")
+                else:
+                    out.append("<table><tr><th>Class</th><th>Test case</th><th>Baseline</th><th>Regression</th></tr>" +
+                               "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                                   e_(str(x.get("class") or "")), e_(str(x.get("name") or "")), e_(str(x.get("baseline") or "—")), e_(str(x.get("regression") or ""))) for x in items) + "</table>")
+                out.append("</div>")
+            out.append("<div class='foot'>Baseline: passed %s · failed %s · disabled %s &nbsp;|&nbsp; Regression: passed %s · failed %s · disabled %s</div>" % (
+                bl.get("passed"), bl.get("failed"), bl.get("disabled"), rg.get("passed"), rg.get("failed"), rg.get("disabled")))
+            out.append("<script>function sw(k){['failing','missing','disabled','added'].forEach(function(x){"
+                       "document.getElementById('s-'+x).classList.toggle('on',x==k);document.getElementById('t-'+x).classList.toggle('on',x==k)})}</script></body></html>")
             data, mime, ext = "\n".join(out), "text/html", "html"
         else:
             return jsonify({"ok": False, "error": "Unknown format"}), 400
