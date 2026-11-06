@@ -27988,40 +27988,53 @@ def create_flask_app():
         return True
 
     def _find_prev_dev_days(team, key, sprint_root):
-        """Return (dev_days, in_dev_since, found) for key from the most recent previous sprint."""
+        """Return (dev_days, in_dev_since, found, qa_days, in_qa_since, sprints_before) for key.
+        Dev/QA days come from the most recent previous sprint holding the story; sprints_before
+        counts every previous sprint it appeared in."""
         if not team or not sprint_root:
-            return None, None, False
+            return None, None, False, None, None, 0
         prev_dir = sprint_root / "PreviousSprints" / team
         if not prev_dir.exists():
-            return None, None, False
+            return None, None, False, None, None, 0
+        latest = None; n = 0
         try:
             import openpyxl as _xl_pv
             sprint_files = sorted(prev_dir.glob("*.xlsx"),
                                   key=lambda f: f.stat().st_mtime, reverse=True)
-            for sf in sprint_files[:3]:
+            for sf in sprint_files:
                 try:
                     _wb_p = _xl_pv.load_workbook(str(sf), read_only=True, data_only=True)
-                    if "Sprint Board" not in _wb_p.sheetnames:
-                        _wb_p.close(); continue
-                    _ws_p  = _wb_p["Sprint Board"]
-                    _hdr_p = [c.value for c in next(_ws_p.iter_rows(min_row=1, max_row=1))]
-                    _ci_p  = {h: i for i, h in enumerate(_hdr_p) if h}
-                    _ji_p, _dd_p, _ids_p = _ci_p.get("JIRA ID"), _ci_p.get("DevDays"), _ci_p.get("InDevSince")
-                    if _ji_p is None: _wb_p.close(); continue
-                    for _rp in _ws_p.iter_rows(min_row=2, values_only=True):
-                        _v = _rp[_ji_p] if _ji_p < len(_rp) else None
-                        if not _v: continue
-                        if str(_v).strip().upper() == key:
-                            _dd  = _rp[_dd_p]  if _dd_p  is not None and _dd_p  < len(_rp) else None
-                            _ids = _rp[_ids_p] if _ids_p is not None and _ids_p < len(_rp) else None
-                            _wb_p.close()
-                            return (_dd, _ids, True)
+                    hit = None
+                    for _sn in ("Sprint Board", "Adhoc Task"):
+                        if _sn not in _wb_p.sheetnames: continue
+                        _ws_p  = _wb_p[_sn]
+                        _hdr_p = [c.value for c in next(_ws_p.iter_rows(min_row=1, max_row=1))]
+                        _ci_p  = {h: i for i, h in enumerate(_hdr_p) if h}
+                        _ji_p = _ci_p.get("JIRA ID")
+                        if _ji_p is None: continue
+                        def _g(rp, name):
+                            i = _ci_p.get(name)
+                            return rp[i] if i is not None and i < len(rp) else None
+                        for _rp in _ws_p.iter_rows(min_row=2, values_only=True):
+                            _v = _rp[_ji_p] if _ji_p < len(_rp) else None
+                            if _v and str(_v).strip().upper() == key:
+                                hit = (_g(_rp, "DevDays"), _g(_rp, "InDevSince"), _g(_rp, "QADays"),
+                                       _g(_rp, "InQASince"), _g(_rp, "Sprints"))
+                                break
+                        if hit: break
                     _wb_p.close()
+                    if hit:
+                        n += 1
+                        if latest is None: latest = hit
                 except Exception:
                     pass
         except Exception:
             pass
-        return None, None, False
+        if latest is None:
+            return None, None, False, None, None, 0
+        try: stored = int(latest[4])
+        except Exception: stored = 0
+        return latest[0], latest[1], True, latest[2], latest[3], max(n, stored)
 
     def _apply_board_issues(ws, issues, base_url, creds=None, freeze_dev=True, team=None, sprint_root=None, adhoc_ws=None):
         from datetime import date as _date
@@ -28059,6 +28072,10 @@ def create_flask_app():
         if co_i is None:
             ws.cell(row=1, column=len(header)+1).value = "Carried Over"
             co_i = len(header); header.append("Carried Over"); ci["Carried Over"] = co_i
+        sc_i      = ci.get("Sprints")
+        if sc_i is None:
+            ws.cell(row=1, column=len(header)+1).value = "Sprints"
+            sc_i = len(header); header.append("Sprints"); ci["Sprints"] = sc_i
         if jira_i is None: return 0
         existing = {}
         for ri, row in enumerate(ws.iter_rows(min_row=2, values_only=True)):
@@ -28134,9 +28151,30 @@ def create_flask_app():
                 else:
                     if cur_ids:
                         ws.cell(row=er, column=ids_i+1).value = None
+                # First sync after the Sprints column appeared (or row predates carry-over tracking):
+                # look the story up in previous sprints once, flag it and carry dev/QA days
+                if not ws.cell(row=er, column=sc_i+1).value:
+                    _pdd, _pids, _pfound, _pqd, _pqs, _pn = _find_prev_dev_days(team, key, sprint_root)
+                    if _pfound:
+                        ws.cell(row=er, column=co_i+1).value = "Yes"
+                        ws.cell(row=er, column=sc_i+1).value = _pn + 1
+                        if _is_in_dev(status):
+                            _ids2 = _pids or ws.cell(row=er, column=ids_i+1).value or _today_str
+                            ws.cell(row=er, column=ids_i+1).value = _ids2
+                            ws.cell(row=er, column=dd_i+1).value = _business_days(_ids2)
+                        elif _pdd is not None:
+                            ws.cell(row=er, column=dd_i+1).value = _pdd
+                        if _is_testing(status):
+                            _qs2 = _pqs or ws.cell(row=er, column=qs_i+1).value or _today_str
+                            ws.cell(row=er, column=qs_i+1).value = _qs2
+                            ws.cell(row=er, column=qd_i+1).value = _business_days(_qs2)
+                        elif _pqd is not None:
+                            ws.cell(row=er, column=qd_i+1).value = _pqd
+                    else:
+                        ws.cell(row=er, column=sc_i+1).value = 1
             else:
-                # New ticket: try to carry forward DevDays from previous sprint
-                prev_dd, prev_ids, prev_found = _find_prev_dev_days(team, key, sprint_root)
+                # New ticket: try to carry forward Dev/QA days from previous sprint
+                prev_dd, prev_ids, prev_found, prev_qd, prev_qs, prev_n = _find_prev_dev_days(team, key, sprint_root)
                 if _is_in_dev(status):
                     carry_ids = prev_ids if prev_ids else _today_str
                     carry_dd  = _business_days(carry_ids)
@@ -28156,6 +28194,10 @@ def create_flask_app():
                     if "Carried Over" not in _ah_ci:
                         _ah.cell(row=1, column=len(_ah_hdr)+1).value = "Carried Over"
                         _ah_ci["Carried Over"] = len(_ah_hdr); _ah_hdr.append("Carried Over")
+                    for _nc in ("Sprints", "DevDays", "InDevSince", "QADays", "InQASince"):
+                        if _nc not in _ah_ci:
+                            _ah.cell(row=1, column=len(_ah_hdr)+1).value = _nc
+                            _ah_ci[_nc] = len(_ah_hdr); _ah_hdr.append(_nc)
                     # Skip if already in Adhoc Task
                     _ah_existing = set()
                     for _ahr in _ah.iter_rows(min_row=2, values_only=True):
@@ -28169,6 +28211,9 @@ def create_flask_app():
                             ("Status", status), ("Developer", assignee), ("Story Point", sp_val),
                             ("PRs", prs_val), ("PR Status", pr_stat_val), ("Date Added", _today_str),
                             ("Carried Over", "Yes" if prev_found else None),
+                            ("Sprints", (prev_n + 1) if prev_found else 1),
+                            ("QADays", prev_qd), ("InQASince", prev_qs if _is_testing(status) else None),
+                            ("DevDays", carry_dd), ("InDevSince", carry_ids),
                         ]:
                             if _col in _ah_ci:
                                 _ah_row[_ah_ci[_col]] = _val
@@ -28203,10 +28248,13 @@ def create_flask_app():
                     row_vals[dd_i]  = carry_dd
                     row_vals[co_i]  = "Yes" if prev_found else None
                     row_vals[ids_i] = carry_ids
+                    row_vals[sc_i]  = (prev_n + 1) if prev_found else 1
+                    if prev_qd is not None: row_vals[qd_i] = prev_qd
                     if _is_testing(status):
                         if qa_i is not None: row_vals[qa_i] = assignee
-                        row_vals[qs_i] = _today_str
-                        row_vals[qd_i] = _business_days(_today_str)
+                        _qs_new = prev_qs or _today_str
+                        row_vals[qs_i] = _qs_new
+                        row_vals[qd_i] = _business_days(_qs_new)
                     ws.append(row_vals)
                     if base_url:
                         ws.cell(row=ws.max_row, column=jira_i+1).hyperlink = f"{base_url}/browse/{key}"
@@ -28817,8 +28865,8 @@ def create_flask_app():
                 except Exception:
                     pass
             # Ensure the DevDays / QADays / carry-over helper columns exist on Sprint Board and Adhoc Task
-            for _en_sheet, _en_need in (("Sprint Board", ["DevDays", "InDevSince", "QADays", "InQASince", "Carried Over"]),
-                                        ("Adhoc Task",   ["DevDays", "QADays", "InQASince", "Carried Over"])):
+            for _en_sheet, _en_need in (("Sprint Board", ["DevDays", "InDevSince", "QADays", "InQASince", "Carried Over", "Sprints"]),
+                                        ("Adhoc Task",   ["DevDays", "QADays", "InQASince", "Carried Over", "Sprints"])):
                 _en_cols = sheets.get(_en_sheet, {}).get("columns", [])
                 if not _en_cols or all(c in _en_cols for c in _en_need):
                     continue
@@ -29328,6 +29376,15 @@ def create_flask_app():
             wb.close()
             try:
                 _rs_capture(src, filename)       # Resource_And_Skill: completed tickets per developer
+            except Exception:
+                pass
+
+            # Pin this sprint's untagged My Tasks to it so they don't leak into the next sprint
+            try:
+                _tp = _tasks_path(filename); _tl = _tasks_load(_tp); _ch = False
+                for _t in _tl:
+                    if not _t.get("sprint"): _t["sprint"] = filename; _ch = True
+                if _ch: _tasks_save(_tp, _tl)
             except Exception:
                 pass
 
@@ -30836,9 +30893,16 @@ def create_flask_app():
         if "status" in t and t["status"] not in _TASK_STATUSES: t["status"] = "To Do"
         return t
 
+    def _tasks_for_sprint(tasks, filename):
+        """Tasks belong to the sprint they were created in. Untagged (legacy) tasks show only in a current sprint."""
+        team = _team_from_sprint_filename(filename or "")
+        is_prev = bool(filename) and (SPRINT_DATA / "PreviousSprints" / team / filename).exists() if team else False
+        return [t for t in tasks if (t.get("sprint") == filename) or (not t.get("sprint") and not is_prev)]
+
     @app.route("/api/project-management/sprint/tasks", methods=["GET"])
     def api_tm_tasks():
-        return jsonify({"ok": True, "statuses": _TASK_STATUSES, "tasks": _tasks_load(_tasks_path(request.args.get("file", "")))})
+        f = request.args.get("file", "")
+        return jsonify({"ok": True, "statuses": _TASK_STATUSES, "tasks": _tasks_for_sprint(_tasks_load(_tasks_path(f)), f)})
 
     @app.route("/api/project-management/sprint/tasks/add", methods=["POST"])
     def api_tm_tasks_add():
@@ -30851,9 +30915,10 @@ def create_flask_app():
         t.setdefault("description", ""); t.setdefault("due", ""); t.setdefault("important", "Yes")
         t.setdefault("urgent", "Auto"); t.setdefault("delegate_to", ""); t.setdefault("status", "To Do")
         t["id"] = _uuid.uuid4().hex[:10]; t["created"] = _dt.now().strftime("%Y-%m-%d")
+        t["sprint"] = body.get("file", "")
         path = _tasks_path(body.get("file", ""))
         tasks = _tasks_load(path); tasks.append(t); _tasks_save(path, tasks)
-        return jsonify({"ok": True, "tasks": tasks})
+        return jsonify({"ok": True, "tasks": _tasks_for_sprint(tasks, body.get("file", ""))})
 
     @app.route("/api/project-management/sprint/tasks/update", methods=["POST"])
     def api_tm_tasks_update():
@@ -30864,7 +30929,7 @@ def create_flask_app():
         if not t:
             return jsonify({"ok": False, "error": "Task not found"})
         t.update(_task_clean(body)); _tasks_save(path, tasks)
-        return jsonify({"ok": True, "tasks": tasks})
+        return jsonify({"ok": True, "tasks": _tasks_for_sprint(tasks, body.get("file", ""))})
 
     @app.route("/api/project-management/sprint/tasks/delete", methods=["POST"])
     def api_tm_tasks_delete():
@@ -30872,7 +30937,7 @@ def create_flask_app():
         path = _tasks_path(body.get("file", ""))
         tasks = [x for x in _tasks_load(path) if x.get("id") != body.get("id")]
         _tasks_save(path, tasks)
-        return jsonify({"ok": True, "tasks": tasks})
+        return jsonify({"ok": True, "tasks": _tasks_for_sprint(tasks, body.get("file", ""))})
 
     # ── Sonar Report ──────────────────────────────────────────────────────────
 

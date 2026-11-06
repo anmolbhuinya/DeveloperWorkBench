@@ -4,8 +4,8 @@ import DatePicker from '../components/DatePicker'
 
 const API = '/api/project-management/sprint'
 const DATA_SHEETS = ['Sprint Board', 'Adhoc Task', 'PR Reviews']
-const MAIN_COLS   = ['JIRA ID', 'Story', 'Issue Type', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays']
-const COL_WIDTHS  = { 'JIRA ID': 110, 'Story': 320, 'Issue Type': 100, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
+const MAIN_COLS   = ['JIRA ID', 'Story', 'Issue Type', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays', 'Sprints']
+const COL_WIDTHS  = { 'Sprints': 60, 'JIRA ID': 110, 'Story': 320, 'Issue Type': 100, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
 const DETAIL_COLS     = ['Notes', 'Commit Job', 'IT Job', 'Code Freeze Date', 'Releasae Date', 'Deployment Date', 'Deployed']
 const COL_LABEL_OVERRIDE = { 'Deployed': 'Deployment Date' }
 
