@@ -658,6 +658,23 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
       .catch(() => {})
   }, [appName])
 
+  // AppMap: adds / removes the appmap-agent dependency in the app's pom.xml
+  const [appmap,       setAppmap]       = useState(null)
+  const [appmapBusy,   setAppmapBusy]   = useState(false)
+  const [appmapErr,    setAppmapErr]    = useState(null)
+  useEffect(() => {
+    fetch(`/api/local-app/${appName}/appmap`).then(r => r.json())
+      .then(d => { if (d.ok && d.available) setAppmap(d.enabled) }).catch(() => {})
+  }, [appName])
+  function toggleAppmap() {
+    setAppmapBusy(true); setAppmapErr(null)
+    fetch(`/api/local-app/${appName}/appmap/toggle`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !appmap }) })
+      .then(r => r.json())
+      .then(d => { if (d.ok) setAppmap(d.enabled); else setAppmapErr(d.error || 'Failed') })
+      .catch(() => setAppmapErr('Request failed'))
+      .finally(() => setAppmapBusy(false))
+  }
+
   function togglePostal() {
     setPostalToggling(true)
     fetch('/api/local-app/payor/postal-address-toggle', { method: 'POST' })
@@ -989,6 +1006,22 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
                 : postalEnabled ? '● Postal Address Enabled' : '○ Postal Address Disabled'}
             </button>
           )}
+          {appmap !== null && (
+            <button onClick={toggleAppmap} disabled={appmapBusy || building}
+              title="Adds / removes the com.appland:appmap-agent dependency in pom.xml. Rebuild to apply."
+              style={{
+                borderRadius: 16, cursor: 'pointer',
+                padding: '4px 12px', fontSize: 12, fontWeight: 600,
+                whiteSpace: 'nowrap', minWidth: 160, textAlign: 'center',
+                background: appmap ? 'rgba(76,175,80,0.15)' : 'rgba(255,152,0,0.15)',
+                color: appmap ? '#2e7d32' : '#e65100',
+                border: `1px solid ${appmap ? 'rgba(76,175,80,0.4)' : 'rgba(255,152,0,0.4)'}`,
+                opacity: appmapBusy ? 0.6 : 1,
+              }}>
+              {appmapBusy ? 'Updating pom…' : appmap ? '● AppMap Enabled' : '○ AppMap Disabled'}
+            </button>
+          )}
+          {appmapErr && <div style={{ fontSize: 11, color: '#c62828', maxWidth: 200, textAlign: 'right' }}>{appmapErr}</div>}
           <button className="btn btn-primary btn-sm" onClick={run} disabled={building}>
             {building ? (
               <><span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> {

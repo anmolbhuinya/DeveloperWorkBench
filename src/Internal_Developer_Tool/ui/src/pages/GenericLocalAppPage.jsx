@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { AppServerTab, DatabaseTab, QueueTab, ApiTab, UserInterfaceTab, CodeTab, ScmTab, PageHeader, TabBar } from './LocalAppShared'
 import { GpRunTab } from './GpRunPage'
 import ItTab from './ItTab'
+import AppMapTab from './AppMapTab'
 
 function Field({ label, children }) {
   return (
@@ -184,7 +185,10 @@ export default function GenericLocalAppPage({
 
   const hdr         = screenCfg.header || DEFAULT_SCREEN_CFG.header
   const _baseTabs  = screenCfg.tabs || DEFAULT_SCREEN_CFG.tabs
-  const visibleTabs = (_baseTabs.some(t => t.key === 'it') ? _baseTabs : [..._baseTabs, { key: 'it', label: '🧪 IT', enabled: true, order: (_baseTabs.find(t => t.key === 'code')?.order ?? 0) + 0.5 }]).filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)
+  const _codeOrder = _baseTabs.find(t => t.key === 'code')?.order ?? 0
+  const _withIt    = _baseTabs.some(t => t.key === 'it') ? _baseTabs : [..._baseTabs, { key: 'it', label: '🧪 IT', enabled: true, order: _codeOrder + 0.5 }]
+  const _itOrder   = _withIt.find(t => t.key === 'it')?.order ?? _codeOrder + 0.5
+  const visibleTabs = (_withIt.some(t => t.key === 'appmap') ? _withIt : [..._withIt, { key: 'appmap', label: '🗺️ AppMap', enabled: true, order: _itOrder + 0.1 }]).filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)
   const resolvedTab = visibleTabs.find(t => t.key === activeTab)?.key ?? visibleTabs[0]?.key ?? 'code'
   return (
     <div>
@@ -230,6 +234,9 @@ export default function GenericLocalAppPage({
       {/* ── IT tab ── */}
       {resolvedTab === 'it' && <ItTab appName={appName} scope="local" />}
 
+      {/* ── AppMap tab ── */}
+      {resolvedTab === 'appmap' && <AppMapTab appName={appName} displayName={displayName} />}
+
       {/* ── GP Run tab ── */}
       {resolvedTab === 'gp_run' && (
         <GpRunTab autoNewRun={!!location.state?.newRun} app={appName === 'pik' ? 'PIK' : appName.charAt(0).toUpperCase() + appName.slice(1)} branch={branch?.branch} releaseBranch={branch?.branch} featureBranch={currentBranch || featureBranch} />
@@ -249,7 +256,7 @@ export default function GenericLocalAppPage({
       )}
 
       {/* ── Other tabs: placeholder ── */}
-      {!['code', 'app_server', 'database', 'queue', 'api', 'user_interface', 'app_config', 'scm', 'gp_run', 'it'].includes(resolvedTab) && (
+      {!['code', 'app_server', 'database', 'queue', 'api', 'user_interface', 'app_config', 'scm', 'gp_run', 'it', 'appmap'].includes(resolvedTab) && (
         <div className="card" style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-muted)' }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>🚧</div>
           <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 6 }}>

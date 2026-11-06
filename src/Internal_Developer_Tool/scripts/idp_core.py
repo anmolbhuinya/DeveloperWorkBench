@@ -17981,6 +17981,209 @@ def create_flask_app():
         new_state = _postal_address_is_enabled(srcdir)
         return jsonify({"ok": ok, "enabled": bool(new_state)})
 
+    # ── AppMap integration (all local apps): pom dependency toggle + recorded-map visualisation ─────────
+    _APPMAP_BEGIN = "<!-- DWB-APPMAP-BEGIN -->"
+    _APPMAP_END   = "<!-- DWB-APPMAP-END -->"
+    _APPMAP_FALLBACK_VERSION = "1.30.2"
+
+    def _appmap_srcdir(app):
+        if app == "payor":
+            return _payor_srcdir()[1]
+        return _get_generic_srcdir(app)
+
+    def _appmap_enabled(pom_text):
+        return _APPMAP_BEGIN in pom_text
+
+    def _appmap_block(ver):
+        return ("    " + _APPMAP_BEGIN + "\n    <dependency>\n"
+                "      <groupId>com.appland</groupId>\n      <artifactId>appmap-agent</artifactId>\n"
+                "      <version>" + ver + "</version>\n      <scope>provided</scope>\n    </dependency>\n    "
+                + _APPMAP_END + "\n")
+
+    def _appmap_add(text, ver):
+        import re as _re
+        # spans where a <dependencies> element is NOT the project's own dependency list
+        spans = [m.span() for m in _re.finditer(r"<(dependencyManagement|profiles|build|pluginManagement|reporting)\b.*?</\1>", text, _re.S)]
+        inside = lambda pos: any(a <= pos < b for a, b in spans)
+        for m in _re.finditer(r"</dependencies>", text):
+            if not inside(m.start()):
+                ls = text.rfind("\n", 0, m.start()) + 1      # start of the </dependencies> line
+                return text[:ls] + _appmap_block(ver) + text[ls:]
+        block = "  <dependencies>\n" + _appmap_block(ver) + "  </dependencies>\n"
+        i = text.rfind("</project>")
+        skip = [m.span() for m in _re.finditer(r"<(dependencyManagement|profiles)\b.*?</\1>", text, _re.S)]
+        for m in _re.finditer(r"<build\b", text):
+            if not any(a <= m.start() < b for a, b in skip):
+                i = text.rfind("\n", 0, m.start()) + 1; break
+        return text[:i] + block + text[i:]
+
+    def _appmap_remove(text):
+        import re as _re
+        out = _re.sub(r"[ \t]*" + _re.escape(_APPMAP_BEGIN) + r".*?" + _re.escape(_APPMAP_END) + r"[ \t]*\n?", "", text, flags=_re.S)
+        # drop a <dependencies> element we created that is now empty
+        return _re.sub(r"[ \t]*<dependencies>\s*</dependencies>[ \t]*\n?", "", out)
+
+    def _appmap_dirs(srcdir):
+        root = Path(srcdir)
+        ds = [root / "tmp" / "appmap", root / "target" / "appmap", root / "build" / "appmap"]
+        for pat in ("*/tmp/appmap", "*/target/appmap"):
+            ds += list(root.glob(pat))
+        return [d for d in ds if d.is_dir()]
+
+    @app.route("/api/local-app/<app_name>/appmap", methods=["GET"])
+    def api_appmap_status(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        srcdir = _appmap_srcdir(app_name)
+        pom = Path(srcdir) / "pom.xml" if srcdir else None
+        if not pom or not pom.exists():
+            return jsonify({"ok": True, "available": False, "enabled": False, "srcdir": srcdir or "",
+                            "error": "pom.xml not found in the app source directory"})
+        text = pom.read_text(encoding="utf-8", errors="replace")
+        maps = sum(len(list(d.glob("*.appmap.json"))) for d in _appmap_dirs(srcdir))
+        return jsonify({"ok": True, "available": True, "enabled": _appmap_enabled(text), "srcdir": str(srcdir), "maps": maps})
+
+    @app.route("/api/local-app/<app_name>/appmap/toggle", methods=["POST"])
+    def api_appmap_toggle(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        srcdir = _appmap_srcdir(app_name)
+        pom = Path(srcdir) / "pom.xml" if srcdir else None
+        if not pom or not pom.exists():
+            return jsonify({"ok": False, "error": "pom.xml not found in the app source directory"})
+        want = (request.get_json(silent=True) or {}).get("enabled")
+        raw = pom.read_bytes()
+        text = raw.decode("utf-8", errors="replace")
+        nl = "\r\n" if "\r\n" in text else "\n"
+        text = text.replace("\r\n", "\n")
+        on = _appmap_enabled(text)
+        want = (not on) if want is None else bool(want)
+        if want and not on:
+            ver = _maven_latest("https://repo1.maven.org/maven2/com/appland/appmap-agent/maven-metadata.xml", _APPMAP_FALLBACK_VERSION) or _APPMAP_FALLBACK_VERSION
+            text = _appmap_add(text, ver)
+        elif not want and on:
+            text = _appmap_remove(text)
+        pom.write_bytes(text.replace("\n", nl).encode("utf-8"))
+        return jsonify({"ok": True, "enabled": _appmap_enabled(text)})
+
+    def _appmap_parse(path, srcdir):
+        import json as _json, re as _re
+        data = _json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
+        events = data.get("events") or []
+        by_id = {e.get("id"): e for e in events if e.get("event") == "call"}
+        stack, calls, http_s, http_c, sqls = {}, [], [], [], []
+        for e in events:
+            tid = e.get("thread_id", 0)
+            st = stack.setdefault(tid, [])
+            if e.get("event") == "call":
+                cls = e.get("defined_class") or ""
+                rec = {"id": e.get("id"), "cls": cls, "method": e.get("method_id") or "", "path": e.get("path") or "",
+                       "line": e.get("lineno"), "depth": len(st), "parent": st[-1] if st else None, "ms": None}
+                if e.get("http_server_request"):
+                    r = e["http_server_request"]; http_s.append({"id": e["id"], "method": r.get("request_method"), "path": r.get("normalized_path_info") or r.get("path_info"), "status": None, "ms": None})
+                elif e.get("http_client_request"):
+                    r = e["http_client_request"]; http_c.append({"id": e["id"], "method": r.get("request_method"), "url": r.get("url"), "status": None, "ms": None})
+                elif e.get("sql_query"):
+                    q = e["sql_query"]; sqls.append({"id": e["id"], "sql": q.get("sql") or "", "db": q.get("database_type") or "", "ms": None})
+                else:
+                    calls.append(rec)
+                st.append(e.get("id"))
+            elif e.get("event") == "return":
+                cid = e.get("parent_id")
+                if st and cid in st:
+                    while st and st[-1] != cid:
+                        st.pop()
+                    if st:
+                        st.pop()
+                ms = round((e.get("elapsed") or 0) * 1000, 3)
+                for coll in (calls, http_s, http_c, sqls):
+                    for r in coll:
+                        if r["id"] == cid:
+                            r["ms"] = ms
+                            if "status" in r and e.get("http_server_response"):
+                                r["status"] = e["http_server_response"].get("status_code", e["http_server_response"].get("status"))
+                            if "status" in r and e.get("http_client_response"):
+                                r["status"] = e["http_client_response"].get("status_code", e["http_client_response"].get("status"))
+                            break
+        # edges caller class -> callee class
+        cls_of = {c["id"]: c["cls"] for c in calls}
+        edges = {}
+        for c in calls:
+            p = cls_of.get(c["parent"])
+            if p and c["cls"] and p != c["cls"]:
+                k = (p, c["cls"], c["method"]); edges[k] = edges.get(k, 0) + 1
+        seq = []
+        for c in calls:
+            p = cls_of.get(c["parent"])
+            if p and c["cls"] and p != c["cls"]:
+                seq.append({"from": p, "to": c["cls"], "method": c["method"], "ms": c["ms"]})
+        # classMap -> functions with locations
+        funcs = []
+        def walk(nodes, pkg):
+            for n in nodes or []:
+                t = n.get("type"); nm = n.get("name", "")
+                if t == "function":
+                    funcs.append({"cls": pkg, "name": nm, "location": n.get("location", ""), "static": bool(n.get("static"))})
+                else:
+                    walk(n.get("children"), (pkg + "." + nm) if pkg else nm)
+        walk(data.get("classMap"), "")
+        used = {}
+        for c in calls:
+            k = (c["cls"], c["method"]); used[k] = used.get(k, 0) + 1
+        for f in funcs:
+            f["calls"] = used.get((f["cls"], f["name"]), 0)
+        # SQL grouped
+        grp = {}
+        for q in sqls:
+            k = _re.sub(r"\s+", " ", _re.sub(r"'[^']*'|\b\d+\b", "?", q["sql"]).strip())[:300]
+            g = grp.setdefault(k, {"sql": k, "db": q["db"], "count": 0, "total_ms": 0.0, "max_ms": 0.0})
+            g["count"] += 1; g["total_ms"] = round(g["total_ms"] + (q["ms"] or 0), 3); g["max_ms"] = max(g["max_ms"], q["ms"] or 0)
+        meta = data.get("metadata") or {}
+        return {
+            "name": meta.get("name") or Path(path).stem,
+            "recorder": (meta.get("recorder") or {}).get("name", ""),
+            "totals": {"events": len(events), "calls": len(calls), "http_server": len(http_s), "http_client": len(http_c), "sql": len(sqls)},
+            "calls": calls[:800],
+            "edges": [{"from": a, "to": b, "method": m, "count": n} for (a, b, m), n in sorted(edges.items(), key=lambda x: -x[1])[:200]],
+            "sequence": seq[:120],
+            "functions": sorted(funcs, key=lambda f: -f["calls"])[:1500],
+            "sql": sorted(grp.values(), key=lambda g: -g["total_ms"])[:300],
+            "http_server": http_s[:300], "http_client": http_c[:300],
+        }
+
+    @app.route("/api/local-app/<app_name>/appmap/maps", methods=["GET"])
+    def api_appmap_maps(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        srcdir = _appmap_srcdir(app_name)
+        if not srcdir or not Path(srcdir).exists():
+            return jsonify({"ok": False, "error": "App source directory not found"})
+        files = []
+        for d in _appmap_dirs(srcdir):
+            for f in d.glob("*.appmap.json"):
+                files.append((f.stat().st_mtime, f))
+        files.sort(key=lambda x: -x[0])
+        import time as _t
+        return jsonify({"ok": True, "srcdir": str(srcdir), "maps": [
+            {"file": str(f.relative_to(srcdir)).replace("\\", "/"), "name": f.name.replace(".appmap.json", ""), "size": f.stat().st_size,
+             "modified": _t.strftime("%Y-%m-%d %H:%M", _t.localtime(m))} for m, f in files[:300]]})
+
+    @app.route("/api/local-app/<app_name>/appmap/map", methods=["GET"])
+    def api_appmap_map(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        srcdir = _appmap_srcdir(app_name)
+        rel = request.args.get("file", "")
+        if not srcdir or not rel.endswith(".appmap.json"):
+            return jsonify({"ok": False, "error": "Invalid file"}), 400
+        full = (Path(srcdir) / rel).resolve()
+        if Path(srcdir).resolve() not in full.parents or not full.is_file():
+            return jsonify({"ok": False, "error": "File not found"}), 404
+        try:
+            return jsonify({"ok": True, **_appmap_parse(full, srcdir)})
+        except Exception as e:
+            return jsonify({"ok": False, "error": "Could not read the AppMap file: %s" % e})
+
     # ── Deployed info ─────────────────────────────────────────────────────────
     _DEPLOYED_INFO_FILE = PAYOR_ROOT / "deployed_info.json"
 
