@@ -28001,54 +28001,67 @@ def create_flask_app():
                 ws.cell(row=r, column=at).value = ws.cell(row=r, column=tcol).value
         return True
 
-    def _find_prev_dev_days(team, key, sprint_root):
-        """Return (dev_days, in_dev_since, found, qa_days, in_qa_since, sprints_before) for key.
-        Dev/QA days come from the most recent previous sprint holding the story; sprints_before
-        counts every previous sprint it appeared in."""
-        if not team or not sprint_root:
-            return None, None, False, None, None, 0
+    _prev_idx_cache = {}
+
+    def _prev_index(team, sprint_root):
+        """{JIRA KEY: [(sprint_name, devdays, indevsince, qadays, inqasince, sprints), ...]} newest sprint first.
+        Rebuilt only when the team's previous-sprint files change."""
         prev_dir = sprint_root / "PreviousSprints" / team
         if not prev_dir.exists():
-            return None, None, False, None, None, 0
-        latest = None; n = 0
+            return {}
+        files = sorted(prev_dir.glob("*.xlsx"), key=lambda f: f.stat().st_mtime, reverse=True)
+        sig = tuple((f.name, f.stat().st_mtime) for f in files)
+        ck = (team, str(prev_dir))
+        if _prev_idx_cache.get(ck, (None,))[0] == sig:
+            return _prev_idx_cache[ck][1]
+        import openpyxl as _xl_pv
+        idx = {}
+        for sf in files:
+            try:
+                wb = _xl_pv.load_workbook(str(sf), read_only=True, data_only=True)
+                seen = set()
+                for sn in ("Sprint Board", "Adhoc Task"):
+                    if sn not in wb.sheetnames: continue
+                    w = wb[sn]
+                    hdr = [c.value for c in next(w.iter_rows(min_row=1, max_row=1))]
+                    ci = {h: i for i, h in enumerate(hdr) if h}
+                    ji = ci.get("JIRA ID")
+                    if ji is None: continue
+                    def g(rp, name):
+                        i = ci.get(name)
+                        return rp[i] if i is not None and i < len(rp) else None
+                    for rp in w.iter_rows(min_row=2, values_only=True):
+                        v = rp[ji] if ji < len(rp) else None
+                        k = str(v).strip().upper() if v else ""
+                        if k and k not in seen:
+                            seen.add(k)
+                            idx.setdefault(k, []).append((sf.stem, g(rp, "DevDays"), g(rp, "InDevSince"),
+                                                          g(rp, "QADays"), g(rp, "InQASince"), g(rp, "Sprints")))
+                wb.close()
+            except Exception:
+                pass
+        _prev_idx_cache[ck] = (sig, idx)
+        return idx
+
+    def _find_prev_dev_days(team, key, sprint_root):
+        """Return (dev_days, in_dev_since, found, qa_days, in_qa_since, sprints_before, origin_sprint) for key.
+        Dev/QA days come from the most recent previous sprint holding the story; sprints_before
+        counts every previous sprint it appeared in; origin_sprint is the oldest one."""
+        if not team or not sprint_root:
+            return None, None, False, None, None, 0, ""
         try:
-            import openpyxl as _xl_pv
-            sprint_files = sorted(prev_dir.glob("*.xlsx"),
-                                  key=lambda f: f.stat().st_mtime, reverse=True)
-            for sf in sprint_files:
-                try:
-                    _wb_p = _xl_pv.load_workbook(str(sf), read_only=True, data_only=True)
-                    hit = None
-                    for _sn in ("Sprint Board", "Adhoc Task"):
-                        if _sn not in _wb_p.sheetnames: continue
-                        _ws_p  = _wb_p[_sn]
-                        _hdr_p = [c.value for c in next(_ws_p.iter_rows(min_row=1, max_row=1))]
-                        _ci_p  = {h: i for i, h in enumerate(_hdr_p) if h}
-                        _ji_p = _ci_p.get("JIRA ID")
-                        if _ji_p is None: continue
-                        def _g(rp, name):
-                            i = _ci_p.get(name)
-                            return rp[i] if i is not None and i < len(rp) else None
-                        for _rp in _ws_p.iter_rows(min_row=2, values_only=True):
-                            _v = _rp[_ji_p] if _ji_p < len(_rp) else None
-                            if _v and str(_v).strip().upper() == key:
-                                hit = (_g(_rp, "DevDays"), _g(_rp, "InDevSince"), _g(_rp, "QADays"),
-                                       _g(_rp, "InQASince"), _g(_rp, "Sprints"))
-                                break
-                        if hit: break
-                    _wb_p.close()
-                    if hit:
-                        n += 1
-                        if latest is None: latest = hit
-                except Exception:
-                    pass
+            hits = _prev_index(team, sprint_root).get(key) or []
         except Exception:
-            pass
-        if latest is None:
-            return None, None, False, None, None, 0
-        try: stored = int(latest[4])
+            hits = []
+        if not hits:
+            return None, None, False, None, None, 0, ""
+        latest = hits[0]
+        try: stored = int(latest[5])
         except Exception: stored = 0
-        return latest[0], latest[1], True, latest[2], latest[3], max(n, stored)
+        origin = hits[-1][0]
+        pre = team + "_"
+        if origin.startswith(pre): origin = origin[len(pre):]
+        return latest[1], latest[2], True, latest[3], latest[4], max(len(hits), stored), origin
 
     def _apply_board_issues(ws, issues, base_url, creds=None, freeze_dev=True, team=None, sprint_root=None, adhoc_ws=None):
         from datetime import date as _date
@@ -28090,6 +28103,10 @@ def create_flask_app():
         if sc_i is None:
             ws.cell(row=1, column=len(header)+1).value = "Sprints"
             sc_i = len(header); header.append("Sprints"); ci["Sprints"] = sc_i
+        og_i      = ci.get("Origin Sprint")
+        if og_i is None:
+            ws.cell(row=1, column=len(header)+1).value = "Origin Sprint"
+            og_i = len(header); header.append("Origin Sprint"); ci["Origin Sprint"] = og_i
         if jira_i is None: return 0
         existing = {}
         for ri, row in enumerate(ws.iter_rows(min_row=2, values_only=True)):
@@ -28167,11 +28184,12 @@ def create_flask_app():
                         ws.cell(row=er, column=ids_i+1).value = None
                 # First sync after the Sprints column appeared (or row predates carry-over tracking):
                 # look the story up in previous sprints once, flag it and carry dev/QA days
-                if not ws.cell(row=er, column=sc_i+1).value:
-                    _pdd, _pids, _pfound, _pqd, _pqs, _pn = _find_prev_dev_days(team, key, sprint_root)
+                if str(ws.cell(row=er, column=co_i+1).value or "").strip().lower() != "yes":
+                    _pdd, _pids, _pfound, _pqd, _pqs, _pn, _porg = _find_prev_dev_days(team, key, sprint_root)
                     if _pfound:
                         ws.cell(row=er, column=co_i+1).value = "Yes"
                         ws.cell(row=er, column=sc_i+1).value = _pn + 1
+                        ws.cell(row=er, column=og_i+1).value = _porg
                         if _is_in_dev(status):
                             _ids2 = _pids or ws.cell(row=er, column=ids_i+1).value or _today_str
                             ws.cell(row=er, column=ids_i+1).value = _ids2
@@ -28188,7 +28206,7 @@ def create_flask_app():
                         ws.cell(row=er, column=sc_i+1).value = 1
             else:
                 # New ticket: try to carry forward Dev/QA days from previous sprint
-                prev_dd, prev_ids, prev_found, prev_qd, prev_qs, prev_n = _find_prev_dev_days(team, key, sprint_root)
+                prev_dd, prev_ids, prev_found, prev_qd, prev_qs, prev_n, prev_org = _find_prev_dev_days(team, key, sprint_root)
                 if _is_in_dev(status):
                     carry_ids = prev_ids if prev_ids else _today_str
                     carry_dd  = _business_days(carry_ids)
@@ -28208,7 +28226,7 @@ def create_flask_app():
                     if "Carried Over" not in _ah_ci:
                         _ah.cell(row=1, column=len(_ah_hdr)+1).value = "Carried Over"
                         _ah_ci["Carried Over"] = len(_ah_hdr); _ah_hdr.append("Carried Over")
-                    for _nc in ("Sprints", "DevDays", "InDevSince", "QADays", "InQASince"):
+                    for _nc in ("Sprints", "Origin Sprint", "DevDays", "InDevSince", "QADays", "InQASince"):
                         if _nc not in _ah_ci:
                             _ah.cell(row=1, column=len(_ah_hdr)+1).value = _nc
                             _ah_ci[_nc] = len(_ah_hdr); _ah_hdr.append(_nc)
@@ -28226,6 +28244,7 @@ def create_flask_app():
                             ("PRs", prs_val), ("PR Status", pr_stat_val), ("Date Added", _today_str),
                             ("Carried Over", "Yes" if prev_found else None),
                             ("Sprints", (prev_n + 1) if prev_found else 1),
+                            ("Origin Sprint", prev_org if prev_found else None),
                             ("QADays", prev_qd), ("InQASince", prev_qs if _is_testing(status) else None),
                             ("DevDays", carry_dd), ("InDevSince", carry_ids),
                         ]:
@@ -28263,6 +28282,7 @@ def create_flask_app():
                     row_vals[co_i]  = "Yes" if prev_found else None
                     row_vals[ids_i] = carry_ids
                     row_vals[sc_i]  = (prev_n + 1) if prev_found else 1
+                    row_vals[og_i]  = prev_org if prev_found else None
                     if prev_qd is not None: row_vals[qd_i] = prev_qd
                     if _is_testing(status):
                         if qa_i is not None: row_vals[qa_i] = assignee
@@ -28879,8 +28899,8 @@ def create_flask_app():
                 except Exception:
                     pass
             # Ensure the DevDays / QADays / carry-over helper columns exist on Sprint Board and Adhoc Task
-            for _en_sheet, _en_need in (("Sprint Board", ["DevDays", "InDevSince", "QADays", "InQASince", "Carried Over", "Sprints"]),
-                                        ("Adhoc Task",   ["DevDays", "QADays", "InQASince", "Carried Over", "Sprints"])):
+            for _en_sheet, _en_need in (("Sprint Board", ["DevDays", "InDevSince", "QADays", "InQASince", "Carried Over", "Sprints", "Origin Sprint"]),
+                                        ("Adhoc Task",   ["DevDays", "QADays", "InQASince", "Carried Over", "Sprints", "Origin Sprint"])):
                 _en_cols = sheets.get(_en_sheet, {}).get("columns", [])
                 if not _en_cols or all(c in _en_cols for c in _en_need):
                     continue

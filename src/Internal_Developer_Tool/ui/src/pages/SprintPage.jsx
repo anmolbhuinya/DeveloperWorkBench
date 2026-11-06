@@ -4,8 +4,8 @@ import DatePicker from '../components/DatePicker'
 
 const API = '/api/project-management/sprint'
 const DATA_SHEETS = ['Sprint Board', 'Adhoc Task', 'PR Reviews']
-const MAIN_COLS   = ['JIRA ID', 'Story', 'Issue Type', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays', 'Sprints']
-const COL_WIDTHS  = { 'Sprints': 60, 'JIRA ID': 110, 'Story': 320, 'Issue Type': 100, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
+const MAIN_COLS   = ['JIRA ID', 'Story', 'Issue Type', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays', 'Sprints', 'Origin Sprint']
+const COL_WIDTHS  = { 'Sprints': 60, 'Origin Sprint': 110, 'JIRA ID': 110, 'Story': 320, 'Issue Type': 100, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
 const DETAIL_COLS     = ['Notes', 'Commit Job', 'IT Job', 'Code Freeze Date', 'Releasae Date', 'Deployment Date', 'Deployed']
 const COL_LABEL_OVERRIDE = { 'Deployed': 'Deployment Date' }
 
@@ -987,7 +987,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
   const carriedIdx = cols.indexOf('Carried Over')
   const isCarried  = r => carriedIdx >= 0 && String(r[carriedIdx] ?? '').trim().toLowerCase() === 'yes'
   const sortedRows = [...filteredRows].sort((a, b) =>
-    (isCarried(b[0]) - isCarried(a[0])) ||
+    (isCarried(a[0]) - isCarried(b[0])) ||
     (statusRank(statusColIdx >= 0 ? (a[0][statusColIdx] ?? '') : '') -
      statusRank(statusColIdx >= 0 ? (b[0][statusColIdx] ?? '') : ''))
   )
@@ -2067,7 +2067,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                 const rowJira     = jiraCol >= 0 ? String(row[jiraCol] || '').trim().toUpperCase() : ''
                 const isHighlighted = highlightJira && rowJira === highlightJira
                 const carried   = isCarried(row)
-                const segHead   = di === 0 ? (carried ? 'prev' : 'curr') : (!carried && isCarried(sortedRows[di - 1][0]) ? 'curr' : null)
+                const segHead   = di === 0 ? (carried ? 'prev' : 'curr') : (carried && !isCarried(sortedRows[di - 1][0]) ? 'prev' : null)
                 const segCount  = segHead === 'prev' ? prevCount : (filteredRows.length - prevCount)
                 const segSP     = segHead === 'prev' ? prevSP : (totalSP - prevSP)
                 return (
@@ -2076,7 +2076,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                       <tr key={`seg_${segHead}`}>
                         <td colSpan={mainIndices.length + 2} style={{ padding: '5px 10px', background: segHead === 'prev' ? 'rgba(230,81,0,0.08)' : 'rgba(21,101,192,0.07)', borderBottom: '1px solid var(--border)' }}>
                           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: segHead === 'prev' ? '#e65100' : '#1565c0' }}>
-                            {segHead === 'prev' ? 'Previous Sprint Stories' : 'Current Sprint Stories'} ({segCount} · {fmtSP(segSP)} SP)
+                            {segHead === 'prev' ? 'Carried Over Stories (from previous sprints)' : 'Current Sprint Stories'} ({segCount} · {fmtSP(segSP)} SP)
                           </span>
                         </td>
                       </tr>
