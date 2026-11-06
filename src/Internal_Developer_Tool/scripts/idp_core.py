@@ -18026,8 +18026,41 @@ def create_flask_app():
     def _appmap_base():
         return WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "AppMap"
 
+    def _appmap_lib():
+        """Agent jars live with the installed software: Installed_Softwares\AppMap\lib (old DeveloperWorkBench\Setup\... location is migrated)."""
+        lib = INSTALLED_SOFTWARES / "AppMap" / "lib"
+        old = _appmap_base() / "lib"
+        try:
+            if old.is_dir():
+                lib.mkdir(parents=True, exist_ok=True)
+                for f in list(old.iterdir()):
+                    dst = lib / f.name
+                    if dst.exists():
+                        f.unlink() if f.is_file() else shutil.rmtree(f, ignore_errors=True)
+                    else:
+                        shutil.move(str(f), str(dst))
+                try: old.rmdir()
+                except OSError: pass
+        except Exception:
+            pass
+        return lib
+
     def _appmap_home(app_name):
-        return _appmap_base() / app_name.title()
+        """Recordings (tmp\appmap) live under DWB_Projects\Setup\Dev_Softwares\AppMap\<App>."""
+        return PROJECTS_HOME / "Setup" / "Dev_Softwares" / "AppMap" / app_name.title()
+
+    def _appmap_cfgdir(app_name):
+        """appmap.yml + settings.json live under DeveloperWorkBench\Setup\Dev_Softwares\AppMap\<App> (files moved here from the DWB_Projects folder)."""
+        d = _appmap_base() / app_name.title()
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            for n in ("appmap.yml", "settings.json"):
+                src, dst = _appmap_home(app_name) / n, d / n
+                if src.is_file() and not dst.exists():
+                    shutil.move(str(src), str(dst))
+        except Exception:
+            pass
+        return d
 
     def _appmap_default_yml(app_name, pom_text=""):
         import re as _re_y
@@ -18047,7 +18080,7 @@ def create_flask_app():
 
     def _appmap_yml_path(app_name):
         """Create appmap.yml (default content) under Setup\\Dev_Softwares\\AppMap\\<App> when missing."""
-        home = _appmap_home(app_name)
+        home = _appmap_cfgdir(app_name)
         home.mkdir(parents=True, exist_ok=True)
         p = home / "appmap.yml"
         if not p.exists():
@@ -18064,7 +18097,7 @@ def create_flask_app():
         import json as _js_as
         d = {"enabled": False, "record_values": False}
         try:
-            d.update({k: bool(v) for k, v in _js_as.loads((_appmap_home(app_name) / "settings.json").read_text(encoding="utf-8")).items() if k in d})
+            d.update({k: bool(v) for k, v in _js_as.loads((_appmap_cfgdir(app_name) / "settings.json").read_text(encoding="utf-8")).items() if k in d})
         except Exception:
             pass
         return d
@@ -18079,7 +18112,7 @@ def create_flask_app():
             b = request.get_json(silent=True) or {}
             for k in d:
                 if k in b: d[k] = bool(b[k])
-            h = _appmap_home(app_name); h.mkdir(parents=True, exist_ok=True)
+            h = _appmap_cfgdir(app_name)
             (h / "settings.json").write_text(_js_as.dumps(d), encoding="utf-8")
         return jsonify({"ok": True, **d})
 
@@ -18094,7 +18127,7 @@ def create_flask_app():
                 return jsonify({"ok": False, "error": "appmap.yml cannot be empty"})
             p.write_text(txt.replace("\r\n", "\n"), encoding="utf-8")
         return jsonify({"ok": True, "path": str(p), "content": p.read_text(encoding="utf-8", errors="replace"),
-                        "output": str(_appmap_home(app_name) / "tmp" / "appmap"), "lib": str(_appmap_base() / "lib")})
+                        "output": str(_appmap_home(app_name) / "tmp" / "appmap"), "lib": str(_appmap_lib())})
 
     def _appmap_dirs(srcdir, app_name=None):
         root = Path(srcdir)
@@ -33350,8 +33383,8 @@ def create_flask_app():
                 import re as _re_am, urllib.request as _ur_am
                 _mv = _re_am.search(r"appmap-agent</artifactId>\s*<version>([^<]+)</version>", _ptxt)
                 _ver = _mv.group(1).strip() if _mv else _APPMAP_FALLBACK_VERSION
-                _have = sorted((_appmap_base() / "lib").glob("appmap-agent-*.jar"), key=lambda q: q.stat().st_mtime) if (_appmap_base() / "lib").is_dir() else []
-                _jar = _have[-1] if _have else _appmap_base() / "lib" / f"appmap-agent-{_ver}.jar"
+                _have = sorted((_appmap_lib()).glob("appmap-agent-*.jar"), key=lambda q: q.stat().st_mtime) if (_appmap_lib()).is_dir() else []
+                _jar = _have[-1] if _have else _appmap_lib() / f"appmap-agent-{_ver}.jar"
                 if not _jar.exists() or _jar.stat().st_size < 100000:
                     _jar.parent.mkdir(parents=True, exist_ok=True)
                     _ur_am.urlretrieve(f"https://repo1.maven.org/maven2/com/appland/appmap-agent/{_ver}/appmap-agent-{_ver}.jar", str(_jar))
@@ -35519,7 +35552,7 @@ def create_flask_app():
         base = INSTALLED_SOFTWARES / d["sub"]
         here = base.is_dir() and any(base.iterdir())
         if d["key"] == "appmap":
-            base = _appmap_base() / "lib"
+            base = _appmap_lib()
             here = base.is_dir() and any(base.glob("appmap-agent-*.jar"))
         there = ""
         if not here:
@@ -35585,7 +35618,7 @@ def create_flask_app():
             def _run_appmap():
                 import urllib.request as _ur
                 try:
-                    lib = _appmap_base() / "lib"; lib.mkdir(parents=True, exist_ok=True)
+                    lib = _appmap_lib(); lib.mkdir(parents=True, exist_ok=True)
                     job["output"] += "Looking up the latest AppMap agent on Maven Central ...\n"
                     ver = _maven_latest(d["zip_meta"], "") or d["zip_fallback_version"]
                     url = f"https://repo1.maven.org/maven2/com/appland/appmap-agent/{ver}/appmap-agent-{ver}.jar"
@@ -35680,7 +35713,7 @@ def create_flask_app():
         if not d:
             return jsonify({"ok": False, "error": "Unknown software"}), 400
         if d["key"] == "appmap":
-            lib = _appmap_base() / "lib"
+            lib = _appmap_lib()
             jars = list(lib.glob("*.jar")) if lib.is_dir() else []
             if not jars:
                 return jsonify({"ok": False, "error": "AppMap agent is not installed"}), 400

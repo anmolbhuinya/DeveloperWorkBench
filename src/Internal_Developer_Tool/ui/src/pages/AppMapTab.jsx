@@ -377,7 +377,7 @@ export default function AppMapTab({ appName, displayName }) {
       )}
       {maps.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, padding: '8px 12px', border: '1px dashed var(--border)', borderRadius: 6, marginBottom: 12 }}>
-          No <code>*.appmap.json</code> recordings found under <code>Setup\Dev_Softwares\AppMap\&lt;App&gt;\tmp\appmap</code>.
+          No <code>*.appmap.json</code> recordings found under <code>DWB_Projects\Setup\Dev_Softwares\AppMap\&lt;App&gt;\tmp\appmap</code>.
           Install the agent in Setup → Dev Softwares → AppMap, tick Enable recording, then run a test from the IT tab (the agent is attached automatically), then press Refresh.
         </div>
       )}
