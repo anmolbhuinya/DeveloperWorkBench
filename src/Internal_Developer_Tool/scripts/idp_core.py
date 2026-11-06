@@ -18023,11 +18023,86 @@ def create_flask_app():
         # drop a <dependencies> element we created that is now empty
         return _re.sub(r"[ \t]*<dependencies>\s*</dependencies>[ \t]*\n?", "", out)
 
-    def _appmap_dirs(srcdir):
+    def _appmap_base():
+        return WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "AppMap"
+
+    def _appmap_home(app_name):
+        return _appmap_base() / app_name.title()
+
+    def _appmap_default_yml(app_name, pom_text=""):
+        import re as _re_y
+        _g = _re_y.search(r"<groupId>([^<]+)</groupId>", _re_y.sub(r"<parent>.*?</parent>", "", pom_text, flags=_re_y.S))
+        _pg = _re_y.search(r"<parent>.*?<groupId>([^<]+)</groupId>", pom_text, _re_y.S)
+        pk = []
+        for x in (_g.group(1).strip() if _g else "", _pg.group(1).strip() if _pg else "", "com.healthedge", "com.healthrules"):
+            if x and x not in pk: pk.append(x)
+        pk = [x for x in pk if not any(x != y and x.startswith(y + ".") for y in pk)]   # drop sub-packages of another entry
+        _ex = ["com.healthedge.iom", "com.healthedge.management", "com.healthedge.tools", "com.healthedge.hicl", "com.healthedge.test", "com.healthedge.cvc", "com.healthedge.validation", "com.healthedge.util", "com.healthedge.dbm", "com.healthedge.query", "com.healthedge.connector"]   # IOM metadata + config client are very hot and slow the run badly
+        out = f"name: {app_name}\npackages:\n"
+        for x in pk:
+            out += f"- path: {x}\n"
+            if x == "com.healthedge":
+                out += "  exclude:\n" + "".join(f"  - {e}\n" for e in _ex)
+        return out
+
+    def _appmap_yml_path(app_name):
+        """Create appmap.yml (default content) under Setup\\Dev_Softwares\\AppMap\\<App> when missing."""
+        home = _appmap_home(app_name)
+        home.mkdir(parents=True, exist_ok=True)
+        p = home / "appmap.yml"
+        if not p.exists():
+            sd = _appmap_srcdir(app_name)
+            pt = ""
+            try:
+                pt = (Path(sd) / "pom.xml").read_text(encoding="utf-8", errors="replace") if sd else ""
+            except Exception:
+                pass
+            p.write_text(_appmap_default_yml(app_name, pt), encoding="utf-8")
+        return p
+
+    def _appmap_settings(app_name):
+        import json as _js_as
+        d = {"enabled": False, "record_values": False}
+        try:
+            d.update({k: bool(v) for k, v in _js_as.loads((_appmap_home(app_name) / "settings.json").read_text(encoding="utf-8")).items() if k in d})
+        except Exception:
+            pass
+        return d
+
+    @app.route("/api/local-app/<app_name>/appmap/settings", methods=["GET", "POST"])
+    def api_appmap_settings(app_name):
+        import json as _js_as
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        d = _appmap_settings(app_name)
+        if request.method == "POST":
+            b = request.get_json(silent=True) or {}
+            for k in d:
+                if k in b: d[k] = bool(b[k])
+            h = _appmap_home(app_name); h.mkdir(parents=True, exist_ok=True)
+            (h / "settings.json").write_text(_js_as.dumps(d), encoding="utf-8")
+        return jsonify({"ok": True, **d})
+
+    @app.route("/api/local-app/<app_name>/appmap/config", methods=["GET", "POST"])
+    def api_appmap_config(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        p = _appmap_yml_path(app_name)
+        if request.method == "POST":
+            txt = (request.get_json(silent=True) or {}).get("content")
+            if not isinstance(txt, str) or not txt.strip():
+                return jsonify({"ok": False, "error": "appmap.yml cannot be empty"})
+            p.write_text(txt.replace("\r\n", "\n"), encoding="utf-8")
+        return jsonify({"ok": True, "path": str(p), "content": p.read_text(encoding="utf-8", errors="replace"),
+                        "output": str(_appmap_home(app_name) / "tmp" / "appmap"), "lib": str(_appmap_base() / "lib")})
+
+    def _appmap_dirs(srcdir, app_name=None):
         root = Path(srcdir)
+        _own = (_appmap_home(app_name) / "tmp" / "appmap") if app_name else None
         ds = [root / "tmp" / "appmap", root / "target" / "appmap", root / "build" / "appmap"]
         for pat in ("*/tmp/appmap", "*/target/appmap"):
             ds += list(root.glob(pat))
+        if _own: ds.insert(0, _own)
         return [d for d in ds if d.is_dir()]
 
     @app.route("/api/local-app/<app_name>/appmap", methods=["GET"])
@@ -18040,31 +18115,8 @@ def create_flask_app():
             return jsonify({"ok": True, "available": False, "enabled": False, "srcdir": srcdir or "",
                             "error": "pom.xml not found in the app source directory"})
         text = pom.read_text(encoding="utf-8", errors="replace")
-        maps = sum(len(list(d.glob("*.appmap.json"))) for d in _appmap_dirs(srcdir))
+        maps = sum(len(list(d.rglob("*.appmap.json"))) for d in _appmap_dirs(srcdir, app_name))
         return jsonify({"ok": True, "available": True, "enabled": _appmap_enabled(text), "srcdir": str(srcdir), "maps": maps})
-
-    @app.route("/api/local-app/<app_name>/appmap/toggle", methods=["POST"])
-    def api_appmap_toggle(app_name):
-        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
-            return jsonify({"ok": False, "error": "Unknown app"}), 404
-        srcdir = _appmap_srcdir(app_name)
-        pom = Path(srcdir) / "pom.xml" if srcdir else None
-        if not pom or not pom.exists():
-            return jsonify({"ok": False, "error": "pom.xml not found in the app source directory"})
-        want = (request.get_json(silent=True) or {}).get("enabled")
-        raw = pom.read_bytes()
-        text = raw.decode("utf-8", errors="replace")
-        nl = "\r\n" if "\r\n" in text else "\n"
-        text = text.replace("\r\n", "\n")
-        on = _appmap_enabled(text)
-        want = (not on) if want is None else bool(want)
-        if want and not on:
-            ver = _maven_latest("https://repo1.maven.org/maven2/com/appland/appmap-agent/maven-metadata.xml", _APPMAP_FALLBACK_VERSION) or _APPMAP_FALLBACK_VERSION
-            text = _appmap_add(text, ver)
-        elif not want and on:
-            text = _appmap_remove(text)
-        pom.write_bytes(text.replace("\n", nl).encode("utf-8"))
-        return jsonify({"ok": True, "enabled": _appmap_enabled(text)})
 
     def _appmap_parse(path, srcdir):
         import json as _json, re as _re
@@ -18189,14 +18241,48 @@ def create_flask_app():
         if not srcdir or not Path(srcdir).exists():
             return jsonify({"ok": False, "error": "App source directory not found"})
         files = []
-        for d in _appmap_dirs(srcdir):
-            for f in d.glob("*.appmap.json"):
+        _home = _appmap_home(app_name)
+        def _rel(f):
+            try: return "dwb:" + str(f.relative_to(_home)).replace("\\", "/")
+            except ValueError: return str(f.relative_to(srcdir)).replace("\\", "/")
+        for d in _appmap_dirs(srcdir, app_name):
+            for f in d.rglob("*.appmap.json"):
                 files.append((f.stat().st_mtime, f))
         files.sort(key=lambda x: -x[0])
         import time as _t
         return jsonify({"ok": True, "srcdir": str(srcdir), "maps": [
-            {"file": str(f.relative_to(srcdir)).replace("\\", "/"), "name": f.name.replace(".appmap.json", ""), "size": f.stat().st_size,
+            {"file": _rel(f), "name": f.name.replace(".appmap.json", ""), "size": f.stat().st_size,
              "modified": _t.strftime("%Y-%m-%d %H:%M", _t.localtime(m))} for m, f in files[:300]]})
+
+    @app.route("/api/local-app/<app_name>/appmap/delete", methods=["POST"])
+    def api_appmap_delete(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        srcdir = _appmap_srcdir(app_name)
+        if not srcdir:
+            return jsonify({"ok": False, "error": "App source directory not found"})
+        body = request.get_json(silent=True) or {}
+        _home = _appmap_home(app_name)
+        targets = []
+        if body.get("all"):
+            for d in _appmap_dirs(srcdir, app_name):
+                targets += list(d.rglob("*.appmap.json"))
+        else:
+            rel = str(body.get("file") or "")
+            if not rel.endswith(".appmap.json"):
+                return jsonify({"ok": False, "error": "Invalid file"}), 400
+            base = Path(srcdir)
+            if rel.startswith("dwb:"):
+                base = _home; rel = rel[4:]
+            full = (base / rel).resolve()
+            if base.resolve() not in full.parents or not full.is_file():
+                return jsonify({"ok": False, "error": "File not found"}), 404
+            targets = [full]
+        n = 0
+        for f in targets:
+            try: f.unlink(); n += 1
+            except Exception: pass
+        return jsonify({"ok": True, "deleted": n})
 
     @app.route("/api/local-app/<app_name>/appmap/map", methods=["GET"])
     def api_appmap_map(app_name):
@@ -18206,9 +18292,15 @@ def create_flask_app():
         rel = request.args.get("file", "")
         if not srcdir or not rel.endswith(".appmap.json"):
             return jsonify({"ok": False, "error": "Invalid file"}), 400
-        full = (Path(srcdir) / rel).resolve()
-        if Path(srcdir).resolve() not in full.parents or not full.is_file():
+        _base = Path(srcdir)
+        if rel.startswith("dwb:"):
+            _base = _appmap_home(app_name); rel = rel[4:]
+        full = (_base / rel).resolve()
+        if _base.resolve() not in full.parents or not full.is_file():
             return jsonify({"ok": False, "error": "File not found"}), 404
+        _mb = full.stat().st_size / 1048576
+        if _mb > 250:
+            return jsonify({"ok": False, "error": "This recording is %d MB, too large to visualise. Narrow 'packages:' / add 'exclude:' entries in appmap.yml (AppMap tab), delete this file and re-run the test." % _mb})
         try:
             return jsonify({"ok": True, **_appmap_parse(full, srcdir)})
         except Exception as e:
@@ -33248,6 +33340,30 @@ def create_flask_app():
         ps_cmd = (f"Set-Location '{mdir}'; mvn -B test '\"-Dtest={target}\"' '\"-Dtest.prop.file={props_path}\"' "
                   "'\"-DfailIfNoTests=false\"' '\"-Dsurefire.failIfNoSpecifiedTests=false\"'")
         header = (f"$ cd {mdir}\n$ mvn -B test -Dtest={target} -Dtest.prop.file={props_path}\n\n")
+        # AppMap recording: the pom dependency alone records nothing, the JVM needs the agent + appmap.yml
+        try:
+            _sd = _it_srcdir(app_name)
+            _pm = Path(_sd) / "pom.xml" if _sd else None
+            _ptxt = _pm.read_text(encoding="utf-8", errors="replace") if _pm and _pm.exists() else ""
+            _amset = _appmap_settings(app_name)
+            if _amset["enabled"]:
+                import re as _re_am, urllib.request as _ur_am
+                _mv = _re_am.search(r"appmap-agent</artifactId>\s*<version>([^<]+)</version>", _ptxt)
+                _ver = _mv.group(1).strip() if _mv else _APPMAP_FALLBACK_VERSION
+                _have = sorted((_appmap_base() / "lib").glob("appmap-agent-*.jar"), key=lambda q: q.stat().st_mtime) if (_appmap_base() / "lib").is_dir() else []
+                _jar = _have[-1] if _have else _appmap_base() / "lib" / f"appmap-agent-{_ver}.jar"
+                if not _jar.exists() or _jar.stat().st_size < 100000:
+                    _jar.parent.mkdir(parents=True, exist_ok=True)
+                    _ur_am.urlretrieve(f"https://repo1.maven.org/maven2/com/appland/appmap-agent/{_ver}/appmap-agent-{_ver}.jar", str(_jar))
+                _cfg = _appmap_yml_path(app_name)
+                _out = _appmap_home(app_name) / "tmp" / "appmap"
+                _out.mkdir(parents=True, exist_ok=True)
+                _opts = f"-javaagent:{_jar} -Dappmap.config.file={_cfg} -Dappmap.output.directory={_out}" + ("" if _amset["record_values"] else " -Dappmap.event.disableValue=true")
+                # JaCoCo (pom argLine) and AppMap both rewrite bytecode; JaCoCo fails on the AppMap-instrumented classes
+                ps_cmd = f"$env:JAVA_TOOL_OPTIONS='{_opts}'; " + ps_cmd + " '\"-Djacoco.skip=true\"'"
+                header += f"AppMap recording on -> {_out} (JaCoCo skipped for this run)\n\n"
+        except Exception as _e_am:
+            header += f"AppMap agent not attached: {_e_am}\n\n"
         jid = _spawn_job("it", ps_cmd, header, f"it/{scope}/{app_name}", app_name,
                          f"running {target}", [], str(mdir))
         return jsonify({"ok": True, "job_id": jid})
@@ -35388,8 +35504,9 @@ def create_flask_app():
         {"key": "jmc", "title": "Java Mission Control", "sub": "JMC", "winget": "",
          "desc": "JFR flight recording analysis and JVM monitoring (downloaded from Adoptium; needs Java)", "exe": ["jmc.exe"], "known": [],
          "zip": "https://github.com/adoptium/jmc-build/releases/download/9.1.2/org.openjdk.jmc-9.1.2-win32.win32.x86_64.zip"},
-        {"key": "appmap", "title": "AppMap", "sub": "AppMap", "winget": "", "link": "https://appmap.io/docs/get-started-with-appmap/",
-         "desc": "Runtime code analysis - installed as an IDE plugin (IntelliJ / VS Code), not a standalone program", "exe": [], "known": []},
+        {"key": "appmap", "title": "AppMap", "sub": "AppMap", "winget": "",
+         "desc": "Java agent used to record local IT runs (installed under Setup\Dev_Softwares\AppMap\lib)", "exe": [], "known": [],
+         "zip_meta": "https://repo1.maven.org/maven2/com/appland/appmap-agent/maven-metadata.xml", "zip_fallback_version": "1.30.2"},
         {"key": "gceasy", "title": "GCEasy", "sub": "GCEasy", "winget": "", "link": "https://gceasy.io/",
          "desc": "Online garbage collection log analyzer - web service, nothing to install", "exe": [], "known": []},
     ]
@@ -35401,6 +35518,9 @@ def create_flask_app():
         import glob as _glob
         base = INSTALLED_SOFTWARES / d["sub"]
         here = base.is_dir() and any(base.iterdir())
+        if d["key"] == "appmap":
+            base = _appmap_base() / "lib"
+            here = base.is_dir() and any(base.glob("appmap-agent-*.jar"))
         there = ""
         if not here:
             for pat in d["known"]:
@@ -35414,6 +35534,10 @@ def create_flask_app():
             for j in sorted((base / "lib").glob("com.buschmais.jqassistant.cli-application-*.jar")):
                 m = _rev.search(r"application-(.+)\.jar$", j.name)
                 ver = m.group(1) if m else ver
+        if here and d["key"] == "appmap":
+            import re as _rea
+            _vs = [m.group(1) for j in base.glob("appmap-agent-*.jar") for m in [_rea.search(r"appmap-agent-(.+)\.jar$", j.name)] if m]
+            ver = max(_vs, key=lambda v: [int(x) if x.isdigit() else 0 for x in v.split(".")]) if _vs else ""
         latest = ""
         if here and d.get("zip_meta"):
             import time as _tl
@@ -35455,6 +35579,31 @@ def create_flask_app():
         if not d:
             return jsonify({"ok": False, "error": "Unknown software"}), 400
         winget = shutil.which("winget")
+        if d["key"] == "appmap":
+            jid = _uuid.uuid4().hex[:10]
+            job = _vm_jobs[jid] = {"status": "running", "output": ""}
+            def _run_appmap():
+                import urllib.request as _ur
+                try:
+                    lib = _appmap_base() / "lib"; lib.mkdir(parents=True, exist_ok=True)
+                    job["output"] += "Looking up the latest AppMap agent on Maven Central ...\n"
+                    ver = _maven_latest(d["zip_meta"], "") or d["zip_fallback_version"]
+                    url = f"https://repo1.maven.org/maven2/com/appland/appmap-agent/{ver}/appmap-agent-{ver}.jar"
+                    job["output"] += "Version: %s\nDownloading %s\n" % (ver, url)
+                    dst = lib / f"appmap-agent-{ver}.jar"
+                    with _ur.urlopen(url, timeout=180) as r, open(str(dst) + ".part", "wb") as f:
+                        shutil.copyfileobj(r, f)
+                    os.replace(str(dst) + ".part", str(dst))
+                    for old in lib.glob("appmap-agent-*.jar"):
+                        if old != dst: old.unlink()
+                    for old in lib.glob("runtime-*.jar"):
+                        if old.name != f"runtime-{ver}.jar": old.unlink()
+                    job["output"] += "Saved %s\n(the runtime jar is generated next to it by the agent on the first recorded run)\nInstalled AppMap agent version %s\n" % (dst, ver)
+                    job["status"] = "success"
+                except Exception as e:
+                    job["output"] += str(e); job["status"] = "failed"
+            _th.Thread(target=_run_appmap, daemon=True).start()
+            return jsonify({"ok": True, "key": jid})
         if not winget and not d.get("zip"):
             return jsonify({"ok": False, "error": "winget is not available on this machine (install App Installer from the Microsoft Store)"}), 400
         target = INSTALLED_SOFTWARES / d["sub"]
@@ -35530,6 +35679,18 @@ def create_flask_app():
         d = next((x for x in _DEV_SOFTWARES if x["key"] == key), None)
         if not d:
             return jsonify({"ok": False, "error": "Unknown software"}), 400
+        if d["key"] == "appmap":
+            lib = _appmap_base() / "lib"
+            jars = list(lib.glob("*.jar")) if lib.is_dir() else []
+            if not jars:
+                return jsonify({"ok": False, "error": "AppMap agent is not installed"}), 400
+            jid = _uuid.uuid4().hex[:10]
+            job = _vm_jobs[jid] = {"status": "success", "output": ""}
+            for j in jars:
+                try: j.unlink(); job["output"] += "Removed %s\n" % j
+                except Exception as e: job["output"] += "Could not remove %s: %s\n" % (j, e); job["status"] = "failed"
+            job["output"] += "Uninstalled AppMap agent\n" if job["status"] == "success" else ""
+            return jsonify({"ok": True, "key": jid})
         target = INSTALLED_SOFTWARES / d["sub"]
         if not (target.is_dir() and any(target.iterdir())):
             return jsonify({"ok": False, "error": "Not installed in the Installed_Softwares folder"}), 400

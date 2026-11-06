@@ -99,7 +99,7 @@ export default function SetupDevSoftwaresPage() {
               <a className="btn btn-primary" href={it.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ textDecoration: 'none', display: 'inline-block' }}>Open ↗</a>
             )}
             {!it.link && !it.installed_here && (
-              <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant')} onClick={e => { e.stopPropagation(); install(it) }}>
+              <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant' && it.key !== 'appmap')} onClick={e => { e.stopPropagation(); install(it) }}>
                 {running(it.key) ? 'Installing…' : 'Install'}
               </button>
             )}

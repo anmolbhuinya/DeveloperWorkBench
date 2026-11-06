@@ -275,27 +275,65 @@ function Http({ m }) {
   return <div style={{ maxHeight: 560, overflow: 'auto' }}>{tbl('Incoming requests (server)', s, 'path')}{tbl('Outgoing requests (client)', c, 'url')}</div>
 }
 
+// Loaded data survives leaving and re-entering the tab (kept per app until Refresh)
+const CACHE = {}
+
 export default function AppMapTab({ appName, displayName }) {
-  const [status, setStatus] = useState(null)
-  const [maps, setMaps] = useState([])
-  const [file, setFile] = useState('')
-  const [m, setM] = useState(null)
-  const [view, setView] = useState('deps')
+  const C = CACHE[appName] || (CACHE[appName] = { mc: {} })
+  const [status, setStatus] = useState(C.status ?? null)
+  const [maps, setMaps] = useState(C.maps ?? [])
+  const [file, setFile] = useState(C.file ?? '')
+  const [m, setM] = useState(C.m ?? null)
+  const [view, setView] = useState(C.view ?? 'deps')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
+  const [cfg, setCfg] = useState(C.cfg ?? null)       // { path, content, output, lib }
+  const [cfgText, setCfgText] = useState(C.cfg?.content ?? '')
+  const [amSet, setAmSet] = useState(C.amSet ?? { enabled: false, record_values: false })
+  useEffect(() => { Object.assign(C, { status, maps, file, m, view, cfg, amSet }) })
+  useEffect(() => {
+    if (C.amSet) return
+    fetch(`/api/local-app/${appName}/appmap/settings`).then(r => r.json()).then(d => { if (d.ok) setAmSet({ enabled: d.enabled, record_values: d.record_values }) }).catch(() => {})
+  }, [appName])
+  const saveSet = (patch) => {
+    const n = { ...amSet, ...patch }; setAmSet(n)
+    fetch(`/api/local-app/${appName}/appmap/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(n) }).catch(() => {})
+  }
+  const [cfgOpen, setCfgOpen] = useState(false)
+  const [cfgMsg, setCfgMsg] = useState('')
+  useEffect(() => {
+    if (C.cfg) return
+    fetch(`/api/local-app/${appName}/appmap/config`).then(r => r.json())
+      .then(d => { if (d.ok) { setCfg(d); setCfgText(d.content) } }).catch(() => {})
+  }, [appName])
+  const delMaps = (all) => {
+    const x = maps.find(q => q.file === file)
+    if (!window.confirm(all ? `Delete all ${maps.length} recordings?` : `Delete recording ${x?.name || file}?`)) return
+    fetch(`/api/local-app/${appName}/appmap/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(all ? { all: true } : { file }) })
+      .then(r => r.json()).then(d => { if (!d.ok) setErr(d.error || 'Delete failed'); setFile(''); setM(null); loadList() })
+      .catch(() => setErr('Request failed'))
+  }
+  const saveCfg = () => {
+    setCfgMsg('Saving…')
+    fetch(`/api/local-app/${appName}/appmap/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: cfgText }) })
+      .then(r => r.json()).then(d => { if (d.ok) { setCfg(d); setCfgText(d.content); setCfgMsg('Saved') } else setCfgMsg(d.error || 'Failed') })
+      .catch(() => setCfgMsg('Request failed'))
+  }
 
   const loadList = () => {
+    C.mc = {}
     fetch(`/api/local-app/${appName}/appmap`).then(r => r.json()).then(setStatus).catch(() => {})
     fetch(`/api/local-app/${appName}/appmap/maps`).then(r => r.json()).then(d => {
-      if (d.ok) { setMaps(d.maps); if (!file && d.maps[0]) setFile(d.maps[0].file) } else setErr(d.error || '')
+      if (d.ok) { setMaps(d.maps); setFile(f => (d.maps.some(x => x.file === f) ? f : (d.maps[0]?.file || ''))) } else setErr(d.error || '')
     }).catch(() => setErr('Could not reach server'))
   }
-  useEffect(loadList, [appName])
+  useEffect(() => { if (!C.maps) loadList() }, [appName])
   useEffect(() => {
-    if (!file) { setM(null); return }
+    if (!file) { setM(null); setErr(''); return }
+    if (C.mc[file]) { setM(C.mc[file]); return }
     setLoading(true); setErr('')
     fetch(`/api/local-app/${appName}/appmap/map?file=${encodeURIComponent(file)}`).then(r => r.json())
-      .then(d => { if (d.ok) setM(d); else { setM(null); setErr(d.error || 'Failed') } })
+      .then(d => { if (d.ok) { C.mc[file] = d; setM(d) } else { setM(null); setErr(d.error || 'Failed') } })
       .catch(() => setErr('Could not reach server')).finally(() => setLoading(false))
   }, [file, appName])
 
@@ -303,23 +341,44 @@ export default function AppMapTab({ appName, displayName }) {
     <div className="card">
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 15 }}>🗺️ AppMap — {displayName || appName}</div>
-        {status?.available && (
-          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 12, background: status.enabled ? 'rgba(76,175,80,0.15)' : 'rgba(255,152,0,0.15)', color: status.enabled ? '#2e7d32' : '#e65100' }}>
-            {status.enabled ? '● pom.xml dependency enabled' : '○ AppMap disabled (enable it in Code → Build & Deploy)'}
-          </span>
-        )}
+        <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }} title="Attach the AppMap agent when a test runs from the IT tab">
+          <input type="checkbox" checked={amSet.enabled} onChange={e => saveSet({ enabled: e.target.checked })} /> Enable recording
+        </label>
+        <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: amSet.enabled ? 'pointer' : 'not-allowed', opacity: amSet.enabled ? 1 : 0.5 }} title="Record parameter and return values. Slower, and can fail on objects whose toString() throws">
+          <input type="checkbox" checked={amSet.record_values} disabled={!amSet.enabled} onChange={e => saveSet({ record_values: e.target.checked })} /> Record parameter &amp; return values
+        </label>
         <select value={file} onChange={e => setFile(e.target.value)} style={{ fontSize: 12, padding: '4px 8px', marginLeft: 'auto', maxWidth: 360 }}>
           {maps.length === 0 && <option value="">No recordings found</option>}
-          {maps.map(x => <option key={x.file} value={x.file}>{x.name} · {x.modified}</option>)}
+          {maps.map(x => <option key={x.file} value={x.file}>{x.name} · {x.modified} · {x.size > 1048576 ? Math.round(x.size / 1048576) + ' MB' : Math.round(x.size / 1024) + ' KB'}</option>)}
         </select>
         <button className="btn btn-sm" onClick={loadList}>↻ Refresh</button>
+        <button className="btn btn-sm" onClick={() => delMaps(false)} disabled={!file} title="Delete the selected recording">🗑 Delete</button>
+        <button className="btn btn-sm" onClick={() => delMaps(true)} disabled={maps.length === 0} title="Delete all recordings">🗑 Delete all</button>
       </div>
 
+      {cfg && (
+        <div style={{ marginBottom: 12, fontSize: 12 }}>
+          <button className="btn btn-sm" onClick={() => setCfgOpen(o => !o)}>{cfgOpen ? '▾' : '▸'} appmap.yml configuration</button>
+          <span style={{ marginLeft: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{cfg.path}</span>
+          {cfgOpen && (
+            <div style={{ marginTop: 8 }}>
+              <textarea value={cfgText} onChange={e => setCfgText(e.target.value)} spellCheck={false}
+                style={{ width: '100%', minHeight: 140, fontFamily: 'monospace', fontSize: 12, padding: 8, boxSizing: 'border-box' }} />
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 6 }}>
+                <button className="btn btn-sm btn-primary" onClick={saveCfg} disabled={cfgText === cfg.content}>Save</button>
+                <span style={{ color: 'var(--text-muted)' }}>{cfgMsg}</span>
+              </div>
+              <div style={{ color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.6 }}>
+                Agent jar: <code>{cfg.lib}</code> · Recordings: <code>{cfg.output}</code>. List the packages to record under <code>packages:</code>.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {maps.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, padding: '8px 12px', border: '1px dashed var(--border)', borderRadius: 6, marginBottom: 12 }}>
-          No <code>*.appmap.json</code> recordings found under the app's <code>tmp/appmap</code> or <code>target/appmap</code> folders.
-          Enable AppMap (Code → Build &amp; Deploy), rebuild, then run the app or its tests with the AppMap Java agent
-          (<code>-javaagent:appmap.jar</code>, see appmap.io docs) so recordings are written, then press Refresh.
+          No <code>*.appmap.json</code> recordings found under <code>Setup\Dev_Softwares\AppMap\&lt;App&gt;\tmp\appmap</code>.
+          Install the agent in Setup → Dev Softwares → AppMap, tick Enable recording, then run a test from the IT tab (the agent is attached automatically), then press Refresh.
         </div>
       )}
       {err && <div style={{ color: '#c62828', fontSize: 12, marginBottom: 8 }}>{err}</div>}
