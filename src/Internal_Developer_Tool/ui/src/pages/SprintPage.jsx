@@ -1566,6 +1566,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
         return (
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>Eisenhower Matrix</span>
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{open.length} open task{open.length !== 1 ? 's' : ''} · {done.length} done · urgent = due within 2 days (or marked Urgent)</span>
               <button onClick={() => setTaskFormOpen(o => !o)} style={{ marginLeft: 'auto', fontSize: 12, padding: '5px 12px', background: 'var(--primary, #1565c0)', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer' }}>{taskFormOpen ? 'Cancel' : '+ Add Task'}</button>
               <button onClick={loadTasks} style={{ fontSize: 12, padding: '5px 12px', background: 'none', border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', color: 'var(--text-muted)' }}>↺ Reload</button>
