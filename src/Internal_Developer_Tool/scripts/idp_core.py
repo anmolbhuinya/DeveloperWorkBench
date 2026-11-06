@@ -16821,6 +16821,18 @@ def create_flask_app():
             wb, path = _help_load()
             ws = wb[cfg["sheet"]]
             if request.method == "GET":
+                # One-time: sheets from before "newest first" are oldest-first; reorder them once by created (desc)
+                cws = _help_cfg_sheet(wb)
+                flag = "order_newest_first_" + kind
+                if _help_cfg_get(cws, flag) != "1":
+                    rows_ = [[c.value for c in r] for r in ws.iter_rows(min_row=2, max_col=len(_HELP_COLS)) if r[0].value]
+                    rows_.sort(key=lambda v: str(v[4] or ""), reverse=True)
+                    for ri_, vals_ in enumerate(rows_, start=2):
+                        for ci_, v_ in enumerate(vals_, start=1):
+                            ws.cell(row=ri_, column=ci_).value = v_
+                    _help_cfg_set(cws, flag, "1")
+                    try: _help_save(wb, path)
+                    except PermissionError: pass
                 return jsonify({"ok": True, "items": _help_rows(ws)})
             body  = request.get_json(silent=True) or {}
             title = str(body.get("title", "")).strip()
@@ -16830,7 +16842,9 @@ def create_flask_app():
             item = {"id": _uuid_h.uuid4().hex[:8], "title": title,
                     "description": str(body.get("description", "")).strip(),
                     "status": cfg["statuses"][0], "created": now, "updated": now, "pushed": ""}
-            ws.append([item.get(c, "") for c in _HELP_COLS])
+            ws.insert_rows(2)      # newest first; manual up/down moves still reorder rows
+            for ci_, c_ in enumerate(_HELP_COLS, start=1):
+                ws.cell(row=2, column=ci_).value = item.get(c_, "")
             try:
                 _help_save(wb, path)
             except PermissionError:
