@@ -9,6 +9,7 @@ const VIEWS = [
   { key: 'services', label: 'Service maps' },
   { key: 'code',     label: 'Code-to-runtime navigation' },
   { key: 'sql',      label: 'SQL visualization' },
+  { key: 'sqlx',     label: 'SQL Executions' },
   { key: 'http',     label: 'HTTP flow visualization' },
 ]
 const short = (c) => String(c || '').split('.').pop() || String(c || '')
@@ -166,7 +167,10 @@ function Calls({ m }) {
         <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Call tree <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setOpen(o => !o)}>{open ? 'Collapse to depth 3' : 'Expand all'}</button></div>
         {calls.filter(c => open || c.depth < 3).map(c => (
           <div key={c.id} style={{ paddingLeft: Math.min(c.depth, 30) * 14, ...mono, borderLeft: '1px dotted var(--border)', whiteSpace: 'nowrap' }} title={`${c.path}:${c.line}`}>
-            <span style={{ color: '#1565c0' }}>{short(c.cls)}</span>.{c.method} {c.ms != null && <span style={{ color: 'var(--text-muted)' }}>{c.ms} ms</span>}
+            <span style={{ color: '#1565c0' }}>{short(c.cls)}</span>.{c.method}
+            {c.params?.length > 0 && <span style={{ color: '#6a1b9a' }} title={c.params.join('\n')}>({c.params.join(', ').slice(0, 160)})</span>}
+            {c.ret != null && <span style={{ color: '#2e7d32' }} title={c.ret}> → {c.ret.slice(0, 120)}</span>}
+            {c.ms != null && <span style={{ color: 'var(--text-muted)' }}> {c.ms} ms</span>}
           </div>
         ))}
       </div>
@@ -238,6 +242,8 @@ function CodeNav({ m }) {
   )
 }
 
+const copyText = (txt) => { try { navigator.clipboard.writeText(txt) } catch (e) { /* ignore */ } }
+
 function Sql({ m }) {
   const rows = m.sql || []
   if (!rows.length) return <Empty>No SQL queries were recorded in this map.</Empty>
@@ -245,12 +251,45 @@ function Sql({ m }) {
   return (
     <div style={{ maxHeight: 560, overflow: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr><th style={th}>Statement (literals replaced by ?)</th><th style={th}>DB</th><th style={th}>Count</th><th style={th}>Total ms</th><th style={th}>Max ms</th><th style={{ ...th, width: 160 }}>Time</th></tr></thead>
+        <thead><tr><th style={th}>Statement (literals replaced by ?)<button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => copyText(rows.map(r => r.sql).join('\n\n'))}>Copy all</button></th><th style={th}>DB</th><th style={th}>Count</th><th style={th}>Total ms</th><th style={th}>Max ms</th><th style={{ ...th, width: 160 }}>Time</th></tr></thead>
         <tbody>{rows.map((r, i) => (
-          <tr key={i}><td style={{ ...td, ...mono, wordBreak: 'break-word' }}>{r.sql}</td><td style={td}>{r.db}</td><td style={td}>{r.count}</td><td style={td}>{r.total_ms}</td><td style={td}>{r.max_ms}</td>
+          <tr key={i}><td style={{ ...td, ...mono, wordBreak: 'break-word' }}>{r.sql} <button className="btn btn-sm" onClick={() => copyText(r.sql)}>Copy</button></td><td style={td}>{r.db}</td><td style={td}>{r.count}</td><td style={td}>{r.total_ms}</td><td style={td}>{r.max_ms}</td>
             <td style={td}><div style={{ height: 10, width: `${Math.max(2, r.total_ms / max * 100)}%`, background: '#e65100', borderRadius: 3 }} /></td></tr>))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function SqlExec({ m }) {
+  const runs = m.sql_runs || []
+  const [sel, setSel] = useState(null)
+  if (!runs.length) return <Empty>No SQL queries were recorded in this map.</Empty>
+  const r0 = runs.find(r => r.id === sel)
+  return (
+    <div style={{ maxHeight: 560, overflow: 'auto' }}>
+      <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Executions ({runs.length}) — click one to see the statement as recorded</div>
+      <div style={{ maxHeight: 200, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 8 }}>
+        {runs.map((r, i) => (
+          <div key={r.id} onClick={() => setSel(r.id)} style={{ ...mono, padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', background: sel === r.id ? 'rgba(21,101,192,0.12)' : undefined, borderBottom: '1px solid var(--border)' }}>
+            <span style={{ color: 'var(--text-muted)' }}>#{i + 1} · {r.ms ?? '—'} ms · </span>{r.sql.replace(/\s+/g, ' ')}
+          </div>
+        ))}
+      </div>
+      {r0 && (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+            <b style={{ fontSize: 12, flex: 1 }}>Query · {r0.db} · {r0.ms ?? '—'} ms</b>
+            <button className="btn btn-sm" onClick={() => copyText(r0.sql)}>Copy query</button>
+            <button className="btn btn-sm" onClick={() => copyText(r0.params.join('\n'))} disabled={!r0.params.length}>Copy bind values</button>
+          </div>
+          <pre style={{ ...mono, margin: 0, whiteSpace: 'pre-wrap', maxHeight: 180, overflow: 'auto' }}>{r0.sql}</pre>
+          <div style={{ fontSize: 11, marginTop: 6, color: 'var(--text-muted)' }}>
+            Bind values: {r0.params.length ? r0.params.join(', ') : 'not recorded — the AppMap Java agent only records the statement text, so ? placeholders stay as ?.'}
+            <br />Result set: not recorded by AppMap.
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -405,6 +444,7 @@ export default function AppMapTab({ appName, displayName }) {
           {view === 'services' && <Services m={m} appName={displayName || appName} />}
           {view === 'code'     && <CodeNav m={m} />}
           {view === 'sql'      && <Sql m={m} />}
+          {view === 'sqlx'     && <SqlExec m={m} />}
           {view === 'http'     && <Http m={m} />}
         </>
       )}

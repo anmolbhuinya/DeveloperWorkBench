@@ -18174,13 +18174,16 @@ def create_flask_app():
                 span_by_id[e.get("id")] = spans[-1]
                 cls = e.get("defined_class") or ""
                 rec = {"id": e.get("id"), "cls": cls, "method": e.get("method_id") or "", "path": e.get("path") or "",
-                       "line": e.get("lineno"), "depth": len(st), "parent": st[-1] if st else None, "ms": None}
+                       "line": e.get("lineno"), "depth": len(st), "parent": st[-1] if st else None, "ms": None,
+                       "params": ["%s=%s" % (_pp.get("name") or "arg", str(_pp.get("value"))[:300]) for _pp in (e.get("parameters") or [])][:12],
+                       "ret": None}
                 if e.get("http_server_request"):
                     r = e["http_server_request"]; http_s.append({"id": e["id"], "method": r.get("request_method"), "path": r.get("normalized_path_info") or r.get("path_info"), "status": None, "ms": None})
                 elif e.get("http_client_request"):
                     r = e["http_client_request"]; http_c.append({"id": e["id"], "method": r.get("request_method"), "url": r.get("url"), "status": None, "ms": None})
                 elif e.get("sql_query"):
-                    q = e["sql_query"]; sqls.append({"id": e["id"], "sql": q.get("sql") or "", "db": q.get("database_type") or "", "ms": None})
+                    q = e["sql_query"]; sqls.append({"id": e["id"], "sql": q.get("sql") or "", "db": q.get("database_type") or "", "ms": None,
+                                                     "params": ["%s=%s" % (_pp.get("name") or "arg", str(_pp.get("value"))[:300]) for _pp in (e.get("parameters") or [])]})
                 else:
                     calls.append(rec)
                 st.append(e.get("id"))
@@ -18199,6 +18202,8 @@ def create_flask_app():
                     for r in coll:
                         if r["id"] == cid:
                             r["ms"] = ms
+                            if "ret" in r and isinstance(e.get("return_value"), dict):
+                                _rv = e["return_value"]; r["ret"] = "%s: %s" % ((_rv.get("class") or "").split(".")[-1], str(_rv.get("value"))[:500])
                             if "status" in r and e.get("http_server_response"):
                                 r["status"] = e["http_server_response"].get("status_code", e["http_server_response"].get("status"))
                             if "status" in r and e.get("http_client_response"):
@@ -18237,6 +18242,7 @@ def create_flask_app():
             k = _re.sub(r"\s+", " ", _re.sub(r"'[^']*'|\b\d+\b", "?", q["sql"]).strip())[:300]
             g = grp.setdefault(k, {"sql": k, "db": q["db"], "count": 0, "total_ms": 0.0, "max_ms": 0.0})
             g["count"] += 1; g["total_ms"] = round(g["total_ms"] + (q["ms"] or 0), 3); g["max_ms"] = max(g["max_ms"], q["ms"] or 0)
+        sql_runs = [{"id": q["id"], "sql": q["sql"], "db": q["db"], "ms": q["ms"], "params": q.get("params") or []} for q in sqls[:500]]
         # trace layout: AppMap events carry no timestamps, so children are laid out one after another inside their parent
         nxt, root_off = {}, 0.0
         for s in spans:
@@ -18263,6 +18269,7 @@ def create_flask_app():
             "sequence": seq[:120],
             "functions": sorted(funcs, key=lambda f: -f["calls"])[:1500],
             "sql": sorted(grp.values(), key=lambda g: -g["total_ms"])[:300],
+            "sql_runs": sql_runs,
             "http_server": http_s[:300], "http_client": http_c[:300],
         }
 
