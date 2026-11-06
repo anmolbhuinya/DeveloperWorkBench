@@ -844,7 +844,41 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
         <div style={{ fontSize: 28, lineHeight: 1, flexShrink: 0, marginTop: 2 }}>🔨</div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>Build {displayName || appName} And Deploy</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>Build {displayName || appName} And Deploy</span>
+            {postalEnabled !== null && (
+              <button onClick={togglePostal} disabled={postalToggling || building}
+                style={{
+                  borderRadius: 16, cursor: 'pointer',
+                  padding: '3px 12px', fontSize: 12, fontWeight: 600,
+                  whiteSpace: 'nowrap', textAlign: 'center',
+                  background: postalEnabled ? 'rgba(76,175,80,0.15)' : 'rgba(255,152,0,0.15)',
+                  color: postalEnabled ? '#2e7d32' : '#e65100',
+                  border: `1px solid ${postalEnabled ? 'rgba(76,175,80,0.4)' : 'rgba(255,152,0,0.4)'}`,
+                  opacity: postalToggling ? 0.6 : 1,
+                }}>
+                {postalToggling
+                  ? <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> Toggling…</>
+                  : postalEnabled ? '● Postal Address Enabled' : '○ Postal Address Disabled'}
+              </button>
+            )}
+            {appmap !== null && (
+              <button onClick={toggleAppmap} disabled={appmapBusy || building}
+                title="Adds / removes the com.appland:appmap-agent dependency in pom.xml. Rebuild to apply."
+                style={{
+                  borderRadius: 16, cursor: 'pointer',
+                  padding: '3px 12px', fontSize: 12, fontWeight: 600,
+                  whiteSpace: 'nowrap', textAlign: 'center',
+                  background: appmap ? 'rgba(76,175,80,0.15)' : 'rgba(255,152,0,0.15)',
+                  color: appmap ? '#2e7d32' : '#e65100',
+                  border: `1px solid ${appmap ? 'rgba(76,175,80,0.4)' : 'rgba(255,152,0,0.4)'}`,
+                  opacity: appmapBusy ? 0.6 : 1,
+                }}>
+                {appmapBusy ? 'Updating pom…' : appmap ? '● AppMap Enabled' : '○ AppMap Disabled'}
+              </button>
+            )}
+            {appmapErr && <span style={{ fontSize: 11, color: '#c62828' }}>{appmapErr}</span>}
+          </div>
 
           {buildFlags.length > 0 && (
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -990,38 +1024,6 @@ export function BuildCard({ appName, displayName, branch, onDeployed, buildFlags
               style={{ width: 44, padding: '3px 6px', fontSize: 12, textAlign: 'center',
                 background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)' }} />
           </label>
-          {postalEnabled !== null && (
-            <button onClick={togglePostal} disabled={postalToggling || building}
-              style={{
-                borderRadius: 16, cursor: 'pointer',
-                padding: '4px 12px', fontSize: 12, fontWeight: 600,
-                whiteSpace: 'nowrap', minWidth: 160, textAlign: 'center',
-                background: postalEnabled ? 'rgba(76,175,80,0.15)' : 'rgba(255,152,0,0.15)',
-                color: postalEnabled ? '#2e7d32' : '#e65100',
-                border: `1px solid ${postalEnabled ? 'rgba(76,175,80,0.4)' : 'rgba(255,152,0,0.4)'}`,
-                opacity: postalToggling ? 0.6 : 1,
-              }}>
-              {postalToggling
-                ? <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> Toggling…</>
-                : postalEnabled ? '● Postal Address Enabled' : '○ Postal Address Disabled'}
-            </button>
-          )}
-          {appmap !== null && (
-            <button onClick={toggleAppmap} disabled={appmapBusy || building}
-              title="Adds / removes the com.appland:appmap-agent dependency in pom.xml. Rebuild to apply."
-              style={{
-                borderRadius: 16, cursor: 'pointer',
-                padding: '4px 12px', fontSize: 12, fontWeight: 600,
-                whiteSpace: 'nowrap', minWidth: 160, textAlign: 'center',
-                background: appmap ? 'rgba(76,175,80,0.15)' : 'rgba(255,152,0,0.15)',
-                color: appmap ? '#2e7d32' : '#e65100',
-                border: `1px solid ${appmap ? 'rgba(76,175,80,0.4)' : 'rgba(255,152,0,0.4)'}`,
-                opacity: appmapBusy ? 0.6 : 1,
-              }}>
-              {appmapBusy ? 'Updating pom…' : appmap ? '● AppMap Enabled' : '○ AppMap Disabled'}
-            </button>
-          )}
-          {appmapErr && <div style={{ fontSize: 11, color: '#c62828', maxWidth: 200, textAlign: 'right' }}>{appmapErr}</div>}
           <button className="btn btn-primary btn-sm" onClick={run} disabled={building}>
             {building ? (
               <><span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> {
