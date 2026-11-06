@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-const ICONS = { intellij: '🧠', postman: '📮', soapui: '🧼', fiddler: '🕵️', docker: '🐳', dbeaver: '🗄️', jqassistant: '🔍' }
+const ICONS = { intellij: '🧠', postman: '📮', soapui: '🧼', fiddler: '🕵️', docker: '🐳', dbeaver: '🗄️', jqassistant: '🔍', orange: '🟠', visualvm: '📈', mat: '🧮', jmc: '✈️', appmap: '🗺️', gceasy: '🧹' }
 
 // true when version a is newer than b (dotted numbers)
 const isNewer = (a, b) => {
@@ -75,25 +75,30 @@ export default function SetupDevSoftwaresPage() {
             <div style={{ fontSize: 36, marginBottom: 8 }}>{ICONS[it.key] || '📦'}</div>
             <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{it.title}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>{it.desc}</div>
-            {it.installed_here
+            {it.link
+              ? <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 10 }}>Web / IDE plugin</div>
+              : it.installed_here
               ? <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600 }}>● Installed{it.version ? ` · v${it.version}` : ''}</div>
               : it.installed_elsewhere
                 ? <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600 }}>● Installed elsewhere</div>
                 : <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>○ Not installed</div>}
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', wordBreak: 'break-all', margin: '4px 0 10px' }}>
+            {!it.link && <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', wordBreak: 'break-all', margin: '4px 0 10px' }}>
               {it.installed_elsewhere || it.target}
-            </div>
-            {!it.installed_here && (
+            </div>}
+            {it.link && (
+              <a className="btn btn-primary" href={it.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ textDecoration: 'none', display: 'inline-block' }}>Open ↗</a>
+            )}
+            {!it.link && !it.installed_here && (
               <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant')} onClick={e => { e.stopPropagation(); install(it) }}>
                 {running(it.key) ? 'Installing…' : 'Install'}
               </button>
             )}
-            {it.installed_here && isNewer(it.latest, it.version) && (
+            {!it.link && it.installed_here && isNewer(it.latest, it.version) && (
               <button className="btn btn-primary" style={{ marginRight: 8 }} disabled={running(it.key)} onClick={e => { e.stopPropagation(); install(it) }}>
                 {running(it.key) && jobs[it.key]?.action !== 'uninstall' ? 'Updating…' : `Update to v${it.latest}`}
               </button>
             )}
-            {it.installed_here && (
+            {!it.link && it.installed_here && (
               <button className="btn" disabled={running(it.key)} onClick={e => { e.stopPropagation(); install(it, 'uninstall') }}>
                 {running(it.key) && jobs[it.key]?.action === 'uninstall' ? 'Uninstalling…' : 'Uninstall'}
               </button>

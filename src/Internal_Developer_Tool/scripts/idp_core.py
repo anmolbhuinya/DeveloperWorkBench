@@ -35145,6 +35145,20 @@ def create_flask_app():
          "zip_tpl": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-neo4jv5/{v}/jqassistant-commandline-neo4jv5-{v}-distribution.zip",
          "zip_meta": "https://repo1.maven.org/maven2/com/buschmais/jqassistant/cli/jqassistant-commandline-neo4jv5/maven-metadata.xml",
          "zip_fallback_version": "2.9.1"},
+        {"key": "orange", "title": "Orange Data Mining", "sub": "Orange", "winget": "UniversityOfLjubljana.Orange",
+         "desc": "Visual data mining and machine learning toolbox", "exe": ["Orange.exe"], "known": []},
+        {"key": "visualvm", "title": "VisualVM", "sub": "VisualVM", "winget": "Oracle.VisualVM",
+         "desc": "JVM monitoring, profiling and heap/thread dump analysis", "exe": ["bin/visualvm.exe"], "known": []},
+        {"key": "mat", "title": "Eclipse MAT", "sub": "EclipseMAT", "winget": "",
+         "desc": "Memory Analyzer - Java heap dump analysis (downloaded from eclipse.org; needs Java)", "exe": ["MemoryAnalyzer.exe"], "known": [],
+         "zip": "https://www.eclipse.org/downloads/download.php?file=/mat/1.15.0/rcp/MemoryAnalyzer-1.15.0.20231206-win32.win32.x86_64.zip&r=1"},
+        {"key": "jmc", "title": "Java Mission Control", "sub": "JMC", "winget": "",
+         "desc": "JFR flight recording analysis and JVM monitoring (downloaded from Adoptium; needs Java)", "exe": ["jmc.exe"], "known": [],
+         "zip": "https://github.com/adoptium/jmc-build/releases/download/9.1.2/org.openjdk.jmc-9.1.2-win32.win32.x86_64.zip"},
+        {"key": "appmap", "title": "AppMap", "sub": "AppMap", "winget": "", "link": "https://appmap.io/docs/get-started-with-appmap/",
+         "desc": "Runtime code analysis - installed as an IDE plugin (IntelliJ / VS Code), not a standalone program", "exe": [], "known": []},
+        {"key": "gceasy", "title": "GCEasy", "sub": "GCEasy", "winget": "", "link": "https://gceasy.io/",
+         "desc": "Online garbage collection log analyzer - web service, nothing to install", "exe": [], "known": []},
     ]
 
     # Version managers that can be installed by the Workbench, into Installed_Softwares\<sub>
@@ -35175,7 +35189,7 @@ def create_flask_app():
                 c = _ds_latest_cache[d["key"]] = (_tl.time(), _maven_latest(d["zip_meta"], ""))
             latest = c[1]
         return {"key": d["key"], "title": d["title"], "desc": d["desc"], "winget": d["winget"],
-                "target": str(base), "installed_here": bool(here), "installed_elsewhere": there, "version": ver, "latest": latest}
+                "target": str(base), "installed_here": bool(here), "installed_elsewhere": there, "version": ver, "latest": latest, "link": d.get("link", "")}
 
     _ds_latest_cache = {}
 
