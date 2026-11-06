@@ -30911,7 +30911,21 @@ def create_flask_app():
         """Tasks belong to the sprint they were created in. Untagged (legacy) tasks show only in a current sprint."""
         team = _team_from_sprint_filename(filename or "")
         is_prev = bool(filename) and (SPRINT_DATA / "PreviousSprints" / team / filename).exists() if team else False
-        return [t for t in tasks if (t.get("sprint") == filename) or (not t.get("sprint") and not is_prev)]
+        def _d(f):
+            m = _jre.search(r'_(\d{4}-\d{2}-\d{2})_', f or "")
+            return m.group(1) if m else ""
+        fd = _d(filename)
+        def _vis(t):
+            if not t.get("sprint"):
+                return not is_prev                       # legacy untagged: current sprint only
+            if t["sprint"] == filename:
+                return True
+            cd, xd = _d(t["sprint"]), _d(t.get("closed_sprint"))
+            if not fd or not cd:
+                return False
+            # open tasks carry over from the sprint they were created in; closed ones stop at the sprint they were closed in
+            return fd >= cd and (not t.get("closed_sprint") or (bool(xd) and fd <= xd))
+        return [t for t in tasks if _vis(t)]
 
     @app.route("/api/project-management/sprint/tasks", methods=["GET"])
     def api_tm_tasks():
@@ -30942,7 +30956,14 @@ def create_flask_app():
         t = next((x for x in tasks if x.get("id") == body.get("id")), None)
         if not t:
             return jsonify({"ok": False, "error": "Task not found"})
-        t.update(_task_clean(body)); _tasks_save(path, tasks)
+        t.update(_task_clean(body))
+        if "status" in body:
+            if t.get("status") == "Done":
+                t.setdefault("closed_sprint", body.get("file", ""))
+                if not t["closed_sprint"]: t["closed_sprint"] = body.get("file", "")
+            else:
+                t.pop("closed_sprint", None)         # reopened
+        _tasks_save(path, tasks)
         return jsonify({"ok": True, "tasks": _tasks_for_sprint(tasks, body.get("file", ""))})
 
     @app.route("/api/project-management/sprint/tasks/delete", methods=["POST"])
