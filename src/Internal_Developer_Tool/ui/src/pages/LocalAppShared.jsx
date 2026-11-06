@@ -3868,18 +3868,19 @@ function XmlHighlight({ xml }) {
 
 function RequestBuilder({ svc, op, type, version, apiName, appName, onClose }) {
   const isSoap = type === 'soap'
-  const [url,         setUrl]         = useState(svc.endpoint || '')
-  const [method,      setMethod]      = useState(isSoap ? 'POST' : 'GET')
-  const [authType,    setAuthType]    = useState('none')
-  const [bearerToken, setBearerToken] = useState('')
-  const [basicUser,   setBasicUser]   = useState('')
-  const [basicPass,   setBasicPass]   = useState('')
+  const _k = `rb|${appName}|${version}|${apiName}|${op}|`
+  const [url,         setUrl]         = useKept(_k+'url', svc.endpoint || '')
+  const [method,      setMethod]      = useKept(_k+'method', isSoap ? 'POST' : 'GET')
+  const [authType,    setAuthType]    = useKept(_k+'authType', 'none')
+  const [bearerToken, setBearerToken] = useKept(_k+'bearer', '')
+  const [basicUser,   setBasicUser]   = useKept(_k+'user', '')
+  const [basicPass,   setBasicPass]   = useKept(_k+'pass', '')
   const [showPass,    setShowPass]    = useState(false)
-  const [preemptive,  setPreemptive]  = useState('global')
-  const [body,        setBody]        = useState(isSoap ? soapTemplate(op, svc.namespace) : '')
+  const [preemptive,  setPreemptive]  = useKept(_k+'preemptive', 'global')
+  const [body,        setBody]        = useKept(_k+'body', () => isSoap ? soapTemplate(op, svc.namespace) : '')
   const [busy,        setBusy]        = useState(false)
-  const [response,    setResponse]    = useState(null)
-  const [reqErr,      setReqErr]      = useState(null)
+  const [response,    setResponse]    = useKept(_k+'response', null)
+  const [reqErr,      setReqErr]      = useKept(_k+'err', null)
   const [savedList,   setSavedList]   = useState([])
   const [loadMenuOpen,setLoadMenuOpen]= useState(false)
   const [loadedId,    setLoadedId]    = useState(null)
@@ -3900,7 +3901,7 @@ function RequestBuilder({ svc, op, type, version, apiName, appName, onClose }) {
       .catch(() => {})
   }
 
-  useEffect(() => { loadAuth() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!KEPT[_k+'user'] && !KEPT[_k+'bearer']) loadAuth() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   function saveAuth() {
     fetch(`/api/local-app/${appName}/api-auth/save`, {
@@ -4246,9 +4247,17 @@ function RequestBuilder({ svc, op, type, version, apiName, appName, onClose }) {
   )
 }
 
+// keeps API tab state (responses, bodies, open rows) while navigating to other pages and back
+const KEPT = {}
+function useKept(key, init) {
+  const [v, setV] = useState(() => (key in KEPT ? KEPT[key] : (typeof init === 'function' ? init() : init)))
+  KEPT[key] = v
+  return [v, setV]
+}
+
 function ApiServiceRow({ svc, type, version, appName }) {
-  const [open,     setOpen]     = useState(false)
-  const [activeOp, setActiveOp] = useState(null)
+  const [open,     setOpen]     = useKept(`api|${appName}|${svc.name}|open`, false)
+  const [activeOp, setActiveOp] = useKept(`api|${appName}|${svc.name}|op`, null)
   const shortName = svc.name.replace(/(?:StronglyTyped|WeaklyTyped)Type$/, '')
   const isRest = type === 'rest'
   const badge = isRest
@@ -4350,11 +4359,11 @@ function ApiServiceRow({ svc, type, version, appName }) {
 }
 
 export function ApiTab({ appName, displayName }) {
-  const [data,    setData]    = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [data,    setData]    = useKept(`apitab|${appName}|data`, null)
+  const [loading, setLoading] = useState(!data)
   const [err,     setErr]     = useState(null)
-  const [filter,  setFilter]  = useState('')
-  const [version, setVersion] = useState('default')
+  const [filter,  setFilter]  = useKept(`apitab|${appName}|filter`, '')
+  const [version, setVersion] = useKept(`apitab|${appName}|ver`, 'default')
 
   useEffect(() => {
     fetch(`/api/local-app/${appName}/current-branch`)
@@ -4372,7 +4381,7 @@ export function ApiTab({ appName, displayName }) {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [appName])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!data) load() }, [appName])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const q    = filter.toLowerCase()
   const match = svc =>

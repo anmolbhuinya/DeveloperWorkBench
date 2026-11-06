@@ -1615,11 +1615,19 @@ def _local_tomcat_stop(container, user="weblogic"):
     return ok, out
 
 
+_APPMAP_HOOK = {}   # filled by create_app: builds the JAVA_TOOL_OPTIONS export for the app server when AppMap is enabled
+
+
 def _local_tomcat_start(container, app_name, debug=False, user="weblogic"):
     """Run `startServer` (debug: `export DEBUG=true; startServer -d`) detached inside a local container.
     Returns (ok, output); output ends with the tail of /tmp/<app>_start.log."""
     lg = f"/tmp/{app_name}_start.log"
     body = "export DEBUG=true; startServer -d" if debug else "startServer"
+    try:
+        _pf = _APPMAP_HOOK["prefix"](container, app_name) if "prefix" in _APPMAP_HOOK else ""
+    except Exception:
+        _pf = ""
+    body = _pf + body
     script = (f"( {body} ) > {lg} 2>&1 < /dev/null & disown; sleep 5; "
               + ("echo '$ export DEBUG=true'; " if debug else "")
               + f"echo '$ {'startServer -d' if debug else 'startServer'}'; tail -n 60 {lg}")
@@ -18102,6 +18110,61 @@ def create_flask_app():
             pass
         return d
 
+    # ── App server (Docker Tomcat) recording: agent + appmap.yml are copied into the container and
+    #    JAVA_TOOL_OPTIONS is exported before startServer; recordings are pulled back from /tmp/appmap/out ──
+    def _appmap_container_name(app_name):
+        try:
+            if app_name == "payor": return _get_payor_container() or ""
+            return _read_generic_app_config(app_name).get("container", "") or ""
+        except Exception:
+            return ""
+
+    def _appmap_dk(args, timeout=60):
+        import subprocess as _sp
+        try:
+            r = _sp.run(["docker"] + args, capture_output=True, text=True, timeout=timeout,
+                        creationflags=0x08000000 if sys.platform == "win32" else 0)
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        except Exception as e:
+            return False, str(e)
+
+    def _appmap_server_prefix(container, app_name):
+        """Shell prefix 'export JAVA_TOOL_OPTIONS=...; ' for starting the app server with the agent ('' when AppMap is disabled)."""
+        st = _appmap_settings(app_name)
+        if not st["enabled"] or not container:
+            return ""
+        jars = sorted(_appmap_lib().glob("appmap-agent-*.jar"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not jars:
+            return ""
+        yml = _appmap_yml_path(app_name)
+        _appmap_dk(["exec", "-u", "root", container, "sh", "-c", "mkdir -p /tmp/appmap/out && chmod -R a+rwX /tmp/appmap"])
+        _appmap_dk(["cp", str(jars[0]), f"{container}:/tmp/appmap/appmap-agent.jar"])
+        _appmap_dk(["cp", str(yml), f"{container}:/tmp/appmap/appmap.yml"])
+        _appmap_dk(["exec", "-u", "root", container, "sh", "-c", "chmod -R a+rwX /tmp/appmap"])
+        opts = "-javaagent:/tmp/appmap/appmap-agent.jar -Dappmap.config.file=/tmp/appmap/appmap.yml -Dappmap.output.directory=/tmp/appmap/out"
+        # the agent's SQL hook generates bytecode the verifier rejects in fluximpl.database.AbstractConnection.prepareStatement -> VerifyError at start-up
+        opts += " -XX:+UnlockDiagnosticVMOptions -XX:-BytecodeVerificationRemote -XX:CompileCommand=quiet -XX:CompileCommand=exclude,fluximpl.database.AbstractConnection::prepareStatement"   # JIT must not compile the unverified method (SIGSEGV in C1 otherwise)
+        if not st["record_values"]:
+            opts += " -Dappmap.event.disableValue=true"
+        # JAVA_OPTS (read by catalina.sh, untouched by setenv.sh) reaches only the Tomcat JVM; JAVA_TOOL_OPTIONS hit every JVM startServer spawns
+        return f"export JAVA_OPTS=\"$JAVA_OPTS {opts}\"; "
+    _APPMAP_HOOK["prefix"] = _appmap_server_prefix
+
+    def _appmap_pull(app_name):
+        """Copy recordings written inside the container to <AppMap home>\\tmp\\appmap\\server."""
+        c = _appmap_container_name(app_name)
+        if not c or not _appmap_settings(app_name)["enabled"]:
+            return
+        dst = _appmap_home(app_name) / "tmp" / "appmap" / "server"
+        dst.mkdir(parents=True, exist_ok=True)
+        _appmap_dk(["cp", f"{c}:/tmp/appmap/out/.", str(dst)], timeout=120)
+
+    def _appmap_container_rm(app_name, rel):
+        c = _appmap_container_name(app_name)
+        if not c: return
+        p = "/tmp/appmap/out/" + rel if rel else "/tmp/appmap/out/*"
+        _appmap_dk(["exec", "-u", "root", c, "sh", "-c", "rm -rf " + p], timeout=30)
+
     @app.route("/api/local-app/<app_name>/appmap/settings", methods=["GET", "POST"])
     def api_appmap_settings(app_name):
         import json as _js_as
@@ -18282,6 +18345,7 @@ def create_flask_app():
             return jsonify({"ok": False, "error": "App source directory not found"})
         files = []
         _home = _appmap_home(app_name)
+        _appmap_pull(app_name)
         def _rel(f):
             try: return "dwb:" + str(f.relative_to(_home)).replace("\\", "/")
             except ValueError: return str(f.relative_to(srcdir)).replace("\\", "/")
@@ -18319,9 +18383,14 @@ def create_flask_app():
                 return jsonify({"ok": False, "error": "File not found"}), 404
             targets = [full]
         n = 0
+        _srv = _home / "tmp" / "appmap" / "server"
         for f in targets:
-            try: f.unlink(); n += 1
+            try:
+                f.unlink(); n += 1
+                try: _appmap_container_rm(app_name, f.relative_to(_srv).as_posix())   # also drop it inside the container, or the next pull restores it
+                except ValueError: pass
             except Exception: pass
+        if body.get("all"): _appmap_container_rm(app_name, "")
         return jsonify({"ok": True, "deleted": n})
 
     @app.route("/api/local-app/<app_name>/appmap/map", methods=["GET"])
