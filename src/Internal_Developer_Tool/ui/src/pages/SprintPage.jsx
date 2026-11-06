@@ -5,7 +5,7 @@ import DatePicker from '../components/DatePicker'
 const API = '/api/project-management/sprint'
 const DATA_SHEETS = ['Sprint Board', 'Adhoc Task', 'PR Reviews']
 const MAIN_COLS   = ['JIRA ID', 'Story', 'Issue Type', 'Story Point', 'Status', 'DevDays', 'Developer', 'QA', 'QADays', 'Sprints', 'Origin Sprint']
-const COL_WIDTHS  = { 'Sprints': 60, 'Origin Sprint': 110, 'JIRA ID': 110, 'Story': 320, 'Issue Type': 100, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
+const COL_WIDTHS  = { 'Sprints': 60, 'Origin Sprint': 110, 'JIRA ID': 160, 'Story': 320, 'Issue Type': 100, 'Story Point': 70, 'Status': 80, 'DevDays': 70, 'Developer': 100, 'QA': 90, 'QADays': 70, 'Date Added': 110 }
 const DETAIL_COLS     = ['Notes', 'Commit Job', 'IT Job', 'Code Freeze Date', 'Releasae Date', 'Deployment Date', 'Deployed']
 const COL_LABEL_OVERRIDE = { 'Deployed': 'Deployment Date' }
 
@@ -401,6 +401,9 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
   const [expandedRows, setExpandedRows]   = useState(new Set())
   const [filterDev, setFilterDev]         = useState('')
   const [filterStatus, setFilterStatus]   = useState('')
+  const [filterJira, setFilterJira]       = useState('')
+  const [filterType, setFilterType]       = useState('')
+  const [filterQA, setFilterQA]           = useState('')
   const saveTimers = useRef({})
 
   // Sprint Log state
@@ -969,8 +972,15 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
   const uniqueStatuses = [...new Set(allSrcRows.map(r => statusColIdx >= 0 ? r[statusColIdx] : '').filter(Boolean))].sort()
 
   // Apply developer + status filters on top of the My Stories base filter
-  const showDevFilter = activeTab === 'Sprint Board'
+  const typeFColIdx = cols.indexOf('Issue Type')
+  const qaColIdx    = cols.indexOf('QA')
+  const uniqueTypes = [...new Set(allSrcRows.map(r => typeFColIdx >= 0 ? r[typeFColIdx] : '').filter(Boolean))].sort()
+  const uniqueQAs   = [...new Set(allSrcRows.map(r => qaColIdx    >= 0 ? r[qaColIdx]    : '').filter(Boolean))].sort()
+  const showDevFilter = activeTab === 'Sprint Board' || activeTab === 'Adhoc Task'
   const filteredRows  = displayRows.filter(([r]) => {
+    if (filterJira && (jiraCol < 0 || !String(r[jiraCol] ?? '').toLowerCase().includes(filterJira.trim().toLowerCase()))) return false
+    if (filterType && (typeFColIdx < 0 || r[typeFColIdx] !== filterType)) return false
+    if (filterQA   && (qaColIdx    < 0 || r[qaColIdx]    !== filterQA))   return false
     if (showDevFilter && filterDev    && (devColIdx    < 0 || r[devColIdx]    !== filterDev))    return false
     if (filterStatus && (statusColIdx < 0 || r[statusColIdx] !== filterStatus)) return false
     return true
@@ -1032,6 +1042,43 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
       &nbsp;&nbsp;|&nbsp;&nbsp;
       Total: <strong style={strongS}>{filteredRows.length}</strong> · <strong style={strongS}>{fmtSP(totalSP + adhocSP)} SP</strong>
     </span>
+  )
+
+  const selS = { fontSize: 12, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }
+  const anyFilter = filterJira || filterType || filterQA || filterStatus || (showDevFilter && filterDev)
+  const filterEls = (
+    <>
+      <input value={filterJira} onChange={e => setFilterJira(e.target.value)} placeholder="JIRA ID"
+        style={{ ...selS, cursor: 'text', width: 110 }} />
+      {typeFColIdx >= 0 && (
+        <select value={filterType} onChange={e => setFilterType(e.target.value)} style={selS}>
+          <option value="">All Issue Types</option>
+          {uniqueTypes.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      )}
+      <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={selS}>
+        <option value="">All Statuses</option>
+        {uniqueStatuses.map(s => <option key={s} value={s}>{s}</option>)}
+      </select>
+      {showDevFilter && (
+        <select value={filterDev} onChange={e => setFilterDev(e.target.value)} style={selS}>
+          <option value="">All Developers</option>
+          {uniqueDevs.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+      )}
+      {qaColIdx >= 0 && (
+        <select value={filterQA} onChange={e => setFilterQA(e.target.value)} style={selS}>
+          <option value="">All QA</option>
+          {uniqueQAs.map(q => <option key={q} value={q}>{q}</option>)}
+        </select>
+      )}
+      {anyFilter && (
+        <button onClick={() => { setFilterDev(''); setFilterStatus(''); setFilterJira(''); setFilterType(''); setFilterQA('') }}
+          style={{ fontSize: 11, padding: '4px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-muted)' }}>
+          Clear
+        </button>
+      )}
+    </>
   )
 
   // Copy / Export of the visible table (main columns + segment), including adhoc rows shown under Sprint Board / My Stories
@@ -2014,31 +2061,15 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
         <div>
           {/* Adhoc Task count bar */}
           {activeTab === 'Adhoc Task' && (
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+              {filterEls}
               <span style={{ marginLeft: 'auto' }}>{countsEl}{actionsEl}</span>
             </div>
           )}
           {/* Filter bar — Sprint Board: Developer + Status; My Stories: Status only */}
           {(activeTab === 'Sprint Board' || activeTab === MY_STORIES) && (
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-              {showDevFilter && (
-                <select value={filterDev} onChange={e => setFilterDev(e.target.value)}
-                  style={{ fontSize: 12, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>
-                  <option value="">All Developers</option>
-                  {uniqueDevs.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-              )}
-              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
-                style={{ fontSize: 12, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>
-                <option value="">All Statuses</option>
-                {uniqueStatuses.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-              {(filterDev || filterStatus) && (
-                <button onClick={() => { setFilterDev(''); setFilterStatus('') }}
-                  style={{ fontSize: 11, padding: '4px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--text-muted)' }}>
-                  Clear
-                </button>
-              )}
+              {filterEls}
               <span style={{ marginLeft: 'auto' }}>{countsEl}{actionsEl}</span>
             </div>
           )}
