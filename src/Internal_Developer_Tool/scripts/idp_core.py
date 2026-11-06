@@ -1627,6 +1627,10 @@ def _local_tomcat_start(container, app_name, debug=False, user="weblogic"):
         _pf = _APPMAP_HOOK["prefix"](container, app_name) if "prefix" in _APPMAP_HOOK else ""
     except Exception:
         _pf = ""
+    try:
+        if "p6spy" in _APPMAP_HOOK: _APPMAP_HOOK["p6spy"](container, app_name)
+    except Exception:
+        pass
     body = _pf + body
     script = (f"( {body} ) > {lg} 2>&1 < /dev/null & disown; sleep 5; "
               + ("echo '$ export DEBUG=true'; " if debug else "")
@@ -18164,6 +18168,239 @@ def create_flask_app():
         if not c: return
         p = "/tmp/appmap/out/" + rel if rel else "/tmp/appmap/out/*"
         _appmap_dk(["exec", "-u", "root", c, "sh", "-c", "rm -rf " + p], timeout=30)
+
+    # ── P6Spy (JDBC proxy: SQL with bind values + result sets) for the Docker app server ──
+    #   config   : DeveloperWorkBench\Setup\Dev_Softwares\P6Spy\<App>\ (spy.properties, settings.json)
+    #   project  : DWB_Projects\Setup\Dev_Softwares\P6Spy\<App>\ (spy.log pulled from the container)
+    #   jar      : Installed_Softwares\P6Spy\lib (Dev Softwares card)
+    _P6_SPY_PROPS = ("modulelist=com.p6spy.engine.spy.P6SpyFactory,com.p6spy.engine.logging.P6LogFactory\n"
+                     "logfile=/tmp/p6spy/spy.log\nappend=true\ndateformat=yyyy-MM-dd HH:mm:ss.SSS\n"
+                     "logMessageFormat=com.p6spy.engine.spy.appender.CustomLineFormat\n"
+                     "customLogMessageFormat=%(currentTime)@@%(executionTime)@@%(category)@@%(connectionId)@@%(effectiveSqlSingleLine)@@%(sqlSingleLine)\n"
+                     "excludecategories=info,debug,result,commit,rollback\n"
+                     "databaseDialectDateFormat=yyyy-MM-dd HH:mm:ss\n")
+
+    def _p6_cfgdir(app_name):
+        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "P6Spy" / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _p6_home(app_name):
+        d = PROJECTS_HOME / "Setup" / "Dev_Softwares" / "P6Spy" / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _p6_props_path(app_name):
+        p = _p6_cfgdir(app_name) / "spy.properties"
+        if not p.exists():
+            p.write_text(_P6_SPY_PROPS, encoding="utf-8")
+        return p
+
+    _P6_RULES_PROPS = [{"keys": "*.url, *.jdbcUrl", "from": "jdbc:oracle:", "to": "jdbc:p6spy:oracle:"},
+                       {"keys": "*.driverClassName", "from": "oracle.jdbc.OracleDriver", "to": "com.p6spy.engine.spy.P6SpyDriver"}]
+    _P6_RULES_JOCL = [{"keys": "", "from": 'value="jdbc:oracle:', "to": 'value="jdbc:p6spy:oracle:'}]
+    _P6_DEFAULTS = {"lib_dir": "/home/weblogic/tomcat/lib",
+                    "targets": [
+                        {"file": "/home/weblogic/domains/healthedge/runtime.properties", "rules": _P6_RULES_PROPS},
+                        {"file": "/home/weblogic/domains/healthedge/tools/runtime.properties", "rules": _P6_RULES_PROPS},
+                        {"file": "/home/weblogic/domains/healthedge/tools/ddl/oltp.jocl", "rules": _P6_RULES_JOCL},
+                        {"file": "/home/weblogic/domains/healthedge/tools/ddl/dw.jocl", "rules": _P6_RULES_JOCL}]}
+
+    def _p6_clean_targets(v):
+        out = []
+        for t in (v if isinstance(v, list) else []):
+            if not isinstance(t, dict) or not str(t.get("file", "")).strip(): continue
+            rules = [{"keys": str(r.get("keys", "")).strip(), "from": str(r.get("from", "")), "to": str(r.get("to", ""))}
+                     for r in (t.get("rules") or []) if isinstance(r, dict) and str(r.get("from", ""))]
+            out.append({"file": str(t["file"]).strip(), "rules": rules})
+        return out
+
+    def _p6_cfg(app_name):
+        import json as _jp, copy as _cp
+        d = {"enabled": False, **_cp.deepcopy(_P6_DEFAULTS)}
+        try:
+            s = _jp.loads((_p6_cfgdir(app_name) / "settings.json").read_text(encoding="utf-8"))
+            d["enabled"] = bool(s.get("enabled"))
+            if isinstance(s.get("lib_dir"), str) and s["lib_dir"].strip(): d["lib_dir"] = s["lib_dir"].strip()
+            if isinstance(s.get("targets"), list): d["targets"] = _p6_clean_targets(s["targets"])
+            elif s.get("target_file"):      # older single-file settings
+                d["targets"] = [{"file": s["target_file"], "rules": [
+                    {"keys": s.get("url_keys", "*.url, *.jdbcUrl"), "from": s.get("url_from", "jdbc:oracle:"), "to": s.get("url_to", "jdbc:p6spy:oracle:")},
+                    {"keys": s.get("driver_keys", "*.driverClassName"), "from": s.get("driver_from", "oracle.jdbc.OracleDriver"), "to": s.get("driver_to", "com.p6spy.engine.spy.P6SpyDriver")}]}]
+        except Exception:
+            pass
+        return d
+
+    def _p6_enabled(app_name):
+        return _p6_cfg(app_name)["enabled"]
+
+    def _p6_jar():
+        lib = INSTALLED_SOFTWARES / "P6Spy" / "lib"
+        jars = sorted(lib.glob("p6spy-*.jar"), key=lambda p: p.stat().st_mtime, reverse=True) if lib.is_dir() else []
+        return jars[0] if jars else None
+
+    def _p6_sed(rules, forward):
+        """sed script for one file's rules (forward: original -> P6Spy, else back). A rule with keys rewrites 'key=<from>' lines
+        (keys may use a leading * wildcard); a rule without keys replaces the literal text anywhere in the file."""
+        import re as _rs
+        def _key(pat):
+            pat = pat.strip()
+            return "[A-Za-z0-9_.-]+" + _rs.escape(pat[1:]) if pat.startswith("*") else _rs.escape(pat)
+        def _lit(s):
+            return _rs.sub(r"([.\[\]^$*+?(){}|\\/&#])", r"\\\1", s)
+        def _rep(s):
+            return _rs.sub(r"([\\&#])", r"\\\1", s)
+        parts = []
+        for r in rules:
+            a, b = (r["from"], r["to"]) if forward else (r["to"], r["from"])
+            ks = [x for x in r["keys"].split(",") if x.strip()]
+            if ks:
+                for k in ks:
+                    parts.append("s#^(%s=)%s#\\1%s#" % (_key(k), _lit(a), _rep(b)))
+            else:
+                parts.append("s#%s#%s#" % (_lit(a), _rep(b)))
+        return "; ".join(parts)
+
+    def _p6_valid(cfg):
+        import re as _rv
+        ok = r"[A-Za-z0-9_.*,:/\\ @$=\"<>-]*"
+        if not _rv.fullmatch(r"[A-Za-z0-9_./-]+", cfg["lib_dir"]):
+            return "Invalid characters in the container folder"
+        for t in cfg["targets"]:
+            if not _rv.fullmatch(r"[A-Za-z0-9_./-]+", t["file"]):
+                return "Invalid characters in file path: %s" % t["file"]
+            for r in t["rules"]:
+                for k in ("keys", "from", "to"):
+                    if not _rv.fullmatch(ok, r[k]):
+                        return "Invalid characters in '%s' (file %s)" % (r[k], t["file"])
+        return ""
+
+    def _p6_apply(app_name, cfg=None):
+        """Make the container match the setting: enabled -> jar + spy.properties in lib_dir and every target file rewritten to P6Spy;
+        disabled -> reverted. Takes effect on the next server start. Returns (ok, message)."""
+        c = _appmap_container_name(app_name)
+        if not c:
+            return False, "Container is not configured / running"
+        cfg = cfg or _p6_cfg(app_name)
+        bad = _p6_valid(cfg)
+        if bad:
+            return False, bad
+        LIB = cfg["lib_dir"]
+        def _root(script, t=60):
+            return _appmap_dk(["exec", "-u", "root", c, "sh", "-c", script], timeout=t)
+        notes = []
+        if cfg["enabled"]:
+            jar = _p6_jar()
+            if not jar:
+                return False, "P6Spy is not installed - install it in Dev Softwares first"
+            _root("rm -f '%s'/p6spy-*.jar; mkdir -p /tmp/p6spy && chmod 777 /tmp/p6spy" % LIB)
+            ok1, o1 = _appmap_dk(["cp", str(jar), f"{c}:{LIB}/{jar.name}"])
+            ok2, o2 = _appmap_dk(["cp", str(_p6_props_path(app_name)), f"{c}:{LIB}/spy.properties"])
+            if not (ok1 and ok2):
+                return False, (o1 + " " + o2).strip()
+            _root("chmod a+r '%s'/p6spy-*.jar '%s'/spy.properties" % (LIB, LIB))
+            for t in cfg["targets"]:
+                F = t["file"]
+                ok, o = _root("[ -f '%s' ] || { echo MISSING; exit 0; }; cp -n '%s' '%s.p6spy.bak'; sed -i -E '%s' '%s'; grep -c p6spy '%s'"
+                              % (F, F, F, _p6_sed(t["rules"], True), F, F))
+                last = o.strip().splitlines()[-1] if o.strip() else "?"
+                notes.append("%s: %s" % (F.rsplit("/", 1)[-1], "file not found" if "MISSING" in o else "%s lines -> P6Spy" % last))
+            return True, "P6Spy enabled (%s). %s. Restart the app server." % (jar.name, "; ".join(notes))
+        for t in cfg["targets"]:
+            F = t["file"]
+            _root("[ -f '%s' ] && sed -i -E '%s' '%s'" % (F, _p6_sed(t["rules"], False), F))
+        _root("rm -f '%s'/p6spy-*.jar '%s'/spy.properties" % (LIB, LIB))
+        return True, "P6Spy disabled: files reverted and the jar removed from the container. Restart the app server."
+
+    def _p6_pull(app_name):
+        c = _appmap_container_name(app_name)
+        if c:
+            _appmap_dk(["cp", f"{c}:/tmp/p6spy/spy.log", str(_p6_home(app_name) / "spy.log")], timeout=120)
+
+    def _p6_server_hook(container, app_name):
+        if _p6_enabled(app_name):
+            _p6_apply(app_name)      # keep the container in step before every server start
+        return ""
+    _APPMAP_HOOK["p6spy"] = _p6_server_hook
+
+    @app.route("/api/local-app/<app_name>/p6spy/settings", methods=["GET", "POST"])
+    def api_p6_settings(app_name):
+        import json as _jp
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        msg = ""
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            cfg = _p6_cfg(app_name)
+            was = cfg["enabled"]
+            _old = _p6_cfg(app_name)
+            if "enabled" in body: cfg["enabled"] = bool(body["enabled"])
+            if isinstance(body.get("lib_dir"), str) and body["lib_dir"].strip(): cfg["lib_dir"] = body["lib_dir"].strip()
+            if isinstance(body.get("targets"), list): cfg["targets"] = _p6_clean_targets(body["targets"])
+            bad = _p6_valid(cfg)
+            if bad:
+                return jsonify({"ok": False, "error": bad})
+            if was and (not cfg["enabled"] or cfg["targets"] != _old["targets"] or cfg["lib_dir"] != _old["lib_dir"]):
+                _old["enabled"] = False
+                _p6_apply(app_name, _old)       # revert with the previously saved settings before they change
+            (_p6_cfgdir(app_name) / "settings.json").write_text(_jp.dumps(cfg), encoding="utf-8")
+            _ok, msg = _p6_apply(app_name)
+            if not _ok:
+                msg = "Saved, but could not update the container: " + msg
+        jar = _p6_jar()
+        return jsonify({"ok": True, **_p6_cfg(app_name), "defaults": _P6_DEFAULTS, "message": msg, "installed": bool(jar), "jar": jar.name if jar else "",
+                        "config": str(_p6_cfgdir(app_name)), "project": str(_p6_home(app_name)),
+                        "container": _appmap_container_name(app_name)})
+    @app.route("/api/local-app/<app_name>/p6spy/config", methods=["GET", "POST"])
+    def api_p6_config(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        p = _p6_props_path(app_name)
+        msg = ""
+        if request.method == "POST":
+            txt = (request.get_json(silent=True) or {}).get("content")
+            if not isinstance(txt, str) or not txt.strip():
+                return jsonify({"ok": False, "error": "spy.properties cannot be empty"})
+            p.write_text(txt.replace("\r\n", "\n"), encoding="utf-8")
+            if _p6_enabled(app_name):
+                _p6_apply(app_name); msg = "Saved and copied to the container. Restart the app server."
+        return jsonify({"ok": True, "path": str(p), "content": p.read_text(encoding="utf-8", errors="replace"), "message": msg})
+
+    @app.route("/api/local-app/<app_name>/p6spy/log", methods=["GET"])
+    def api_p6_log(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        _p6_pull(app_name)
+        f = _p6_home(app_name) / "spy.log"
+        if not f.is_file():
+            return jsonify({"ok": True, "rows": [], "total": 0})
+        limit = min(int(request.args.get("limit", "500") or 500), 5000)
+        lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        rows, last = [], {}
+        for ln in lines[-(limit * 6):]:          # result-set lines follow their statement, so read a wider window
+            parts = ln.split("@@")
+            if len(parts) < 6: continue
+            tm, ms, cat, conn, prep, eff = parts[0], parts[1].strip(), parts[2], parts[3], parts[4], "@@".join(parts[5:])
+            if cat == "resultset":
+                r = last.get(prep.strip())
+                if r is not None and len(r["results"]) < 500: r["results"].append(eff)
+                continue
+            r = {"time": tm, "ms": ms, "category": cat, "conn": conn, "prepared": prep.strip(), "sql": (eff.strip() or prep.strip()), "results": []}
+            rows.append(r); last[prep.strip()] = r
+        rows = rows[-limit:]
+        for r in rows: r["result"] = "\n".join(r.pop("results"))
+        rows.reverse()
+        return jsonify({"ok": True, "rows": rows, "total": len(lines), "size": f.stat().st_size})
+
+    @app.route("/api/local-app/<app_name>/p6spy/clear", methods=["POST"])
+    def api_p6_clear(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
+            return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c = _appmap_container_name(app_name)
+        if c: _appmap_dk(["exec", "-u", "root", c, "sh", "-c", ": > /tmp/p6spy/spy.log"], timeout=20)
+        try: (_p6_home(app_name) / "spy.log").unlink()
+        except Exception: pass
+        return jsonify({"ok": True})
 
     @app.route("/api/local-app/<app_name>/appmap/settings", methods=["GET", "POST"])
     def api_appmap_settings(app_name):
@@ -35616,6 +35853,9 @@ def create_flask_app():
         {"key": "appmap", "title": "AppMap", "sub": "AppMap", "winget": "",
          "desc": "Java agent used to record local IT runs (installed under Setup\Dev_Softwares\AppMap\lib)", "exe": [], "known": [],
          "zip_meta": "https://repo1.maven.org/maven2/com/appland/appmap-agent/maven-metadata.xml", "zip_fallback_version": "1.30.2"},
+        {"key": "p6spy", "title": "P6Spy", "sub": "P6Spy", "winget": "", "jar_group": "p6spy", "jar_art": "p6spy",
+         "desc": "JDBC proxy that logs SQL with bind values (jar downloaded from Maven Central into Installed_Softwares/P6Spy/lib)", "exe": [], "known": [],
+         "zip_meta": "https://repo1.maven.org/maven2/p6spy/p6spy/maven-metadata.xml", "zip_fallback_version": "3.9.1"},
         {"key": "gceasy", "title": "GCEasy", "sub": "GCEasy", "winget": "", "link": "https://gceasy.io/",
          "desc": "Online garbage collection log analyzer - web service, nothing to install", "exe": [], "known": []},
     ]
@@ -35630,6 +35870,9 @@ def create_flask_app():
         if d["key"] == "appmap":
             base = _appmap_lib()
             here = base.is_dir() and any(base.glob("appmap-agent-*.jar"))
+        if d.get("jar_art"):
+            base = INSTALLED_SOFTWARES / d["sub"] / "lib"
+            here = base.is_dir() and any(base.glob(d["jar_art"] + "-*.jar"))
         there = ""
         if not here:
             for pat in d["known"]:
@@ -35647,6 +35890,10 @@ def create_flask_app():
             import re as _rea
             _vs = [m.group(1) for j in base.glob("appmap-agent-*.jar") for m in [_rea.search(r"appmap-agent-(.+)\.jar$", j.name)] if m]
             ver = max(_vs, key=lambda v: [int(x) if x.isdigit() else 0 for x in v.split(".")]) if _vs else ""
+        if here and d.get("jar_art"):
+            import re as _rep
+            _vs = [m.group(1) for j in base.glob(d["jar_art"] + "-*.jar") for m in [_rep.search(_rep.escape(d["jar_art"]) + r"-(\d[\d.]*)\.jar$", j.name)] if m]
+            ver = max(_vs, key=lambda v: [int(x) for x in v.split(".") if x.isdigit()]) if _vs else ""
         latest = ""
         if here and d.get("zip_meta"):
             import time as _tl
@@ -35688,6 +35935,30 @@ def create_flask_app():
         if not d:
             return jsonify({"ok": False, "error": "Unknown software"}), 400
         winget = shutil.which("winget")
+        if d.get("jar_art"):
+            jid = _uuid.uuid4().hex[:10]
+            job = _vm_jobs[jid] = {"status": "running", "output": ""}
+            def _run_jar():
+                import urllib.request as _ur
+                try:
+                    lib = INSTALLED_SOFTWARES / d["sub"] / "lib"; lib.mkdir(parents=True, exist_ok=True)
+                    art, grp = d["jar_art"], d["jar_group"]
+                    job["output"] += "Looking up the latest %s on Maven Central ...\n" % d["title"]
+                    ver = _maven_latest(d["zip_meta"], "") or d["zip_fallback_version"]
+                    url = f"https://repo1.maven.org/maven2/{grp.replace(chr(46), chr(47))}/{art}/{ver}/{art}-{ver}.jar"
+                    job["output"] += "Version: %s\nDownloading %s\n" % (ver, url)
+                    dst = lib / f"{art}-{ver}.jar"
+                    with _ur.urlopen(url, timeout=180) as r, open(str(dst) + ".part", "wb") as f:
+                        shutil.copyfileobj(r, f)
+                    os.replace(str(dst) + ".part", str(dst))
+                    for old in lib.glob(art + "-*.jar"):
+                        if old != dst: old.unlink()
+                    job["output"] += "Saved %s\nInstalled %s version %s\n" % (dst, d["title"], ver)
+                    job["status"] = "success"
+                except Exception as e:
+                    job["output"] += str(e); job["status"] = "failed"
+            _th.Thread(target=_run_jar, daemon=True).start()
+            return jsonify({"ok": True, "key": jid})
         if d["key"] == "appmap":
             jid = _uuid.uuid4().hex[:10]
             job = _vm_jobs[jid] = {"status": "running", "output": ""}
@@ -35788,17 +36059,17 @@ def create_flask_app():
         d = next((x for x in _DEV_SOFTWARES if x["key"] == key), None)
         if not d:
             return jsonify({"ok": False, "error": "Unknown software"}), 400
-        if d["key"] == "appmap":
-            lib = _appmap_lib()
+        if d["key"] == "appmap" or d.get("jar_art"):
+            lib = _appmap_lib() if d["key"] == "appmap" else INSTALLED_SOFTWARES / d["sub"] / "lib"
             jars = list(lib.glob("*.jar")) if lib.is_dir() else []
             if not jars:
-                return jsonify({"ok": False, "error": "AppMap agent is not installed"}), 400
+                return jsonify({"ok": False, "error": "%s is not installed" % d["title"]}), 400
             jid = _uuid.uuid4().hex[:10]
             job = _vm_jobs[jid] = {"status": "success", "output": ""}
             for j in jars:
                 try: j.unlink(); job["output"] += "Removed %s\n" % j
                 except Exception as e: job["output"] += "Could not remove %s: %s\n" % (j, e); job["status"] = "failed"
-            job["output"] += "Uninstalled AppMap agent\n" if job["status"] == "success" else ""
+            job["output"] += "Uninstalled %s\n" % d["title"] if job["status"] == "success" else ""
             return jsonify({"ok": True, "key": jid})
         target = INSTALLED_SOFTWARES / d["sub"]
         if not (target.is_dir() and any(target.iterdir())):

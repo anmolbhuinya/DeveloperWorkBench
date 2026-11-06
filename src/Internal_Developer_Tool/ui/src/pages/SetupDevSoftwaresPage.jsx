@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-const ICONS = { intellij: '🧠', postman: '📮', soapui: '🧼', fiddler: '🕵️', docker: '🐳', dbeaver: '🗄️', jqassistant: '🔍', orange: '🟠', visualvm: '📈', mat: '🧮', jmc: '✈️', appmap: '🗺️', gceasy: '🧹' }
+const ICONS = { intellij: '🧠', postman: '📮', soapui: '🧼', fiddler: '🕵️', docker: '🐳', dbeaver: '🗄️', jqassistant: '🔍', orange: '🟠', visualvm: '📈', mat: '🧮', jmc: '✈️', appmap: '🗺️', p6spy: '🔬', gceasy: '🧹' }
 
 // true when version a is newer than b (dotted numbers)
 const isNewer = (a, b) => {
@@ -99,7 +99,7 @@ export default function SetupDevSoftwaresPage() {
               <a className="btn btn-primary" href={it.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ textDecoration: 'none', display: 'inline-block' }}>Open ↗</a>
             )}
             {!it.link && !it.installed_here && (
-              <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant' && it.key !== 'appmap')} onClick={e => { e.stopPropagation(); install(it) }}>
+              <button className="btn btn-primary" disabled={running(it.key) || (!data.winget && it.key !== 'jqassistant' && it.key !== 'appmap' && it.key !== 'p6spy')} onClick={e => { e.stopPropagation(); install(it) }}>
                 {running(it.key) ? 'Installing…' : 'Install'}
               </button>
             )}

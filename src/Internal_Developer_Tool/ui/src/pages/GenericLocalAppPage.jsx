@@ -4,6 +4,7 @@ import { AppServerTab, DatabaseTab, QueueTab, ApiTab, UserInterfaceTab, CodeTab,
 import { GpRunTab } from './GpRunPage'
 import ItTab from './ItTab'
 import AppMapTab from './AppMapTab'
+import P6SpyTab from './P6SpyTab'
 
 function Field({ label, children }) {
   return (
@@ -188,7 +189,8 @@ export default function GenericLocalAppPage({
   const _codeOrder = _baseTabs.find(t => t.key === 'code')?.order ?? 0
   const _withIt    = _baseTabs.some(t => t.key === 'it') ? _baseTabs : [..._baseTabs, { key: 'it', label: '🧪 IT', enabled: true, order: _codeOrder + 0.5 }]
   const _itOrder   = _withIt.find(t => t.key === 'it')?.order ?? _codeOrder + 0.5
-  const visibleTabs = (_withIt.some(t => t.key === 'appmap') ? _withIt : [..._withIt, { key: 'appmap', label: '🗺️ AppMap', enabled: true, order: _itOrder + 0.1 }]).filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)
+  const _vt0 = (_withIt.some(t => t.key === 'appmap') ? _withIt : [..._withIt, { key: 'appmap', label: '🗺️ AppMap', enabled: true, order: _itOrder + 0.1 }]).filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)
+  const visibleTabs = (_vt0.some(t => t.key === 'p6spy') ? _vt0 : [..._vt0, { key: 'p6spy', label: '\uD83D\uDD2C P6Spy', enabled: true, order: (_vt0.find(t => t.key === 'appmap')?.order ?? _itOrder + 0.1) + 0.05 }]).sort((a, b) => a.order - b.order)
   const resolvedTab = visibleTabs.find(t => t.key === activeTab)?.key ?? visibleTabs[0]?.key ?? 'code'
   return (
     <div>
@@ -236,6 +238,7 @@ export default function GenericLocalAppPage({
 
       {/* ── AppMap tab ── */}
       {resolvedTab === 'appmap' && <AppMapTab appName={appName} displayName={displayName} />}
+      {resolvedTab === 'p6spy' && <P6SpyTab appName={appName} />}
 
       {/* ── GP Run tab ── */}
       {resolvedTab === 'gp_run' && (
@@ -256,7 +259,7 @@ export default function GenericLocalAppPage({
       )}
 
       {/* ── Other tabs: placeholder ── */}
-      {!['code', 'app_server', 'database', 'queue', 'api', 'user_interface', 'app_config', 'scm', 'gp_run', 'it', 'appmap'].includes(resolvedTab) && (
+      {!['code', 'app_server', 'database', 'queue', 'api', 'user_interface', 'app_config', 'scm', 'gp_run', 'it', 'appmap', 'p6spy'].includes(resolvedTab) && (
         <div className="card" style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-muted)' }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>🚧</div>
           <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 6 }}>
