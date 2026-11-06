@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 
 const VIEWS = [
+  { key: 'deps',     label: 'Dependency Map' },
+  { key: 'flame',    label: 'Flame Graph' },
+  { key: 'trace',    label: 'Trace View' },
   { key: 'sequence', label: 'Sequence diagrams' },
   { key: 'calls',    label: 'Call graphs' },
   { key: 'services', label: 'Service maps' },
@@ -14,6 +17,109 @@ const td = { padding: '4px 8px', fontSize: 12, borderBottom: '1px solid var(--bo
 const mono = { fontFamily: 'monospace', fontSize: 11 }
 
 function Empty({ children }) { return <div style={{ padding: 24, textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>{children}</div> }
+
+const KIND_COLOR = { call: '#1565c0', sql: '#e65100', http: '#2e7d32', httpc: '#6a1b9a' }
+
+// Dependency map: classes (or packages) as nodes laid out in columns by call depth, arrows = calls
+function DepMap({ m }) {
+  const [level, setLevel] = useState('class')
+  const nameOf = c => level === 'class' ? c : (String(c).split('.').slice(0, -1).join('.') || c)
+  const agg = {}
+  ;(m.edges || []).forEach(e => { const a = nameOf(e.from), b = nameOf(e.to); if (a === b) return; const k = a + '\u0000' + b; agg[k] = (agg[k] || 0) + e.count })
+  const edges = Object.entries(agg).map(([k, n]) => { const [a, b] = k.split('\u0000'); return { a, b, n } })
+  if (!edges.length) return <Empty>No dependencies between {level === 'class' ? 'classes' : 'packages'} were recorded in this map.</Empty>
+  const nodes = [...new Set(edges.flatMap(e => [e.a, e.b]))]
+  const inc = {}; edges.forEach(e => { inc[e.b] = true })
+  const col = {}; nodes.filter(n => !inc[n]).forEach(n => { col[n] = 0 })
+  if (!Object.keys(col).length) col[nodes[0]] = 0
+  for (let i = 0; i < nodes.length; i++) edges.forEach(e => { if (col[e.a] != null && (col[e.b] == null || col[e.b] < col[e.a] + 1) && col[e.a] + 1 < 8 && col[e.b] == null) col[e.b] = col[e.a] + 1 })
+  nodes.forEach(n => { if (col[n] == null) col[n] = 0 })
+  const cols = []; nodes.forEach(n => { (cols[col[n]] = cols[col[n]] || []).push(n) })
+  const colW = 230, rowH = 38, NW = 190
+  const pos = {}; cols.forEach((c, ci) => (c || []).forEach((n, ri) => { pos[n] = { x: 10 + ci * colW, y: 10 + ri * rowH } }))
+  const W = cols.length * colW + 20, H = Math.max(...cols.map(c => (c || []).length)) * rowH + 30
+  const maxN = Math.max(...edges.map(e => e.n))
+  return (
+    <div>
+      <div style={{ marginBottom: 8, fontSize: 12 }}>Group by:{' '}
+        {['class', 'package'].map(l => <button key={l} className={'btn btn-sm' + (level === l ? ' btn-primary' : '')} style={{ marginRight: 6 }} onClick={() => setLevel(l)}>{l}</button>)}
+        <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{nodes.length} nodes · {edges.length} dependencies · line width = call count</span>
+      </div>
+      <div style={{ overflow: 'auto', maxHeight: 560 }}>
+        <svg width={W} height={H}>
+          <defs><marker id="am-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#78909c" /></marker></defs>
+          {edges.map((e, i) => { const p = pos[e.a], q = pos[e.b]; const x1 = p.x + NW, y1 = p.y + 14, x2 = q.x, y2 = q.y + 14, back = x2 <= x1
+            return <path key={i} d={back ? `M${p.x + NW / 2},${p.y + 28} C${p.x + NW / 2},${p.y + 60} ${q.x + NW / 2},${q.y - 20} ${q.x + NW / 2},${q.y}` : `M${x1},${y1} C${x1 + 40},${y1} ${x2 - 40},${y2} ${x2},${y2}`}
+              fill="none" stroke="#78909c" strokeOpacity="0.7" strokeWidth={1 + 3 * e.n / maxN} markerEnd="url(#am-d)"><title>{e.a} → {e.b} ({e.n})</title></path> })}
+          {nodes.map(n => <g key={n}><rect x={pos[n].x} y={pos[n].y} width={NW} height={28} rx={5} fill="rgba(21,101,192,0.12)" stroke="#1565c0" />
+            <text x={pos[n].x + 8} y={pos[n].y + 18} fontSize="11" fill="currentColor"><title>{n}</title>{(level === 'class' ? short(n) : n).slice(-28)}</text></g>)}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
+// Flame graph: bar width = time, row = call depth. Click a bar to zoom into it, "Reset" to go back
+function Flame({ m }) {
+  const spans = m.spans || []
+  const [focus, setFocus] = useState(null)
+  useEffect(() => setFocus(null), [m])
+  if (!spans.length) return <Empty>No calls were recorded in this map.</Empty>
+  const byId = {}; spans.forEach(s => { byId[s.id] = s })
+  const inFocus = s => { if (focus == null) return true; let c = s; while (c) { if (c.id === focus) return true; c = byId[c.parent] } return false }
+  const root = focus != null ? byId[focus] : null
+  const vis = spans.filter(inFocus)
+  const t0 = root ? root.start : 0
+  const total = root ? root.ms : Math.max(...spans.filter(s => s.depth === 0).map(s => s.start + s.ms), 0.001)
+  const W = 1000, rowH = 20, d0 = root ? root.depth : 0
+  const maxD = Math.max(...vis.map(s => s.depth - d0))
+  const H = (maxD + 1) * rowH + 10
+  return (
+    <div>
+      <div style={{ fontSize: 12, marginBottom: 6 }}>
+        {focus != null && <button className="btn btn-sm" style={{ marginRight: 8 }} onClick={() => setFocus(null)}>↩ Reset zoom</button>}
+        <span style={{ color: 'var(--text-muted)' }}>Total {Math.round(total * 100) / 100} ms · click a bar to zoom · colours: <span style={{ color: KIND_COLOR.call }}>■ code</span> <span style={{ color: KIND_COLOR.sql }}>■ SQL</span> <span style={{ color: KIND_COLOR.http }}>■ HTTP in</span> <span style={{ color: KIND_COLOR.httpc }}>■ HTTP out</span></span>
+      </div>
+      <div style={{ overflow: 'auto', maxHeight: 560 }}>
+        <svg width={W} height={H} style={{ background: 'var(--bg)' }}>
+          {vis.map(s => { const w = s.ms / total * W; if (w < 1) return null; const x = (s.start - t0) / total * W; const y = (s.depth - d0) * rowH
+            return <g key={s.id} onClick={() => setFocus(s.id)} style={{ cursor: 'pointer' }}>
+              <rect x={x} y={y} width={Math.max(w - 1, 1)} height={rowH - 2} fill={KIND_COLOR[s.kind] || '#1565c0'} fillOpacity={0.35 + 0.1 * ((s.depth) % 5)} stroke="#fff" strokeWidth="0.5"><title>{s.label} — {s.ms} ms</title></rect>
+              {w > 46 && <text x={x + 3} y={y + 13} fontSize="10" fill="currentColor" style={{ pointerEvents: 'none' }}>{s.label.slice(0, Math.floor(w / 6))}</text>}
+            </g> })}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
+// Trace view: waterfall of every span (code calls, SQL, HTTP) with its offset and duration
+function Trace({ m }) {
+  const spans = m.spans || []
+  const [q, setQ] = useState('')
+  if (!spans.length) return <Empty>No events were recorded in this map.</Empty>
+  const total = Math.max(...spans.filter(s => s.depth === 0).map(s => s.start + s.ms), 0.001)
+  const rows = spans.filter(s => !q || s.label.toLowerCase().includes(q.toLowerCase())).slice(0, 700)
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter spans…" style={{ width: 260, fontSize: 12, padding: '5px 8px' }} />
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total {Math.round(total * 100) / 100} ms · {rows.length} spans · offsets are laid out sequentially (AppMap stores durations, not timestamps)</span>
+      </div>
+      <div style={{ maxHeight: 560, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+        {rows.map(s => (
+          <div key={s.id} style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)', height: 22 }}>
+            <div style={{ width: 380, flexShrink: 0, paddingLeft: 6 + Math.min(s.depth, 20) * 12, ...mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: KIND_COLOR[s.kind] }} title={s.label}>{s.label}</div>
+            <div style={{ flex: 1, position: 'relative', height: 14 }}>
+              <div style={{ position: 'absolute', left: `${s.start / total * 100}%`, width: `${Math.max(s.ms / total * 100, 0.3)}%`, height: '100%', background: KIND_COLOR[s.kind], borderRadius: 2, opacity: 0.8 }} />
+            </div>
+            <div style={{ width: 70, textAlign: 'right', paddingRight: 6, fontSize: 11 }}>{s.ms} ms</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function Sequence({ m }) {
   const rows = m.sequence || []
@@ -174,7 +280,7 @@ export default function AppMapTab({ appName, displayName }) {
   const [maps, setMaps] = useState([])
   const [file, setFile] = useState('')
   const [m, setM] = useState(null)
-  const [view, setView] = useState('sequence')
+  const [view, setView] = useState('deps')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
 
@@ -232,6 +338,9 @@ export default function AppMapTab({ appName, displayName }) {
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
             {m.name} · {m.totals.events} events · {m.totals.calls} calls · {m.totals.http_server} HTTP in · {m.totals.http_client} HTTP out · {m.totals.sql} SQL
           </div>
+          {view === 'deps'     && <DepMap m={m} />}
+          {view === 'flame'    && <Flame m={m} />}
+          {view === 'trace'    && <Trace m={m} />}
           {view === 'sequence' && <Sequence m={m} />}
           {view === 'calls'    && <Calls m={m} />}
           {view === 'services' && <Services m={m} appName={displayName || appName} />}

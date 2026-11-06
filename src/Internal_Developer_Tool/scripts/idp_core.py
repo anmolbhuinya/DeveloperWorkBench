@@ -18071,11 +18071,22 @@ def create_flask_app():
         data = _json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
         events = data.get("events") or []
         by_id = {e.get("id"): e for e in events if e.get("event") == "call"}
-        stack, calls, http_s, http_c, sqls = {}, [], [], [], []
+        stack, calls, http_s, http_c, sqls, spans = {}, [], [], [], [], []
+        span_by_id = {}
         for e in events:
             tid = e.get("thread_id", 0)
             st = stack.setdefault(tid, [])
             if e.get("event") == "call":
+                if e.get("http_server_request"):
+                    _r = e["http_server_request"]; _k, _lb = "http", "%s %s" % (_r.get("request_method", ""), _r.get("normalized_path_info") or _r.get("path_info") or "")
+                elif e.get("http_client_request"):
+                    _r = e["http_client_request"]; _k, _lb = "httpc", "%s %s" % (_r.get("request_method", ""), _r.get("url") or "")
+                elif e.get("sql_query"):
+                    _k, _lb = "sql", _re.sub(r"\s+", " ", e["sql_query"].get("sql") or "")[:120]
+                else:
+                    _k, _lb = "call", "%s.%s" % ((e.get("defined_class") or "").split(".")[-1], e.get("method_id") or "")
+                spans.append({"id": e.get("id"), "parent": st[-1] if st else None, "kind": _k, "label": _lb, "ms": 0.0})
+                span_by_id[e.get("id")] = spans[-1]
                 cls = e.get("defined_class") or ""
                 rec = {"id": e.get("id"), "cls": cls, "method": e.get("method_id") or "", "path": e.get("path") or "",
                        "line": e.get("lineno"), "depth": len(st), "parent": st[-1] if st else None, "ms": None}
@@ -18096,6 +18107,9 @@ def create_flask_app():
                     if st:
                         st.pop()
                 ms = round((e.get("elapsed") or 0) * 1000, 3)
+                _sp = span_by_id.get(cid)
+                if _sp is not None:
+                    _sp["ms"] = ms
                 for coll in (calls, http_s, http_c, sqls):
                     for r in coll:
                         if r["id"] == cid:
@@ -18138,8 +18152,24 @@ def create_flask_app():
             k = _re.sub(r"\s+", " ", _re.sub(r"'[^']*'|\b\d+\b", "?", q["sql"]).strip())[:300]
             g = grp.setdefault(k, {"sql": k, "db": q["db"], "count": 0, "total_ms": 0.0, "max_ms": 0.0})
             g["count"] += 1; g["total_ms"] = round(g["total_ms"] + (q["ms"] or 0), 3); g["max_ms"] = max(g["max_ms"], q["ms"] or 0)
+        # trace layout: AppMap events carry no timestamps, so children are laid out one after another inside their parent
+        nxt, root_off = {}, 0.0
+        for s in spans:
+            p = span_by_id.get(s["parent"])
+            if p is None:
+                s["depth"], s["start"] = 0, root_off
+                root_off += s["ms"]
+            else:
+                s["depth"] = p["depth"] + 1
+                s["start"] = nxt.get(p["id"], p["start"])
+            nxt[s["id"]] = s["start"]
+            if p is not None:
+                nxt[p["id"]] = s["start"] + s["ms"]
+        for s in spans:
+            s["start"] = round(s["start"], 3)
         meta = data.get("metadata") or {}
         return {
+            "spans": spans[:2500],
             "name": meta.get("name") or Path(path).stem,
             "recorder": (meta.get("recorder") or {}).get("name", ""),
             "totals": {"events": len(events), "calls": len(calls), "http_server": len(http_s), "http_client": len(http_c), "sql": len(sqls)},
