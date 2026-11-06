@@ -16,6 +16,7 @@ export default function SetupDevSoftwaresPage() {
   const [data, setData]       = useState({ root: '', items: [], winget: true })
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState('')
+  const [q, setQ]         = useState('')
   const [jobs, setJobs]   = useState({}) // key -> {title, status, output}
   const timers = useRef({})
 
@@ -50,6 +51,8 @@ export default function SetupDevSoftwaresPage() {
   const closeJob = (key) => setJobs(j => { const n = { ...j }; delete n[key]; return n })
   const running = (key) => jobs[key]?.status === 'running'
   const jobKeys = Object.keys(jobs)
+  const needle = q.trim().toLowerCase()
+  const shown = needle ? data.items.filter(it => `${it.title} ${it.desc} ${it.key}`.toLowerCase().includes(needle)) : data.items
 
   return (
     <div style={{ padding: '24px 28px', }}>
@@ -63,12 +66,19 @@ export default function SetupDevSoftwaresPage() {
         </div>
         <button className="btn" onClick={load} disabled={loading}>{loading ? 'Checking…' : '↻ Refresh'}</button>
       </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16 }}>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="🔎 Search softwares…" autoFocus
+          style={{ width: 340, fontSize: 13, padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }} />
+        {q && <button className="btn" onClick={() => setQ('')}>Clear</button>}
+        {needle && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{shown.length} of {data.items.length}</span>}
+      </div>
       {error && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{error}</div>}
       {!data.winget && <div className="alert alert-danger" style={{ marginBottom: 12 }}>winget is not available on this machine, so installs cannot run.</div>}
 
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 290px)', gap: 16, flex: '0 0 auto' }}>
-        {data.items.map(it => (
+        {needle && shown.length === 0 && <div style={{ fontSize: 13, color: 'var(--text-muted)', gridColumn: '1 / -1' }}>No software matches “{q}”.</div>}
+        {shown.map(it => (
           <div key={it.key} className="card" style={{ width: 290, cursor: it.key === 'jqassistant' && it.installed_here ? 'pointer' : 'default' }}
             onClick={() => { if (it.key === 'jqassistant' && it.installed_here) navigate('/setup/dev-softwares/jqassistant') }}
             title={it.key === 'jqassistant' && it.installed_here ? 'Click to open the jQAssistant page: configure code bases, scan, analyze, SBOM' : undefined}>
