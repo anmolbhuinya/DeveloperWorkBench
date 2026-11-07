@@ -10,7 +10,7 @@ Local Maven build (target/<module>-*-SNAPSHOT.jar)
         │
         ▼
   [1]  Resolve jar — read SRCDIR env var / ~/.default-branch, locate SNAPSHOT jar in target/
-        │             (or use override from config.xlsx → jar_location)
+        │             (or use override from app_config.xlsx → jar_location)
         ▼
   [2]  Copy jar to Windows shared folder
         │             (mounted in docker at /home/weblogic/shared)
@@ -35,7 +35,7 @@ Local Maven build (target/<module>-*-SNAPSHOT.jar)
 | Requirement | Details |
 |---|---|
 | Node.js v16+ | Run: `node --version` to confirm |
-| npm package: `xlsx` | Located at `C:/Users/abhuinya/node_modules/xlsx` — path set in `config.xlsx → General → nodeModules` |
+| npm package: `xlsx` | Located at `C:/Users/abhuinya/node_modules/xlsx` — path set in `app_config.xlsx → General → nodeModules` |
 | Docker Desktop | Running, with the payor container started (default: `payer-tc-261`) |
 | Maven build | Module must already be compiled — run `mvn clean install` or `mvn package` first |
 | Shared folder | `C:\Users\abhuinya\shared\payor_env` must be bind-mounted in docker at `/home/weblogic/shared` |
@@ -47,12 +47,12 @@ Local Maven build (target/<module>-*-SNAPSHOT.jar)
 
 ```
 Delta_Jar_Local_Deployment/
-├── config.xlsx                  ← Edit this to change defaults (3 tabs)
+├── app_config.xlsx                  ← Edit this to change defaults (3 tabs)
 ├── WORKFLOW.md                  ← This file
 ├── ReadMe.docx                  ← User-friendly formatted documentation
 └── scripts/
-    ├── config.js                ← Reads config.xlsx (do not edit)
-    ├── create_config_xlsx.js    ← One-time: regenerate config.xlsx
+    ├── config.js                ← Reads app_config.xlsx (do not edit)
+    ├── create_config_xlsx.js    ← One-time: regenerate app_config.xlsx
     ├── jar_resolver.js          ← Finds and names the source jar
     ├── docker_helpers.js        ← docker exec / docker cp helpers
     ├── deploy_jar.js            ← Deploy a single module
@@ -94,9 +94,9 @@ node scripts/list_modules.js --all    # also show non-Maven dirs
 
 ---
 
-## Configuration — config.xlsx
+## Configuration — app_config.xlsx
 
-Open `config.xlsx` and fill the **Overridden Value** column for anything that
+Open `app_config.xlsx` and fill the **Overridden Value** column for anything that
 differs from the default. Leave blank to keep the default. Never edit JS files directly.
 
 ### Tab 1 — General
@@ -157,7 +157,7 @@ Version info is automatically removed so the deployed name is stable across buil
 | `core-main-27.1-SNAPSHOT.jar` | `core-main.jar` |
 | `core-foundation-26.1.5-SNAPSHOT.jar` | `core-foundation.jar` |
 
-Override via `config.xlsx → jar_location → To` column.
+Override via `app_config.xlsx → jar_location → To` column.
 
 ---
 
@@ -218,7 +218,7 @@ Monitor `/tmp/startServer.log` inside the container to track startup progress.
 | `No jar found in target/` | Module not compiled. Run `mvn clean install` or `mvn package` first. |
 | Container not running | Start Docker Desktop, then `docker start payer-tc-261` |
 | `docker: command not found` | Install Docker Desktop and ensure `docker` is on your PATH |
-| `/home/weblogic/shared` not found inside docker | The `payor_env` subfolder is the actual mount point — set `sharedFolder` override to `C:/Users/abhuinya/shared/payor_env` in `config.xlsx` |
+| `/home/weblogic/shared` not found inside docker | The `payor_env` subfolder is the actual mount point — set `sharedFolder` override to `C:/Users/abhuinya/shared/payor_env` in `app_config.xlsx` |
 | Server does not stop in 5 minutes | Run `docker exec payer-tc-261 stopServer` manually, then re-run the script |
 
 ---

@@ -144,7 +144,12 @@ export default function GenericRemoteAppPage({
       .catch(() => {})
   }, [appName])
 
+  const [appTitle, setAppTitle] = useState('')
+  const loadAppTitle = () => fetch(`/api/remote-app/${appName}/application-info`).then(r => r.json()).then(r => { if (r.ok) setAppTitle(r.saved?.application_name || '') }).catch(() => {})
+  useEffect(() => { loadAppTitle() }, [appName])
+
   function reloadScreenCfg() {
+    loadAppTitle()
     fetch(`/api/remote-app/${appName}/screen-config?force=1`).then(r => r.json()).then(d => {
       if (!d.ok) return
       const serverTabs = d.tabs || []
@@ -297,7 +302,7 @@ export default function GenericRemoteAppPage({
         )}
 
         {hdr.app_logo?.enabled !== false && (
-          <span style={{ fontWeight: 600, fontSize: 15, whiteSpace: 'nowrap' }}>{icon} {displayName}</span>
+          <span style={{ fontWeight: 600, fontSize: 15, whiteSpace: 'nowrap' }}>{icon} {appTitle || displayName}</span>
         )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>

@@ -14,7 +14,7 @@
 //      GIT_HOME defaults to %USERPROFILE%\hebb (set in Healthedge.Powershell_truths.ps1)
 //
 //   3. Fallback: pick the most recently modified hrp.payer.core-* directory
-//      under payorRepoRoot as configured in config.xlsx → General.
+//      under payorRepoRoot as configured in app_config.xlsx → General.
 
 'use strict';
 
@@ -58,7 +58,7 @@ function resolveSrcDir() {
     }
   }
 
-  // Priority 3: config.xlsx setBranchFile (legacy / manual fallback)
+  // Priority 3: app_config.xlsx setBranchFile (legacy / manual fallback)
   const setBranchFile = cfg.paths.setBranchFile;
   if (fs.existsSync(setBranchFile)) {
     const raw   = fs.readFileSync(setBranchFile, 'utf8').split(/\r?\n/).map(l => l.trim()).filter(Boolean)[0] || '';

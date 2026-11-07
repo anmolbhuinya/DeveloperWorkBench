@@ -116,8 +116,30 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
   const [sel, setSel] = useState('')
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  const [view, setView] = useState('app')
+  const [app, setApp] = useState(null)
+  const [appMsg, setAppMsg] = useState('')
+  const [dev, setDev] = useState(null)
+  const [devMsg, setDevMsg] = useState('')
   const base = `/api/${kind}-app/${appName}/screen-config`
-  const show = () => { const b = build(kind, cfg); setD(b); setSel(b.tabs[0]?.key || ''); setMsg(''); setOpen(true) }
+  const show = () => {
+    const b = build(kind, cfg); setD(b); setSel(b.tabs[0]?.key || ''); setMsg(''); setAppMsg(''); setDevMsg(''); setView('app'); setApp(null); setDev(null); setOpen(true)
+    if (kind === 'local') fetch(`/api/local-app/${appName}/devtool-config`).then(r => r.json()).then(r => { if (r.ok && r.rows) setDev(r); else setDevMsg(r.error || 'Could not load') }).catch(() => setDevMsg('Could not reach server'))
+    fetch(`/api/${kind}-app/${appName}/application-info`).then(r => r.json()).then(r => { if (r.ok && r.fields) setApp(r); else setAppMsg(r.error || 'Could not load - restart the Workbench') }).catch(() => setAppMsg('Could not reach server'))
+  }
+  const setDevRow = (i, k, v) => setDev({ ...dev, rows: dev.rows.map((r, j) => j === i ? { ...r, [k]: v } : r) })
+  function saveDev() {
+    setBusy(true); setDevMsg('')
+    fetch(`/api/local-app/${appName}/devtool-config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rows: dev.rows }) }).then(r => r.json())
+      .then(r => { setDevMsg(r.ok ? 'Saved' : r.error || 'Save failed'); if (r.ok) onSaved && onSaved() })
+      .catch(() => setDevMsg('Could not reach server')).finally(() => setBusy(false))
+  }
+  function saveApp() {
+    setBusy(true); setAppMsg('')
+    fetch(`/api/${kind}-app/${appName}/application-info`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: app.values }) }).then(r => r.json())
+      .then(r => { setAppMsg(r.ok ? 'Saved' : r.error || 'Save failed'); if (r.ok) onSaved && onSaved() })
+      .catch(() => setAppMsg('Could not reach server')).finally(() => setBusy(false))
+  }
   const setTab = (i, patch) => setD({ ...d, tabs: d.tabs.map((t, j) => j === i ? { ...t, ...patch } : t) })
   const moveTab = (i, dir) => { const t = [...d.tabs]; const j = i + dir; if (j < 0 || j >= t.length) return; [t[i], t[j]] = [t[j], t[i]]; setD({ ...d, tabs: t }) }
   const setPanel = (tab, i, patch) => setD({ ...d, panels: { ...d.panels, [tab]: d.panels[tab].map((p, j) => j === i ? { ...p, ...patch } : p) } })
@@ -148,6 +170,57 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
               <b style={{ fontSize: 15 }}>Configure {appName} ({kind})</b>
               <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => setOpen(false)}>Close</button>
             </div>
+            <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', padding: '0 16px' }}>
+              {[['app', 'Application'], ...(kind === 'local' ? [['devtool', 'DevTool']] : []), ['screen', 'Screen']].map(([k, l]) => (
+                <button key={k} onClick={() => setView(k)} style={{ padding: '8px 18px', fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', fontFamily: 'inherit',
+                  borderBottom: view === k ? '2px solid var(--primary, #3b82f6)' : '2px solid transparent', color: view === k ? 'var(--primary, #3b82f6)' : 'var(--text-muted)', fontWeight: view === k ? 600 : 400 }}>{l}</button>))}
+            </div>
+            {view === 'app' && (
+              <div style={{ overflow: 'auto', padding: 16 }}>
+                {!app ? <div style={{ fontSize: 12 }}>{appMsg || 'Loading...'}</div> : <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 10 }}>
+                    {app.fields.map(f => (
+                      <label key={f.key} style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', gridColumn: f.key === 'description' || f.key === 'repository_url' || f.key === 'repository_path' ? '1 / -1' : undefined }}>{f.label}
+                        <input style={{ ...inp, width: '100%', boxSizing: 'border-box', marginTop: 2, padding: '5px 7px' }} value={app.values[f.key] || ''}
+                          onChange={e => setApp({ ...app, values: { ...app.values, [f.key]: e.target.value } })} />
+                      </label>))}
+                  </div>
+                  <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button style={btn} onClick={saveApp} disabled={busy}>{busy ? 'Saving...' : 'Save'}</button>
+                    {kind === 'local' && <button style={btn} onClick={() => setApp({ ...app, values: { ...app.values, ...Object.fromEntries(Object.entries(app.detected || {}).filter(([, v]) => v)) } })}>Fill from local clone</button>}
+                    <span style={{ fontSize: 12, color: appMsg === 'Saved' ? '#16a34a' : '#dc2626' }}>{appMsg}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>Saved to {app.file}</span>
+                  </div>
+                </>}
+              </div>
+            )}
+            {view === 'devtool' && (
+              <div style={{ overflow: 'auto', padding: 16 }}>
+                {!dev ? <div style={{ fontSize: 12 }}>{devMsg || 'Loading...'}</div> : <>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr>{['Section', 'Key', 'Label', 'Command', ''].map(h => <th key={h} style={{ textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '2px solid var(--border)' }}>{h}</th>)}</tr></thead>
+                    <tbody>{dev.rows.map((r, i) => (
+                      <tr key={i}>
+                        {['section', 'key', 'label', 'command'].map(c => (
+                          <td key={c} style={{ padding: '3px 4px', borderBottom: '1px solid var(--border)', width: c === 'section' ? 100 : undefined }}>
+                            <input style={{ ...inp, width: '100%', boxSizing: 'border-box', fontFamily: 'monospace' }} value={r[c] || ''} title={c === 'key' ? dev.known?.[r.key] || '' : ''} onChange={e => setDevRow(i, c, e.target.value)} />
+                          </td>))}
+                        <td style={{ padding: '3px 4px', borderBottom: '1px solid var(--border)' }}><button style={btn} onClick={() => setDev({ ...dev, rows: dev.rows.filter((_, j) => j !== i) })}>Remove</button></td>
+                      </tr>))}</tbody>
+                  </table>
+                  <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button style={btn} onClick={() => setDev({ ...dev, rows: [...dev.rows, { section: 'app', key: '', label: '', command: '' }] })}>Add row</button>
+                    <button style={btn} onClick={saveDev} disabled={busy}>{busy ? 'Saving...' : 'Save'}</button>
+                    <span style={{ fontSize: 12, color: devMsg === 'Saved' ? '#16a34a' : '#dc2626' }}>{devMsg}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>Saved to {dev.file}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.6 }}>
+                    Keys the Workbench uses: <b>env_tool</b> (sets the branch), <b>build_tool</b> (builds), <b>terminal_init</b> (runs when a terminal opens), <b>default_branch_file</b> (holds the current branch), <b>git_pattern</b> (name pattern of the clones).
+                  </div>
+                </>}
+              </div>
+            )}
+            {view === 'screen' && (
             <div style={{ overflow: 'auto', padding: 16, display: 'flex', gap: 20, flexWrap: 'wrap' }}>
               <div style={{ flex: '1 1 340px', minWidth: 300 }}>
                 <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Tabs (top to bottom = left to right)</div>
@@ -177,12 +250,15 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
                   </div>))}
               </div>
             </div>
+            )}
+            {view === 'screen' && (
             <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center' }}>
               <button style={btn} onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save'}</button>
               <button style={btn} onClick={reset}>Reset to defaults</button>
               <span style={{ fontSize: 12, color: msg.startsWith('Defaults') ? 'var(--text-muted)' : '#dc2626' }}>{msg}</span>
               <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>Saved to screen_config.xlsx of this application</span>
             </div>
+            )}
           </div>
         </div>
       )}

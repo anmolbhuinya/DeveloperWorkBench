@@ -1,7 +1,7 @@
 // ============================================================
 // create_config_xlsx.js
 //
-// PURPOSE: Generate config.xlsx in the Delta_Jar_Local_Deployment/ folder.
+// PURPOSE: Generate app_config.xlsx in the Delta_Jar_Local_Deployment/ folder.
 //          Run this ONCE to create the file, then edit the
 //          "Overridden Value" column when defaults need to change.
 //
@@ -12,7 +12,7 @@ const path = require('path');
 const BOOTSTRAP_NM = '' + require('os').homedir().replace(/\\/g, '/') + '/node_modules';
 const XLSX = require(path.join(BOOTSTRAP_NM, 'xlsx'));
 
-const CONFIG_XLSX = path.join(__dirname, '..', 'config.xlsx');
+const CONFIG_XLSX = path.join(__dirname, '..', 'app_config.xlsx');
 
 const wb = XLSX.utils.book_new();
 
@@ -49,6 +49,6 @@ jarWs['!cols'] = [{ wch: 20 }, { wch: 70 }, { wch: 40 }, { wch: 50 }, { wch: 60 
 XLSX.utils.book_append_sheet(wb, jarWs, 'jar_location');
 
 XLSX.writeFile(wb, CONFIG_XLSX);
-console.log('config.xlsx created at:', CONFIG_XLSX);
+console.log('app_config.xlsx created at:', CONFIG_XLSX);
 console.log('Fill the "Overridden Value" column for each key; leave blank to keep defaults.');
 console.log('config.js reads from it automatically — no JS edits needed.');

@@ -199,7 +199,12 @@ export default function GenericLocalAppPage({
   const [currentBranch,  setCurrentBranch]  = useState(null)
   const [featureBranch,  setFeatureBranch]  = useState(null)
 
+  const [appTitle, setAppTitle] = useState('')
+  const loadAppTitle = () => fetch(`/api/local-app/${appName}/application-info`).then(r => r.json()).then(r => { if (r.ok) setAppTitle(r.saved?.application_name || '') }).catch(() => {})
+  useEffect(() => { loadAppTitle() }, [appName])
+
   function reloadScreenCfg() {
+    loadAppTitle()
     fetch(`/api/local-app/${appName}/screen-config?force=1`).then(r => r.json()).then(d => {
       if (!d.ok) return
       const serverTabs = d.tabs || []
@@ -275,7 +280,7 @@ export default function GenericLocalAppPage({
         </div>
       )}
       <PageHeader
-        displayName={displayName} icon={icon}
+        displayName={appTitle || displayName} icon={icon}
         backPath={backPath} backLabel={backLabel}
         branch={branch} deployed={deployed} serverUp={serverUp}
         hdr={hdr}

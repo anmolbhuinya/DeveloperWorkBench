@@ -8,7 +8,7 @@
 //   node scripts/deploy_jar.js core-cvc
 //
 // WHAT IT DOES:
-//   1. Resolve source jar path (from setBranch + module target/, or config.xlsx override)
+//   1. Resolve source jar path (from setBranch + module target/, or app_config.xlsx override)
 //   2. Copy jar to Windows shared folder (mounted in docker at /home/weblogic/shared)
 //   3. Inside docker: stopServer, wait for server to stop
 //   4. Inside docker: copy jar from shared → deploy dir, rename to strip version

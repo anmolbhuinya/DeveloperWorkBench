@@ -2020,8 +2020,8 @@ def _get_payor_version_for_queries():
 
 
 def _read_payor_docker_key(key):
-    """Read a key from the Docker_VM sheet of Payor/config.xlsx."""
-    cfg = PAYOR_ROOT / "config.xlsx"
+    """Read a key from the Docker_VM sheet of Payor/app_config.xlsx."""
+    cfg = PAYOR_ROOT / "app_config.xlsx"
     if not cfg.exists():
         return ""
     try:
@@ -17745,8 +17745,8 @@ def create_flask_app():
         return branch, srcdir
 
     def _read_local_tool(key):
-        """Read a tool path from Local_Build_And_Deployment/Applications/Payor/config.xlsx 'Local Tools' sheet."""
-        cfg = PAYOR_ROOT / "config.xlsx"
+        """Read a tool path from Local_Build_And_Deployment/Applications/Payor/app_config.xlsx 'Local Tools' sheet."""
+        cfg = PAYOR_ROOT / "app_config.xlsx"
         if not cfg.exists():
             return ""
         try:
@@ -17768,7 +17768,7 @@ def create_flask_app():
         _, srcdir = _payor_srcdir()
         if not srcdir or not Path(srcdir).exists():
             return jsonify({"ok": False, "error": f"Clone directory not found: {srcdir}"})
-        # 1. Check config.xlsx Local Tools sheet
+        # 1. Check app_config.xlsx Local Tools sheet
         idea_exe = _read_local_tool("intellij_exe")
         # 2. PATH
         if not idea_exe or not Path(idea_exe).exists():
@@ -17781,7 +17781,7 @@ def create_flask_app():
                     idea_exe = matches[-1]
                     break
         if not idea_exe or not Path(idea_exe).exists():
-            return jsonify({"ok": False, "error": "IntelliJ IDEA not found. Add intellij_exe to Local_Build_And_Deployment/Applications/Payor/config.xlsx 'Local Tools' sheet."})
+            return jsonify({"ok": False, "error": "IntelliJ IDEA not found. Add intellij_exe to Local_Build_And_Deployment/Applications/Payor/app_config.xlsx 'Local Tools' sheet."})
         try:
             subprocess.Popen([idea_exe, srcdir], creationflags=0x08000000)
             return jsonify({"ok": True})
@@ -18167,6 +18167,7 @@ def create_flask_app():
             for a in sorted(set(list(_KNOWN_GENERIC_LOCAL_APPS) + ["payor"])):
                 _tab_cfg_migrated.add(a)
                 _migrate_tab_configs(a)
+                _migrate_app_config_file(a)
         except Exception:
             pass
 
@@ -21114,17 +21115,17 @@ done
             overrides[module] = entry
             _write_module_overrides(PAYOR_ROOT, overrides)
             return jsonify({"ok": True})
-        config_xlsx = PAYOR_ROOT / "config.xlsx"
+        config_xlsx = PAYOR_ROOT / "app_config.xlsx"
         module_overrides = _read_module_overrides(PAYOR_ROOT)
         if not config_xlsx.exists():
-            return jsonify({"ok": True, "configured": False, "reason": "config.xlsx not found",
+            return jsonify({"ok": True, "configured": False, "reason": "app_config.xlsx not found",
                             "module_overrides": module_overrides})
         try:
             import openpyxl as _xl
             wb = _xl.load_workbook(str(config_xlsx), data_only=True)
             docker_ws = next((s for s in wb.sheetnames if s.lower() == "docker_vm"), None)
             if not docker_ws:
-                return jsonify({"ok": True, "configured": False, "reason": "Docker_VM sheet not found in config.xlsx",
+                return jsonify({"ok": True, "configured": False, "reason": "Docker_VM sheet not found in app_config.xlsx",
                                 "module_overrides": module_overrides})
             deploy_dir = ""
             container  = ""
@@ -23158,7 +23159,7 @@ done
     def _read_local_deps(app_name):
         if app_name in _local_deps_cache:
             return _local_deps_cache[app_name]
-        xlsx_path = (PAYOR_ROOT if app_name == "payor" else _generic_app_root(app_name)) / "local_dependencies.xlsx"
+        xlsx_path = (PAYOR_ROOT if app_name == "payor" else _generic_app_root(app_name)) / "devtool_config.xlsx"
         if not xlsx_path.exists():
             _local_deps_cache[app_name] = {}
             return {}
@@ -23278,7 +23279,7 @@ done
         deps     = _read_local_deps(app_name)
         env_tool = deps.get("env_tool", "").strip()
         if not env_tool:
-            return jsonify({"ok": False, "error": "env_tool not configured in local_dependencies.xlsx"})
+            return jsonify({"ok": False, "error": "env_tool not configured in devtool_config.xlsx"})
         lock, state = _get_set_branch_state(app_name)
         with lock:
             if state["status"] == "running":
@@ -28239,6 +28240,118 @@ done
         return jsonify({"ok": True, "connections": [{"name": r["name"], "type": t, "host": r["host"], "port": r["port"]}
                         for t, rows in _mx_load(_mx_path(app_name, "queue"), "queue", app_name == "payor").items() for r in rows if r["enabled"]]})
 
+    # ── app_config.xlsx: the "Application" sheet (name + repository) next to the application's other settings ──
+    _APPCFG_FIELDS = [("application_name", "Application name"), ("description", "Description"), ("repository_name", "Repository name"),
+                      ("repository_url", "Repository URL"), ("repository_path", "Local repository path"), ("default_branch", "Default / release branch")]
+
+    def _appcfg_path(kind, app_name):
+        return (_generic_app_root(app_name) if kind == "local" else _remote_app_root(app_name)) / "app_config.xlsx"
+
+    def _appcfg_read(path):
+        import openpyxl as _xl
+        out = {}
+        if path.exists():
+            wb = _xl.load_workbook(str(path), read_only=True, data_only=True)
+            if "Application" in wb.sheetnames:
+                for r in list(wb["Application"].iter_rows(min_row=2, values_only=True)):
+                    if r and r[0]: out[str(r[0]).strip()] = "" if len(r) < 2 or r[1] is None else str(r[1]).strip()
+            wb.close()
+        return out
+
+    def _appcfg_detect(app_name):
+        """What can be read from the local clone: folder, remote URL, current branch."""
+        d = {"application_name": _APP_DIR_NAMES.get(app_name, app_name.capitalize())}
+        try:
+            repo = _find_repo_dir(app_name)
+        except Exception:
+            repo = None
+        if repo:
+            d["repository_path"] = str(repo)
+            d["repository_name"] = Path(repo).name
+            ok, u = _inv_git(repo, ["remote", "get-url", "origin"], 15)
+            if ok and u: d["repository_url"] = u.splitlines()[0]
+            ok, b = _inv_git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], 15)
+            if ok and b and b != "HEAD": d["default_branch"] = b
+        return d
+
+    @app.route("/api/<kind>-app/<app_name>/application-info", methods=["GET", "POST"])
+    def api_application_info(kind, app_name):
+        import openpyxl as _xl
+        if kind not in ("local", "remote"): return jsonify({"ok": False, "error": "Unknown"}), 404
+        path = _appcfg_path(kind, app_name)
+        if request.method == "POST":
+            vals = (request.get_json(silent=True) or {}).get("values") or {}
+            try:
+                wb = _xl.load_workbook(str(path)) if path.exists() else _xl.Workbook()
+                if "Application" in wb.sheetnames: del wb["Application"]
+                ws = wb.create_sheet("Application", 0)
+                ws.append(["Key", "Value", "Description"])
+                for k, label in _APPCFG_FIELDS: ws.append([k, str(vals.get(k, "")).strip(), label])
+                if "Sheet" in wb.sheetnames and wb["Sheet"].max_row <= 1: del wb["Sheet"]
+                for col, w in zip("ABC", (22, 70, 30)): ws.column_dimensions[col].width = w
+                path.parent.mkdir(parents=True, exist_ok=True)
+                wb.save(str(path))
+                return jsonify({"ok": True})
+            except Exception as e:
+                return jsonify({"ok": False, "error": "Could not save %s (is it open in Excel?): %s" % (path.name, e)})
+        saved = _appcfg_read(path)
+        det = _appcfg_detect(app_name) if kind == "local" else {}
+        values = {k: (saved.get(k) or det.get(k, "")) for k, _ in _APPCFG_FIELDS}
+        return jsonify({"ok": True, "values": values, "saved": {k: v for k, v in saved.items() if v}, "detected": det,
+                        "fields": [{"key": k, "label": l} for k, l in _APPCFG_FIELDS], "file": str(path)})
+
+    def _migrate_app_config_file(app_name):
+        """config.xlsx -> app_config.xlsx, local_dependencies.xlsx -> devtool_config.xlsx in the application folder."""
+        for root in (_generic_app_root(app_name), _remote_app_root(app_name)):
+            for o, n in (("config.xlsx", "app_config.xlsx"), ("local_dependencies.xlsx", "devtool_config.xlsx")):
+                try:
+                    old, new = root / o, root / n
+                    if old.is_file() and not new.exists(): os.replace(str(old), str(new))
+                except Exception:
+                    pass
+
+    # ── devtool_config.xlsx: the commands the Workbench runs for the application (set branch, build, terminal, ...) ──
+    @app.route("/api/local-app/<app_name>/devtool-config", methods=["GET", "POST"])
+    def api_devtool_config(app_name):
+        import openpyxl as _xl
+        if app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"}): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        path = (PAYOR_ROOT if app_name == "payor" else _generic_app_root(app_name)) / "devtool_config.xlsx"
+        if request.method == "POST":
+            rows, seen = [], set()
+            for x in ((request.get_json(silent=True) or {}).get("rows") or []):
+                k = str(x.get("key", "")).strip()
+                if not k: return jsonify({"ok": False, "error": "Every row needs a key"})
+                if k in seen: return jsonify({"ok": False, "error": "Duplicate key: " + k})
+                seen.add(k)
+                rows.append([str(x.get("section", "")).strip(), k, str(x.get("label", "")).strip() or k, str(x.get("command", "")).strip()])
+            try:
+                wb = _xl.load_workbook(str(path)) if path.exists() else _xl.Workbook()
+                name = next((n for n in wb.sheetnames if n.lower() == "dependencies"), None)
+                if name: del wb[name]
+                ws = wb.create_sheet("dependencies", 0)
+                ws.append(["section", "key", "label", "command"])
+                for r in rows: ws.append(r)
+                if "Sheet" in wb.sheetnames and wb["Sheet"].max_row <= 1: del wb["Sheet"]
+                for col, w in zip("ABCD", (12, 24, 24, 60)): ws.column_dimensions[col].width = w
+                path.parent.mkdir(parents=True, exist_ok=True)
+                wb.save(str(path))
+                _local_deps_cache.pop(app_name, None)
+                return jsonify({"ok": True})
+            except Exception as e:
+                return jsonify({"ok": False, "error": "Could not save %s (is it open in Excel?): %s" % (path.name, e)})
+        rows = []
+        if path.exists():
+            wb = _xl.load_workbook(str(path), read_only=True, data_only=True)
+            ws = wb.active
+            for r in list(ws.iter_rows(min_row=2, values_only=True)):
+                if r and r[1] is not None:
+                    c = [("" if v is None else str(v).strip()) for v in list(r) + [None] * 4]
+                    rows.append({"section": c[0], "key": c[1], "label": c[2], "command": c[3]})
+            wb.close()
+        return jsonify({"ok": True, "rows": rows, "file": str(path),
+                        "known": {"env_tool": "sets the branch", "build_tool": "builds the application", "terminal_init": "run when a terminal opens",
+                                  "default_branch_file": "file that holds the current branch", "git_pattern": "name pattern of the git clones"}})
+
     # ── Local-app screen configuration (driven by screen_config.xlsx) ────────────
 
     _local_screen_cfg_cache: dict = {}
@@ -28706,7 +28819,7 @@ done
                 mop["output"] += f"\n[ERROR] {e}\n"
 
     def _generic_build_command(app_name):
-        # local_dependencies.xlsx build_tool takes highest precedence
+        # devtool_config.xlsx build_tool takes highest precedence
         deps = _read_local_deps(app_name)
         cmd = deps.get("build_tool", "").strip()
         if cmd:
@@ -35285,7 +35398,7 @@ done
                     exe = m[-1]
                     break
         if not exe or not Path(exe).exists():
-            return jsonify({"ok": False, "error": "IntelliJ IDEA not found. Add intellij_exe to the 'Local Tools' sheet of config.xlsx."})
+            return jsonify({"ok": False, "error": "IntelliJ IDEA not found. Add intellij_exe to the 'Local Tools' sheet of app_config.xlsx."})
         args = [exe, src]
         if st["conflicts"]:
             args.append(str(Path(src) / st["conflicts"][0]))   # open the first conflicted file; Git > Resolve Conflicts lists the rest

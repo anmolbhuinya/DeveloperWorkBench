@@ -41,17 +41,17 @@ def _check_node():
 
 
 def _ensure_config():
-    config = TOOL_ROOT / "config.xlsx"
+    config = TOOL_ROOT / "app_config.xlsx"
     if config.exists():
-        print(f"  [ok]     config.xlsx")
+        print(f"  [ok]     app_config.xlsx")
         return True
-    print(f"  [create] config.xlsx  (running create_config_xlsx.js)...")
+    print(f"  [create] app_config.xlsx  (running create_config_xlsx.js)...")
     result = subprocess.run(
         ["node", str(SCRIPT_DIR / "create_config_xlsx.js")],
         capture_output=True, text=True
     )
     if result.returncode == 0:
-        print(f"  {green('[ok]')}     config.xlsx created")
+        print(f"  {green('[ok]')}     app_config.xlsx created")
         return True
     print(f"  {red('[error]')}  create_config_xlsx.js failed:")
     print(f"           {result.stderr.strip() or result.stdout.strip()}")
@@ -105,7 +105,7 @@ def main():
     if node_ok:
         _ensure_config()
     else:
-        print(f"  {yellow('[skip]')}   config.xlsx — node not found")
+        print(f"  {yellow('[skip]')}   app_config.xlsx — node not found")
 
     print()
     print("  ── CMD wrappers ─────────────────────────────────────────────────")
@@ -113,7 +113,7 @@ def main():
 
     print()
     print("  Setup complete. Next steps:")
-    print("    1. Open config.xlsx and fill in any overridden values")
+    print("    1. Open app_config.xlsx and fill in any overridden values")
     print("       (payorRepoRoot, sharedFolder, containerName, deployDir)")
     print("    2. Run:  listpayormodules  (or  lpm)  to list available Payor modules")
     print("    3. Run:  buildpayormodule  (or  bpm)  to build a module")
