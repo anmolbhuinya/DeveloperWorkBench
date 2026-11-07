@@ -47,6 +47,7 @@ const selStyle = {
 }
 
 import { TabBar, ScmTab } from './LocalAppShared'
+import { ScreenCfgProvider, ScreenConfigButton } from './ScreenConfig'
 import { GpRunTab } from './GpRunPage'
 import ItTab from './ItTab'
 import {
@@ -142,6 +143,16 @@ export default function GenericRemoteAppPage({
       })
       .catch(() => {})
   }, [appName])
+
+  function reloadScreenCfg() {
+    fetch(`/api/remote-app/${appName}/screen-config?force=1`).then(r => r.json()).then(d => {
+      if (!d.ok) return
+      const serverTabs = d.tabs || []
+      const mergedTabs = DEFAULT_SCREEN_CFG.tabs.map(dt => { const st = serverTabs.find(x => x.key === dt.key); return st ? { ...dt, ...st } : dt })
+      serverTabs.forEach(st => { if (!mergedTabs.find(m => m.key === st.key)) mergedTabs.push(st) })
+      setScreenCfg({ ...d, tabs: mergedTabs })
+    }).catch(() => {})
+  }
 
   function loadBranch(force = false) {
     if (!vmIp) return
@@ -271,6 +282,7 @@ export default function GenericRemoteAppPage({
   }
 
   return (
+    <ScreenCfgProvider cfg={screenCfg}>
     <div>
       {/* ── Header — single row ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 16, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface, rgba(128,128,128,0.04))' }}>
@@ -330,6 +342,8 @@ export default function GenericRemoteAppPage({
             : '⟳'}
         </button>
 
+        <ScreenConfigButton kind="remote" appName={appName} cfg={screenCfg} onSaved={reloadScreenCfg} />
+
       </div>
 
       <TabBar visibleTabs={visibleTabs} resolvedTab={resolvedTab} onTabChange={setActiveTab} />
@@ -379,5 +393,6 @@ export default function GenericRemoteAppPage({
         </div>
       )}
     </div>
+    </ScreenCfgProvider>
   )
 }

@@ -1917,12 +1917,87 @@ def _db_read_container_config(container_name="payer-tc-261"):
         return {}
 
 
+# ── Connection workbooks: database_config.xlsx / queue_config.xlsx (one sheet per type, one row per connection) ──
+_DB_TYPES    = ["Oracle", "PostgreSQL", "SQLServer", "MySQL"]
+_DB_COLS     = ["Name", "Enabled", "Host", "Port", "Service", "Username", "Password", "Schema", "Options"]
+_QUEUE_TYPES = ["Artemis", "ActiveMQ", "RabbitMQ", "Kafka"]
+_QUEUE_COLS  = ["Name", "Enabled", "Host", "Port", "Username", "Password", "Path", "Options"]
+_MX_DEFAULTS = {
+    "database": {"Oracle": [["payor_oltp", True, "localhost", "1521", "DB19C", "PAYOR_OLTP", "hedge", "PAYOR_OLTP", ""],
+                            ["payor_dw", True, "localhost", "1521", "DB19C", "PAYOR_DW", "hedge", "PAYOR_DW", ""]]},
+    "queue": {"Artemis": [["HEBroker", True, "localhost", "8161", "admin", "admin", "/console/jolokia", "via=container"]]},
+}
+
+def _mx_spec(kind):
+    return (_DB_TYPES, _DB_COLS, "database_config.xlsx") if kind == "database" else (_QUEUE_TYPES, _QUEUE_COLS, "queue_config.xlsx")
+
+def _mx_save(path, kind, data):
+    import openpyxl as _xl
+    types, cols, _ = _mx_spec(kind)
+    wb = _xl.Workbook()
+    wb.remove(wb.active)
+    for t in types:
+        ws = wb.create_sheet(t)
+        ws.append(cols)
+        for r in data.get(t, []):
+            ws.append([("TRUE" if r.get(c.lower()) else "FALSE") if c == "Enabled" else r.get(c.lower(), "") for c in cols])
+        for i in range(len(cols)): ws.column_dimensions[chr(65 + i)].width = 22 if cols[i] not in ("Enabled", "Port") else 9
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(path))
+
+def _mx_load(path, kind, seed=True):
+    """{type: [row dict]} - the workbook is created (with the defaults for the application, if any) when it does not exist."""
+    import openpyxl as _xl
+    types, cols, _ = _mx_spec(kind)
+    path = Path(path)
+    if not path.exists():
+        dflt = _MX_DEFAULTS.get(kind, {}) if seed else {}
+        _mx_save(path, kind, {t: [dict(zip([c.lower() for c in cols], row)) for row in rows] for t, rows in dflt.items()})
+    wb = _xl.load_workbook(str(path), read_only=True, data_only=True)
+    out = {}
+    for t in types:
+        rows = []
+        if t in wb.sheetnames:
+            it = wb[t].iter_rows(values_only=True)
+            hdr = [str(h or "").strip().lower() for h in (next(it, None) or [])]
+            for r in it:
+                if not r or r[0] in (None, ""): continue
+                d = {h: ("" if v is None else str(v).strip()) for h, v in zip(hdr, r) if h}
+                d["enabled"] = d.get("enabled", "").lower() in ("true", "1", "yes", "y")
+                if str(d.get("port", "")).endswith(".0"): d["port"] = d["port"][:-2]
+                for c in cols:
+                    d.setdefault(c.lower(), "")
+                rows.append(d)
+        out[t] = rows
+    wb.close()
+    return out
+
+def _db_conn_row(name):
+    """Override dict for _get_db_connection built from the Payor database_config.xlsx row called <name>."""
+    for t, rows in _mx_load(PAYOR_ROOT / "database_config.xlsx", "database").items():
+        for r in rows:
+            if r["name"].lower() == str(name).lower() and r["enabled"]:
+                if t != "Oracle":
+                    raise RuntimeError("%s connections need their database driver, which is not installed in this Workbench (only Oracle is supported)" % t)
+                o = {"host": r["host"] or "localhost", "service": r["service"], "user": r["username"], "password": r["password"]}
+                if r["port"].isdigit(): o["port"] = int(r["port"])
+                return {k: v for k, v in o.items() if v not in ("", None)}
+    raise RuntimeError("Unknown or disabled database connection: %s" % name)
+
 def _get_db_connection(override=None):
     """Open a new Oracle connection. override dict merges over stored config."""
     try:
         import oracledb as _ora
     except ImportError:
         raise RuntimeError("oracledb not installed — run: python -m pip install oracledb")
+    if override is None:                       # the DB tab names the connection (payor_oltp, payor_dw, ...) in ?conn=
+        try:
+            from flask import request as _rq, has_request_context as _hrc
+            nm = _rq.args.get("conn", "") if _hrc() else ""
+        except Exception:
+            nm = ""
+        if nm:
+            override = _db_conn_row(nm)
     with _payor_db_config_lock:
         c = {**_payor_db_config, **(override or {})}
     return _ora.connect(user=c["user"], password=c["password"],
@@ -18035,6 +18110,66 @@ def create_flask_app():
         # drop a <dependencies> element we created that is now empty
         return _re.sub(r"[ \t]*<dependencies>\s*</dependencies>[ \t]*\n?", "", out)
 
+    # ── Tab settings live with the application: Local_Build_And_Deployment\Applications\<App> ──
+    _TAB_CFG_FILES = {"Observability": ["application_log.json", "application_trace.json", "event_config.xlsx", "jvm_config.xlsx"],
+                      "Investigation": ["issue_categories.xlsx"], "Cache": ["cache_config.xlsx"], "Ldap": ["ldap_config.xlsx"], "Vault": ["vault_config.xlsx"]}
+    _TAB_CFG_DIRS = ("AppMap", "P6Spy")             # these keep their several files in a sub folder of the application folder
+    _tab_cfg_migrated = set()
+
+    def _migrate_tab_configs(app_name, old_root=None, new_root=None):
+        """Move settings from Setup\\Dev_Softwares\\<Tab>\\<App> to the application folder (never overwrites a file that already exists there)."""
+        import shutil as _sh
+        old_root = old_root or (WORKFLOWS_ROOT / "Setup" / "Dev_Softwares")
+        new_root = new_root or _generic_app_root(app_name)
+        t = app_name.title()
+        pairs = []
+        for tab, files in _TAB_CFG_FILES.items():
+            pairs += [(old_root / tab / t / f, new_root / f) for f in files]
+        for tab in _TAB_CFG_DIRS:
+            src = old_root / tab / t
+            if src.is_dir():
+                pairs += [(f, new_root / tab / f.name) for f in src.iterdir() if f.is_file()]
+        moved = []
+        for src, dst in pairs:
+            try:
+                if src.is_file() and not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    _sh.move(str(src), str(dst))
+                    moved.append(str(dst))
+            except Exception:
+                pass
+        for tab in list(_TAB_CFG_FILES) + list(_TAB_CFG_DIRS):          # remove the old per-app folders once empty
+            for d in (old_root / tab / t, ) + (() if tab in _TAB_CFG_DIRS else (old_root / tab, )):
+                try: d.rmdir()
+                except Exception: pass
+        return moved
+
+    def _tab_cfg_dir(app_name):
+        d = _generic_app_root(app_name)
+        d.mkdir(parents=True, exist_ok=True)
+        if app_name not in _tab_cfg_migrated:
+            _tab_cfg_migrated.add(app_name)
+            _migrate_tab_configs(app_name)
+        return d
+
+    @app.before_request
+    def _tab_cfg_migrate_all_once():
+        if "*" in _tab_cfg_migrated: return
+        _tab_cfg_migrated.add("*")
+        try:
+            for f in (Path(os.environ["DWB_HOME"]) / "SQL_Queries" / "Local").glob("*/*/*_Queries.xlsx"):      # <App>_<Ver>_Queries.xlsx -> <app>_oltp_<ver>_queries.xlsx
+                ver = f.name[len(f.parent.parent.name) + 1:-len("_Queries.xlsx")]
+                tgt = f.with_name("%s_oltp_%s_queries.xlsx" % (f.parent.parent.name.lower(), ver))
+                if not tgt.exists(): os.replace(str(f), str(tgt))
+        except Exception:
+            pass
+        try:
+            for a in sorted(set(list(_KNOWN_GENERIC_LOCAL_APPS) + ["payor"])):
+                _tab_cfg_migrated.add(a)
+                _migrate_tab_configs(a)
+        except Exception:
+            pass
+
     def _appmap_base():
         return WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "AppMap"
 
@@ -18062,8 +18197,8 @@ def create_flask_app():
         return PROJECTS_HOME / "Setup" / "Dev_Softwares" / "AppMap" / app_name.title()
 
     def _appmap_cfgdir(app_name):
-        """appmap.yml + settings.json live under DeveloperWorkBench\Setup\Dev_Softwares\AppMap\<App> (files moved here from the DWB_Projects folder)."""
-        d = _appmap_base() / app_name.title()
+        """appmap.yml + settings.json live under DeveloperWorkBench\Local_Build_And_Deployment\Applications\<App>\AppMap."""
+        d = _tab_cfg_dir(app_name) / "AppMap"
         try:
             d.mkdir(parents=True, exist_ok=True)
             for n in ("appmap.yml", "settings.json"):
@@ -18181,7 +18316,7 @@ def create_flask_app():
                      "databaseDialectDateFormat=yyyy-MM-dd HH:mm:ss\n")
 
     def _p6_cfgdir(app_name):
-        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "P6Spy" / app_name.title()
+        d = _tab_cfg_dir(app_name) / "P6Spy"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -18813,8 +18948,7 @@ done
                      "trace": [{"path": "/home/weblogic/domains/healthedge", "file": r".*trace.*"}]}
 
     def _obs_cfg_file(app_name, kind):
-        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "Observability" / app_name.title()
-        d.mkdir(parents=True, exist_ok=True)
+        d = _tab_cfg_dir(app_name)
         return d / ("application_log.json" if kind == "log" else "application_trace.json")
 
     def _obs_sources(app_name, kind):
@@ -19129,8 +19263,7 @@ done
     ]
 
     def _ic_xlsx(app_name):
-        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "Investigation" / app_name.title()
-        d.mkdir(parents=True, exist_ok=True)
+        d = _tab_cfg_dir(app_name)
         return d / "issue_categories.xlsx"
 
     def _ic_save(app_name, rows):
@@ -19507,8 +19640,7 @@ done
     _SVC_SCOPE = {"cache": "Database number", "ldap": "Base DN", "vault": "KV mount"}
 
     def _svc_xlsx(app_name, kind):
-        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / _SVC[kind][0] / app_name.title()
-        d.mkdir(parents=True, exist_ok=True)
+        d = _tab_cfg_dir(app_name)
         return d / _SVC[kind][1]
 
     def _svc_save(app_name, kind, rows):
@@ -21175,8 +21307,18 @@ done
     _SQLQ_META = "_tabs"
 
     def _sqlq_file(scope, app_name, version):
+        import re as _rs
         d, app_dir, ver = _dwb_data_dir("SQL_Queries", scope, app_name, version)
-        return d / f"{app_dir}_{ver}_Queries.xlsx"
+        schema = ""
+        try: schema = _rs.sub(r"[^A-Za-z0-9_.-]", "", request.args.get("schema", "")).lower()
+        except Exception: pass
+        if not schema:
+            return d / f"{app_dir}_{ver}_Queries.xlsx"
+        new, old = d / f"{schema}_{ver}_queries.xlsx", d / f"{app_dir}_{ver}_Queries.xlsx"
+        if not new.exists() and old.is_file() and schema.endswith("_oltp"):    # the one workbook of the application is the OLTP schema's
+            try: os.replace(str(old), str(new))
+            except Exception: pass
+        return new
 
     def _sqlq_sheet_name(name):
         import re as _rq
@@ -27917,6 +28059,8 @@ done
                           str(raw_en).strip().upper() not in ("FALSE", "0", "NO", "")
                 order   = int(row[4]) if row[4] is not None else 99
                 item = {"key": key, "label": label, "enabled": enabled, "order": order}
+                if section == "panels":
+                    item["tab"] = (str(row[5]).strip().lower() if len(row) > 5 and row[5] else "code")
                 if section == "header":
                     header_cfg[key] = item
                 elif section == "tabs":
@@ -27989,6 +28133,112 @@ done
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    # ── Database / queue connection settings (database_config.xlsx, queue_config.xlsx) ──
+    def _mx_path(app_name, kind):
+        return _generic_app_root(app_name) / _mx_spec(kind)[2]
+
+    @app.route("/api/local-app/<app_name>/<kind>-config", methods=["GET", "POST"])
+    def api_mx_config(app_name, kind):
+        if kind not in ("database", "queue") or app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"}): return jsonify({"ok": False, "error": "Unknown"}), 404
+        path = _mx_path(app_name, kind)
+        types, cols, _ = _mx_spec(kind)
+        seed = app_name == "payor"
+        old = _mx_load(path, kind, seed)
+        if request.method == "POST":
+            data = (request.get_json(silent=True) or {}).get("types") or {}
+            new, seen = {}, set()
+            for t in types:
+                rows = []
+                for x in data.get(t, []):
+                    nm = str(x.get("name", "")).strip()
+                    if not nm: return jsonify({"ok": False, "error": "Every connection needs a name (%s)" % t})
+                    if nm.lower() in seen: return jsonify({"ok": False, "error": "Duplicate name: " + nm})
+                    seen.add(nm.lower())
+                    port = str(x.get("port", "")).strip()
+                    if port and not port.isdigit(): return jsonify({"ok": False, "error": "Port must be a number (%s)" % nm})
+                    pw = str(x.get("password", ""))
+                    if pw == "********":
+                        pw = next((r["password"] for rs in old.values() for r in rs if r["name"] == nm), "")
+                    row = {c.lower(): str(x.get(c.lower(), "")).strip() for c in cols}
+                    row.update({"name": nm, "enabled": bool(x.get("enabled")), "port": port, "password": pw})
+                    rows.append(row)
+                new[t] = rows
+            _mx_save(path, kind, new)
+            return jsonify({"ok": True})
+        masked = {t: [{**r, "password": "********" if r.get("password") else ""} for r in rows] for t, rows in old.items()}
+        return jsonify({"ok": True, "types": masked, "columns": [c.lower() for c in cols], "order": types, "file": str(path)})
+
+    @app.route("/api/local-app/payor/db/connections", methods=["GET"])
+    def api_db_connections():
+        out = []
+        for t, rows in _mx_load(PAYOR_ROOT / "database_config.xlsx", "database").items():
+            for r in rows:
+                if r["enabled"]: out.append({"name": r["name"], "type": t, "schema": r["schema"] or r["username"], "host": r["host"], "port": r["port"]})
+        return jsonify({"ok": True, "connections": out})
+
+    def _q_http(app_name, c, path, method="GET", body=None):
+        import json as _js
+        opts = c["options"].lower().replace(" ", "")
+        scheme = "https" if "https=true" in opts else "http"
+        origin = "%s://%s:%s" % (scheme, c["host"], c["port"])
+        url = origin + path
+        if "via=container" in opts:
+            cont = _appmap_container_name(app_name)
+            if not cont: raise RuntimeError("Container is not configured / running")
+            cmd = ["docker", "exec", cont, "curl", "-s", "-k", "-u", "%s:%s" % (c["username"], c["password"]), "-H", "Origin: " + origin]
+            if body is not None: cmd += ["-H", "Content-Type: application/json", "-X", method, "-d", _js.dumps(body)]
+            cmd.append(url)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=25, creationflags=0x08000000 if sys.platform == "win32" else 0)
+            return _js.loads(r.stdout)
+        import requests as _rq
+        return _rq.request(method, url, auth=(c["username"], c["password"]), headers={"Origin": origin}, json=body, timeout=15, verify=False).json()
+
+    @app.route("/api/local-app/<app_name>/queue/list", methods=["GET"])
+    def api_queue_list(app_name):
+        import re as _r
+        if app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"}): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        name = request.args.get("conn", "")
+        found = next(((t, r) for t, rows in _mx_load(_mx_path(app_name, "queue"), "queue", app_name == "payor").items() for r in rows if r["enabled"] and (not name or r["name"] == name)), None)
+        if not found: return jsonify({"ok": False, "error": "No enabled queue connection - add one with the settings button"})
+        t, c = found
+        try:
+            qs = []
+            if t == "Artemis":
+                base = c["path"] or "/console/jolokia"
+                mbeans = _q_http(app_name, c, base + "/search/org.apache.activemq.artemis:*,subcomponent=queues").get("value") or []
+                if mbeans:
+                    res = _q_http(app_name, c, base, "POST", [{"type": "read", "mbean": mb, "attribute": ["MessageCount", "MessagesAdded", "ConsumerCount"]} for mb in mbeans])
+                    for e in (res if isinstance(res, list) else [res]):
+                        if e.get("status") != 200: continue
+                        v, mb = e.get("value") or {}, e.get("request", {}).get("mbean", "")
+                        m = _r.search(r'queue="([^"]+)"', mb)
+                        qs.append({"name": m.group(1) if m else mb, "messageCount": v.get("MessageCount", 0), "messagesAdded": v.get("MessagesAdded", 0), "consumerCount": v.get("ConsumerCount", 0)})
+            elif t == "ActiveMQ":
+                base = c["path"] or "/api/jolokia"
+                mbeans = _q_http(app_name, c, base + "/search/org.apache.activemq:type=Broker,brokerName=*,destinationType=Queue,destinationName=*").get("value") or []
+                if mbeans:
+                    res = _q_http(app_name, c, base, "POST", [{"type": "read", "mbean": mb, "attribute": ["QueueSize", "EnqueueCount", "ConsumerCount"]} for mb in mbeans])
+                    for e in (res if isinstance(res, list) else [res]):
+                        if e.get("status") != 200: continue
+                        v, mb = e.get("value") or {}, e.get("request", {}).get("mbean", "")
+                        m = _r.search(r'destinationName=([^,]+)', mb)
+                        qs.append({"name": m.group(1) if m else mb, "messageCount": v.get("QueueSize", 0), "messagesAdded": v.get("EnqueueCount", 0), "consumerCount": v.get("ConsumerCount", 0)})
+            elif t == "RabbitMQ":
+                for q in _q_http(app_name, c, c["path"] or "/api/queues") or []:
+                    qs.append({"name": q.get("name", ""), "messageCount": q.get("messages", 0), "messagesAdded": (q.get("message_stats") or {}).get("publish", 0), "consumerCount": q.get("consumers", 0)})
+            else:
+                return jsonify({"ok": False, "error": "Listing queues is not available for %s connections in this Workbench" % t})
+            qs.sort(key=lambda q: q["name"].lower())
+            return jsonify({"ok": True, "queues": qs, "connection": c["name"], "type": t})
+        except Exception as e:
+            return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
+
+    @app.route("/api/local-app/<app_name>/queue/connections", methods=["GET"])
+    def api_queue_connections(app_name):
+        if app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"}): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        return jsonify({"ok": True, "connections": [{"name": r["name"], "type": t, "host": r["host"], "port": r["port"]}
+                        for t, rows in _mx_load(_mx_path(app_name, "queue"), "queue", app_name == "payor").items() for r in rows if r["enabled"]]})
+
     # ── Local-app screen configuration (driven by screen_config.xlsx) ────────────
 
     _local_screen_cfg_cache: dict = {}
@@ -28037,6 +28287,8 @@ done
                           str(raw_en).strip().upper() not in ("FALSE", "0", "NO", "")
                 order   = int(row[4]) if row[4] is not None else 99
                 item = {"key": key, "label": label, "enabled": enabled, "order": order}
+                if section == "panels":
+                    item["tab"] = (str(row[5]).strip().lower() if len(row) > 5 and row[5] else "code")
                 if section == "header":
                     header_cfg[key] = item
                 elif section == "tabs":
@@ -28060,6 +28312,53 @@ done
         """Bust the in-memory local screen-config cache for an app."""
         _local_screen_cfg_cache.pop(app_name, None)
         return jsonify({"ok": True})
+
+    def _scr_save(xlsx_path, body, app_label):
+        """Rewrite the Header / Tabs / Panels rows of screen_config.xlsx from the UI (settings rows and other sheets are kept)."""
+        import openpyxl as _xl
+        xlsx_path = Path(xlsx_path)
+        wb = _xl.load_workbook(str(xlsx_path)) if xlsx_path.exists() else _xl.Workbook()
+        ws = wb.active
+        if not xlsx_path.exists(): ws.title = "Screen"
+        settings = [list(r) for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0] and str(r[0]).strip().lower() == "settings"]
+        if not any(str(r[1]).strip().lower() == "tabs_custom" for r in settings if len(r) > 1):
+            settings.append(["settings", "tabs_custom", 1])
+        ws.delete_rows(1, ws.max_row + 1)
+        ws.append(["Section", "Key", "Label", "Enabled", "Order", "Tab"])
+        def clean(v, d=""): return str(v if v is not None else d).strip()
+        hdr = body.get("header") or {}
+        for i, (k, v) in enumerate(hdr.items(), 1):
+            ws.append(["header", clean(k).lower(), clean((v or {}).get("label"), k), bool((v or {}).get("enabled", True)), int((v or {}).get("order", i)), ""])
+        for i, t in enumerate(body.get("tabs") or [], 1):
+            if not clean(t.get("key")): continue
+            ws.append(["tabs", clean(t["key"]).lower(), clean(t.get("label"), t["key"]), bool(t.get("enabled", True)), int(t.get("order", i)), ""])
+        for i, pn in enumerate(body.get("panels") or [], 1):
+            if not clean(pn.get("key")): continue
+            ws.append(["panels", clean(pn["key"]).lower(), clean(pn.get("label"), pn["key"]), bool(pn.get("enabled", True)), int(pn.get("order", i)), clean(pn.get("tab"), "code").lower()])
+        for r in settings: ws.append(r)
+        for col, w in zip("ABCDEF", (12, 24, 32, 10, 8, 16)): ws.column_dimensions[col].width = w
+        xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(str(xlsx_path))
+
+    @app.route("/api/local-app/<app_name>/screen-config", methods=["POST"])
+    def api_local_app_screen_config_save(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        try:
+            _scr_save(_generic_app_root(app_name) / "screen_config.xlsx", request.get_json(silent=True) or {}, app_name)
+            _local_screen_cfg_cache.pop(app_name, None)
+            return jsonify({"ok": True})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/remote-app/<app_name>/screen-config", methods=["POST"])
+    def api_remote_app_screen_config_save(app_name):
+        if app_name not in _KNOWN_REMOTE_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        try:
+            _scr_save(_remote_app_root(app_name) / "screen_config.xlsx", request.get_json(silent=True) or {}, app_name)
+            _screen_cfg_cache.pop(app_name, None)
+            return jsonify({"ok": True})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
 
     # ── Generic local-app build + modules ──────────────────────────────────────
 

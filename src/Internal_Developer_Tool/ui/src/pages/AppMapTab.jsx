@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { usePanels } from './ScreenConfig'
 
 const VIEWS = [
   { key: 'services', label: 'Service Maps' },
@@ -323,7 +324,10 @@ export default function AppMapTab({ appName, displayName }) {
   const [maps, setMaps] = useState(C.maps ?? [])
   const [file, setFile] = useState(C.file ?? '')
   const [m, setM] = useState(C.m ?? null)
-  const [view, setView] = useState(C.view ?? 'services')
+  const [view0, setView] = useState(C.view ?? 'services')
+  const on = usePanels()
+  const VV = VIEWS.filter(v => on('am_' + v.key))
+  const view = VV.some(v => v.key === view0) ? view0 : VV[0]?.key
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [cfg, setCfg] = useState(C.cfg ?? null)       // { path, content, output, lib }
@@ -423,7 +427,7 @@ export default function AppMapTab({ appName, displayName }) {
       {err && <div style={{ color: '#c62828', fontSize: 12, marginBottom: 8 }}>{err}</div>}
 
       <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid var(--border)', marginBottom: 12, flexWrap: 'wrap' }}>
-        {VIEWS.map(v => (
+        {VV.map(v => (
           <button key={v.key} onClick={() => setView(v.key)} style={{
             padding: '7px 14px', fontSize: 12, fontWeight: view === v.key ? 700 : 500, cursor: 'pointer', background: 'none', border: 'none',
             borderBottom: view === v.key ? '2px solid var(--primary, #1565c0)' : '2px solid transparent', color: view === v.key ? 'var(--primary, #1565c0)' : 'var(--text-muted)' }}>{v.label}</button>

@@ -7,9 +7,16 @@ import AppMapTab from './AppMapTab'
 import P6SpyTab from './P6SpyTab'
 import InvestigationTab from './InvestigationTab'
 import EventsTab from './EventsTab'
+import { ScreenCfgProvider, ScreenConfigButton, resolveLocalTabs, usePanels } from './ScreenConfig'
 import { CacheTab, LdapTab, VaultTab } from './ServiceTabs'
 import { LogsTab, MetricsTab, ApplicationTraceTab } from './ObservabilityTabs'
 
+// icon shown in front of a tab label that has none of its own
+const TAB_ICONS = {
+  code: '💻', app_server: '🖥️', database: '🗄️', queue: '📨', api: '🔌', user_interface: '🖼️',
+  scm: '🔀', app_config: '⚙️', it: '🧪', gp_run: '🚀', cache: '⚡', ldap: '📇', vault: '🔐',
+  observability: '🔭', investigation: '🔎', sonar: '🛡️', logs: '📜', metrics: '📊',
+}
 let _obsSub = 'metrics'
 const _obsInner = { traces: 'appmap', logs: 'applog' }
 function Pills2({ items, value, onChange, small }) {
@@ -24,26 +31,32 @@ function Pills2({ items, value, onChange, small }) {
   )
 }
 function ObservabilityTab({ appName, displayName }) {
-  const [sub, setSub] = useState(_obsSub)
+  const [sub0, setSub] = useState(_obsSub)
   const [inner, setInner] = useState({ ..._obsInner })
+  const on = usePanels()
   const pick = k => { _obsSub = k; setSub(k) }
   const pickInner = (g, k) => { _obsInner[g] = k; setInner({ ..._obsInner }) }
-  const subs = [{ key: 'metrics', label: '📊 Metrics' }, { key: 'events', label: '📅 Events' }, { key: 'traces', label: '🧵 Traces' },
-    { key: 'logs', label: '📜 Logs' }]
+  const subs = [{ key: 'metrics', label: '📊 Metrics' }, { key: 'events', label: '📅 Events' }, { key: 'traces', label: '🧵 Traces' }, { key: 'logs', label: '📜 Logs' }].filter(x => on('obs_' + x.key))
+  const sub = subs.some(x => x.key === sub0) ? sub0 : subs[0]?.key
+  const tItems = [{ key: 'appmap', label: '🗺️ AppMap', p: 'tr_appmap' }, { key: 'apptrace', label: 'Application Trace', p: 'tr_apptrace' }].filter(x => on(x.p))
+  const lItems = [{ key: 'applog', label: 'Application Log', p: 'lg_applog' }, { key: 'p6spy', label: '🔬 P6Spy', p: 'lg_p6spy' }].filter(x => on(x.p))
+  const tSel = tItems.some(x => x.key === inner.traces) ? inner.traces : tItems[0]?.key
+  const lSel = lItems.some(x => x.key === inner.logs) ? inner.logs : lItems[0]?.key
   return (
     <div>
       <Pills2 items={subs} value={sub} onChange={pick} />
+      {subs.length === 0 && <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>All Observability panels are switched off - turn some on with the settings icon at the top right.</div>}
       {sub === 'metrics' && <MetricsTab appName={appName} />}
       {sub === 'events' && <EventsTab appName={appName} />}
       {sub === 'traces' && <>
-        <Pills2 small value={inner.traces} onChange={k => pickInner('traces', k)} items={[{ key: 'appmap', label: '🗺️ AppMap' }, { key: 'apptrace', label: 'Application Trace' }]} />
-        {inner.traces === 'appmap' && <AppMapTab appName={appName} displayName={displayName} />}
-        {inner.traces === 'apptrace' && <ApplicationTraceTab appName={appName} />}
+        <Pills2 small value={tSel} onChange={k => pickInner('traces', k)} items={tItems} />
+        {tSel === 'appmap' && <AppMapTab appName={appName} displayName={displayName} />}
+        {tSel === 'apptrace' && <ApplicationTraceTab appName={appName} />}
       </>}
       {sub === 'logs' && <>
-        <Pills2 small value={inner.logs} onChange={k => pickInner('logs', k)} items={[{ key: 'applog', label: 'Application Log' }, { key: 'p6spy', label: '🔬 P6Spy' }]} />
-        {inner.logs === 'applog' && <LogsTab appName={appName} />}
-        {inner.logs === 'p6spy' && <P6SpyTab appName={appName} />}
+        <Pills2 small value={lSel} onChange={k => pickInner('logs', k)} items={lItems} />
+        {lSel === 'applog' && <LogsTab appName={appName} />}
+        {lSel === 'p6spy' && <P6SpyTab appName={appName} />}
       </>}
     </div>
   )
@@ -186,6 +199,16 @@ export default function GenericLocalAppPage({
   const [currentBranch,  setCurrentBranch]  = useState(null)
   const [featureBranch,  setFeatureBranch]  = useState(null)
 
+  function reloadScreenCfg() {
+    fetch(`/api/local-app/${appName}/screen-config?force=1`).then(r => r.json()).then(d => {
+      if (!d.ok) return
+      const serverTabs = d.tabs || []
+      const mergedTabs = DEFAULT_SCREEN_CFG.tabs.map(dt => { const st = serverTabs.find(x => x.key === dt.key); return st ? { ...dt, ...st } : dt })
+      serverTabs.forEach(st => { if (!mergedTabs.find(m => m.key === st.key)) mergedTabs.push(st) })
+      setScreenCfg({ ...d, tabs: mergedTabs })
+    }).catch(() => {})
+  }
+
   function refreshDeployed() {
     fetch(`/api/local-app/${appName}/deployed-info`)
       .then(r => r.json())
@@ -233,20 +256,13 @@ export default function GenericLocalAppPage({
     return () => window.removeEventListener('dwb-nav', h)
   }, [])
   const hdr         = screenCfg.header || DEFAULT_SCREEN_CFG.header
-  const _baseTabs  = screenCfg.tabs || DEFAULT_SCREEN_CFG.tabs
-  const _codeOrder = _baseTabs.find(t => t.key === 'code')?.order ?? 0
-  const _withIt    = _baseTabs.some(t => t.key === 'it') ? _baseTabs : [..._baseTabs, { key: 'it', label: '🧪 IT', enabled: true, order: _codeOrder + 0.5 }]
-  const _itOrder   = _withIt.find(t => t.key === 'it')?.order ?? _codeOrder + 0.5
-  const _amOrder = _withIt.find(t => t.key === 'appmap')?.order ?? _itOrder + 0.1
-  const _pin = { user_interface: 0.01, api: 0.02 }
-  const _asOrder = _withIt.find(t => t.key === 'app_server')?.order ?? 2
-  const _pin2 = { database: 0.01, queue: 0.02 }
-  const _extra = [{ key: 'cache', label: '\u26A1 Cache', order: 0.03 }, { key: 'ldap', label: '\uD83D\uDCC7 LDAP', order: 0.04 }, { key: 'vault', label: '\uD83D\uDD10 Secrets / Vault', order: 0.05 }]
-    .filter(x => !_withIt.some(t => t.key === x.key)).map(x => ({ key: x.key, label: x.label, enabled: true, order: _asOrder + x.order }))
-  const visibleTabs = [..._withIt.filter(t => t.key !== 'appmap' && t.key !== 'p6spy' && t.key !== 'observability').map(t => t.key in _pin ? { ...t, order: _itOrder + _pin[t.key] } : t.key in _pin2 ? { ...t, order: _asOrder + _pin2[t.key] } : t), ..._extra, { key: 'observability', label: '\uD83D\uDD2D Observability', enabled: true, order: _itOrder + 0.1 }, { key: 'investigation', label: '\uD83D\uDD0E Investigation', enabled: true, order: _itOrder + 0.15 }]
-    .filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)
+  const visibleTabs = resolveLocalTabs(screenCfg.tabs || DEFAULT_SCREEN_CFG.tabs, !!screenCfg.settings?.tabs_custom)
+    .filter(t => t.enabled !== false && t.key !== 'app_config')
+    .map(t => (TAB_ICONS[t.key] && !/^\p{Extended_Pictographic}/u.test(String(t.label || '').trim())) ? { ...t, label: TAB_ICONS[t.key] + ' ' + t.label } : t)
+    .sort((a, b) => a.order - b.order)
   const resolvedTab = visibleTabs.find(t => t.key === activeTab)?.key ?? visibleTabs[0]?.key ?? 'code'
   return (
+    <ScreenCfgProvider cfg={screenCfg}>
     <div>
       {fromSonar && (
         <div style={{ marginBottom: 10 }}>
@@ -263,6 +279,7 @@ export default function GenericLocalAppPage({
         backPath={backPath} backLabel={backLabel}
         branch={branch} deployed={deployed} serverUp={serverUp}
         hdr={hdr}
+        right={<ScreenConfigButton kind="local" appName={appName} cfg={screenCfg} onSaved={reloadScreenCfg} />}
       />
       <TabBar visibleTabs={visibleTabs} resolvedTab={resolvedTab} onTabChange={setActiveTab} />
 
@@ -326,5 +343,6 @@ export default function GenericLocalAppPage({
         </div>
       )}
     </div>
+    </ScreenCfgProvider>
   )
 }

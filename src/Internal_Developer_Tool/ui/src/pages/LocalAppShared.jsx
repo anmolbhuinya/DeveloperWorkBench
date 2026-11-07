@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { usePanels } from './ScreenConfig'
+import { ConnConfigPanel, ConnBar, setDbConn, installDbFetch } from './ConnConfig'
 import ConfirmDialog from '../components/ConfirmDialog'
 import SqlQueryPanel from '../components/SqlQueryPanel'
 import { useNavigate } from 'react-router-dom'
@@ -2636,6 +2638,7 @@ export function KarafRightPanel({ base, query = '' }) {
 }
 
 export function AppServerTab({ appName, displayName, serverType }) {
+  const on = usePanels()
   const [serverStatus, setServerStatus] = useState(null)
   const [opStatus,     setOpStatus]     = useState(null)
   const [opOutput,     setOpOutput]     = useState('')
@@ -2712,9 +2715,10 @@ export function AppServerTab({ appName, displayName, serverType }) {
 
   return (
     <div>
-      <DeployedBanner appName={appName} />
+      {on('as_banner') && <DeployedBanner appName={appName} />}
 
       {/* ── Status banner ── */}
+      {on('as_status') && (
       <div className="card" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: '10px 16px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontWeight: 600, fontSize: 13 }}>App Server</span>
@@ -2771,6 +2775,7 @@ export function AppServerTab({ appName, displayName, serverType }) {
           )}
         </div>
       </div>
+      )}
 
       {/* ── Op output (shown when active) ── */}
       {opKind !== 'stop' && opKind !== 'start_debug' && !(['start', 'restart'].includes(opKind) && serverType === 'tomcat') && (opStatus || opOutput) && (
@@ -2790,7 +2795,7 @@ export function AppServerTab({ appName, displayName, serverType }) {
       )}
 
       {/* ── Full-width panel ── */}
-      {serverType === 'karaf'
+      {on('as_server') && (serverType === 'karaf'
         ? <KarafRightPanel base={`/api/local-app/${appName}/karaf`} />
         : serverType === 'tomcat'
         ? <TomcatRightPanel
@@ -2800,7 +2805,7 @@ export function AppServerTab({ appName, displayName, serverType }) {
             logSignal={logSignal}
             opOutput={['start', 'restart'].includes(opKind) ? '' : opOutput} opKind={['start', 'restart'].includes(opKind) ? null : opKind} opStatus={['start', 'restart'].includes(opKind) ? null : opStatus}
           />
-        : <RuntimePropertiesPanel appName={appName} />}
+        : <RuntimePropertiesPanel appName={appName} />)}
     </div>
   )
 }
@@ -3073,7 +3078,28 @@ function SchemaNode({ appName, schema, onInsert }) {
   )
 }
 
-export function DatabaseTab({ appName, displayName }) {
+// ── Database tab: one connection (schema) at a time - payor_oltp, payor_dw, ... from database_config.xlsx ──
+export function DatabaseTab(props) {
+  const { appName } = props
+  const [conns, setConns] = useState(null)
+  const [conn, setConn] = useKept(`dbconn_${appName}`, '')
+  const [cfgOpen, setCfgOpen] = useState(false)
+  installDbFetch()
+  const load = () => fetch(`/api/local-app/${appName}/db/connections`).then(r => r.json()).then(r => setConns(r.ok ? r.connections : [])).catch(() => setConns([]))
+  useEffect(() => { load(); return () => setDbConn('') }, [appName])
+  const eff = conns && conns.length ? (conns.find(c => c.name === conn)?.name || conns[0].name) : ''
+  setDbConn(eff)
+  if (conns === null) return <div className="card"><span className="spinner" /></div>
+  return (
+    <div>
+      {conns.length > 0 || appName === 'payor' ? <ConnBar label="Schema" conns={conns} value={eff} onChange={setConn} onGear={() => setCfgOpen(v => !v)} gearOn={cfgOpen} /> : null}
+      {cfgOpen && <ConnConfigPanel base={`/api/local-app/${appName}`} kind="database" title="Database" onSaved={load} />}
+      <DatabaseTabInner key={eff} {...props} />
+    </div>
+  )
+}
+
+function DatabaseTabInner({ appName, displayName }) {
   const [connected,  setConnected]  = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [connErr,    setConnErr]    = useState(null)
@@ -3549,7 +3575,7 @@ export function DatabaseTab({ appName, displayName }) {
 
 // ── Queue Tab ─────────────────────────────────────────────────────────────────
 
-function QueuesListPanel({ appName }) {
+function QueuesListPanel({ appName, conn }) {
   const [queues,  setQueues]  = useState(null)
   const [loading, setLoading] = useState(true)
   const [err,     setErr]     = useState(null)
@@ -3557,7 +3583,7 @@ function QueuesListPanel({ appName }) {
 
   function load() {
     setLoading(true)
-    fetch(`/api/local-app/${appName}/artemis/queues`)
+    fetch(`/api/local-app/${appName}/queue/list?conn=${encodeURIComponent(conn || '')}`)
       .then(r => r.json())
       .then(d => { if (d.ok) { setQueues(d.queues); setErr(null) } else setErr(d.error) })
       .catch(() => setErr('Could not reach server'))
@@ -3568,7 +3594,7 @@ function QueuesListPanel({ appName }) {
     load()
     const id = setInterval(load, 5000)
     return () => clearInterval(id)
-  }, [appName])
+  }, [appName, conn])
 
   const q        = filter.toLowerCase()
   const filtered = (queues || []).filter(q2 => !q || q2.name.toLowerCase().includes(q))
@@ -3632,6 +3658,12 @@ export function QueueTab({ appName }) {
   const [opKind,    setOpKind]    = useState(null)
   const [opErr,     setOpErr]     = useState(null)
   const termRef = useRef(null)
+  const [qconns, setQconns] = useState(null)
+  const [qsel, setQsel] = useKept(`queueconn_${appName}`, '')
+  const [qcfg, setQcfg] = useState(false)
+  const loadQconns = () => fetch(`/api/local-app/${appName}/queue/connections`).then(r => r.json()).then(r => setQconns(r.ok ? r.connections : [])).catch(() => setQconns([]))
+  useEffect(() => { loadQconns() }, [appName])
+  const qconn = qconns && qconns.length ? (qconns.find(c => c.name === qsel)?.name || qconns[0].name) : ''
 
   function fetchStatus() {
     fetch(`/api/local-app/${appName}/server-status`)
@@ -3686,6 +3718,8 @@ export function QueueTab({ appName }) {
 
   return (
     <div>
+      <ConnBar label="Queue connection" conns={qconns} value={qconn} onChange={setQsel} onGear={() => setQcfg(v => !v)} gearOn={qcfg} />
+      {qcfg && <ConnConfigPanel base={`/api/local-app/${appName}`} kind="queue" title="Queue" onSaved={loadQconns} />}
       <DeployedBanner appName={appName} />
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div style={{ flex: '0 0 220px' }}>
@@ -3728,7 +3762,7 @@ export function QueueTab({ appName }) {
           )}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <QueuesListPanel appName={appName} />
+          <QueuesListPanel appName={appName} conn={qconn} />
         </div>
       </div>
     </div>
@@ -5618,7 +5652,7 @@ export function PageHeader({
   displayName, icon,
   backPath = '/local-app', backLabel = 'Local App Development',
   branch, deployed, serverUp,
-  hdr = DEFAULT_HDR,
+  hdr = DEFAULT_HDR, right,
 }) {
   const navigate = useNavigate()
   return (
@@ -5703,6 +5737,7 @@ export function PageHeader({
           )}
         </>
       )}
+      {right}
     </div>
   )
 }

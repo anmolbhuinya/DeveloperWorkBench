@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
+import { usePanels } from './ScreenConfig'
 
 const th = { textAlign: 'left', padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
 const td = { padding: '4px 8px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
@@ -21,10 +22,10 @@ const post = (u, b) => getJson(u, { method: 'POST', headers: { 'Content-Type': '
 const fmtB = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n > 1024 ? (n / 1024).toFixed(0) + ' KB' : n + ' B'
 const when = t => new Date(t * 1000).toLocaleString()
 
-function Pills({ items, value, onChange }) {
+function Pills({ items, value, onChange, vis }) {
   return (
     <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-      {items.map(t => (
+      {items.filter(t => !vis || vis.includes(t.key)).map(t => (
         <button key={t.key} onClick={() => onChange(t.key)}
           style={{ padding: '4px 12px', fontSize: 12, borderRadius: 14, cursor: 'pointer', border: '1px solid var(--border)',
             background: value === t.key ? 'var(--primary, #2563eb)' : 'transparent', color: value === t.key ? '#fff' : 'inherit' }}>{t.label}</button>
@@ -335,7 +336,10 @@ function JvmConfig({ base }) {
 }
 
 export function JvmDiagnosticsTab({ appName }) {
-  const [sub, setSub] = useKept('jvmsub', 'dash')
+  const [sub0, setSub] = useKept('jvmsub', 'dash')
+  const on = usePanels()
+  const vis = ['dash', 'thr', 'heap', 'jfr'].filter(k => on({ dash: 'jvm_dash', thr: 'jvm_threads', heap: 'jvm_heap', jfr: 'jvm_jfr' }[k]))
+  const sub = vis.includes(sub0) ? sub0 : vis[0]
   const [cfgOpen, setCfgOpen] = useState(false)
   const [procs, setProcs] = useState([])
   const [pid, setPid] = useKept('jvmpid', '')
@@ -361,7 +365,7 @@ export function JvmDiagnosticsTab({ appName }) {
       </div>
       <Err m={perr} />
       {cfgOpen && <JvmConfig base={base} />}
-      <Pills value={sub} onChange={setSub} items={[{ key: 'dash', label: 'Dashboard' }, { key: 'thr', label: 'Thread Analyzer' }, { key: 'heap', label: 'Heap Analyzer' }, { key: 'jfr', label: 'JFR' }]} />
+      <Pills vis={vis} value={sub} onChange={setSub} items={[{ key: 'dash', label: 'Dashboard' }, { key: 'thr', label: 'Thread Analyzer' }, { key: 'heap', label: 'Heap Analyzer' }, { key: 'jfr', label: 'JFR' }]} />
       <div key={pid}>
         {sub === 'dash' && <Dashboard base={base} />}
         {sub === 'thr' && <ThreadAnalyzer base={base} />}
@@ -562,10 +566,13 @@ function AppMetrics({ appName }) {
 }
 
 export function MetricsTab({ appName }) {
-  const [sub, setSub] = useKept('metricssub', 'system')
+  const [sub0, setSub] = useKept('metricssub', 'system')
+  const on = usePanels()
+  const vis = ['system', 'app'].filter(k => on({ system: 'met_system', app: 'met_app' }[k]))
+  const sub = vis.includes(sub0) ? sub0 : vis[0]
   return (
     <div>
-      <Pills value={sub} onChange={setSub} items={[{ key: 'system', label: 'System' }, { key: 'app', label: 'Application' }]} />
+      <Pills vis={vis} value={sub} onChange={setSub} items={[{ key: 'system', label: 'System' }, { key: 'app', label: 'Application' }]} />
       {sub === 'system' && <SystemMetrics appName={appName} />}
       {sub === 'app' && <AppMetrics appName={appName} />}
     </div>

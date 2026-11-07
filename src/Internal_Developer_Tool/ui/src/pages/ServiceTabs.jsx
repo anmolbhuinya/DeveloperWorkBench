@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { usePanels, GearIcon } from './ScreenConfig'
 
 const th = { textAlign: 'left', padding: '5px 6px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
 const td = { padding: '3px 4px', borderBottom: '1px solid var(--border)', verticalAlign: 'top', fontSize: 12 }
@@ -361,12 +362,15 @@ function LdapGroups({ act, st, ad, defBase }) {
 }
 
 function LdapPane({ act, defBase, settings, provider }) {
-  const [v, setV] = useKept('ldapview', 'browse')
+  const [v0, setV] = useKept('ldapview', 'browse')
+  const on = usePanels()
+  const vis = ['browse', 'users', 'groups'].filter(k => on('ldap_' + k))
+  const v = vis.includes(v0) ? v0 : vis[0]
   const ad = provider === 'activedirectory'
   return (
     <div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-        {[['browse', 'Browse'], ['users', 'Users'], ['groups', 'Groups']].map(([k, l]) => (
+        {[['browse', 'Browse'], ['users', 'Users'], ['groups', 'Groups']].filter(([k]) => vis.includes(k)).map(([k, l]) => (
           <button key={k} onClick={() => setV(k)} style={{ padding: '3px 12px', fontSize: 12, borderRadius: 14, cursor: 'pointer', border: '1px solid var(--border)',
             background: v === k ? 'var(--primary, #2563eb)' : 'transparent', color: v === k ? '#fff' : 'inherit' }}>{l}</button>))}
       </div>
@@ -455,9 +459,9 @@ function ServiceTab({ appName, kind, title, filter, importer, side }) {
           {side}
           <div style={{ flex: '1 1 260px', minWidth: 200 }}>{picker}</div>
           <button style={btn} onClick={test} disabled={busy || !eff}>{busy ? 'Testing...' : 'Test connection'}</button>
-          <button style={btn} onClick={() => setCfgOpen(v => !v)}>{cfgOpen ? 'Hide config' : 'Configure'}</button>
           {importer && <button style={btn} onClick={doImport} disabled={imp?.busy}>{imp?.busy ? 'Importing...' : 'Import configuration from server'}</button>}
           {importer && <input style={{ ...inp, flex: '1 1 220px', minWidth: 180 }} value={src} onChange={e => setSrc(e.target.value)} placeholder="Properties file in the container (blank = auto-find)" />}
+          <button onClick={() => setCfgOpen(v => !v)} title="Configure" aria-label="Configure" style={{ marginLeft: 'auto', background: cfgOpen ? 'var(--surface2)' : 'none', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)', padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}><GearIcon /></button>
         </div>
         {verdict && <div style={{ marginBottom: 8 }}>{verdict}</div>}
         {imp && !imp.busy && <div style={{ fontSize: 12, marginBottom: 8, color: imp.ok ? '#16a34a' : '#dc2626', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{imp.text}</div>}
@@ -477,8 +481,8 @@ function ServiceTab({ appName, kind, title, filter, importer, side }) {
         <span style={{ fontSize: 13, fontWeight: 600 }}>{title}</span>
         {picker}
         <button style={btn} onClick={test} disabled={busy || !eff}>{busy ? 'Testing...' : 'Test connection'}</button>
-        <button style={btn} onClick={() => setCfgOpen(v => !v)}>{cfgOpen ? 'Hide config' : 'Configure'}</button>
         {res && <span style={{ fontSize: 12, color: res.ok ? '#16a34a' : '#dc2626' }}>{res.ok ? res.message : res.error}</span>}
+        <button onClick={() => setCfgOpen(v => !v)} title="Configure" aria-label="Configure" style={{ marginLeft: 'auto', background: cfgOpen ? 'var(--surface2)' : 'none', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)', padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}><GearIcon /></button>
       </div>
       {body}
     </div>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { usePanels } from './ScreenConfig'
 
 const th = { textAlign: 'left', padding: '5px 6px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
 const td = { padding: '3px 4px', borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
@@ -107,9 +108,12 @@ function Config({ base }) {
 }
 
 export default function EventsTab({ appName }) {
-  const [sub, setSub] = useKept('evsub', 'timeline')
+  const [sub0, setSub] = useKept('evsub', 'timeline')
+  const on = usePanels()
+  const vis = ['timeline', 'config'].filter(k => on({ timeline: 'ev_timeline', config: 'ev_config' }[k]))
+  const sub = vis.includes(sub0) ? sub0 : vis[0]
   const base = `/api/local-app/${appName}`
-  const items = [{ key: 'timeline', label: 'Timeline' }, { key: 'config', label: 'Configuration' }]
+  const items = [{ key: 'timeline', label: 'Timeline' }, { key: 'config', label: 'Configuration' }].filter(t => vis.includes(t.key))
   return (
     <div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>

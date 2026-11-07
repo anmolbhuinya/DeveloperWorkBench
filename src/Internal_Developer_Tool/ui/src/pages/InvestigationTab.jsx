@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { usePanels } from './ScreenConfig'
 import { JvmDiagnosticsTab, jumpJvm } from './ObservabilityTabs'
 
 const th = { textAlign: 'left', padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
@@ -254,10 +255,14 @@ function Categories({ base, cats, reload }) {
 
 // ── Root ─────────────────────────────────────────────────────────────────────
 export default function InvestigationTab({ appName }) {
-  const [sub, setSub] = useKept('invsub', 'inv')
+  const [sub0, setSub] = useKept('invsub', 'inv')
+  const on = usePanels()
+  const INV = { cats: 'inv_categories', inv: 'inv_investigate', jvm: 'inv_jvm', rca: 'inv_rca' }
+  const vis = Object.keys(INV).filter(k => on(INV[k]))
+  const sub = vis.includes(sub0) ? sub0 : vis[0]
   const base = `/api/local-app/${appName}`
   const [cats, reload] = useCategories(base)
-  const items = [{ key: 'cats', label: 'Issue Categories' }, { key: 'inv', label: 'Investigate' }, { key: 'jvm', label: '☕ JVM Diagnostics' }, { key: 'rca', label: 'Root Cause Analysis' }]
+  const items = [{ key: 'cats', label: 'Issue Categories' }, { key: 'inv', label: 'Investigate' }, { key: 'jvm', label: '☕ JVM Diagnostics' }, { key: 'rca', label: 'Root Cause Analysis' }].filter(t => vis.includes(t.key))
   const JVM = { threads: 'thr', heap: 'heap', jfr: 'jfr', dash: 'dash' }
   const NAV = { sql: { sub: 'logs', inner: { logs: 'p6spy' } }, logs: { sub: 'logs', inner: { logs: 'applog' } }, metrics: { sub: 'metrics' },
     events: { sub: 'events' }, appmap: { sub: 'traces', inner: { traces: 'appmap' } }, trace: { sub: 'traces', inner: { traces: 'apptrace' } } }
