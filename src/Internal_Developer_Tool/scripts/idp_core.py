@@ -18330,6 +18330,7 @@ def create_flask_app():
             return jsonify({"ok": False, "error": "Unknown app"}), 404
         msg = ""
         if request.method == "POST":
+            _obs_record(app_name, "config_change", "P6Spy settings changed (enabled=%s)" % (request.get_json(silent=True) or {}).get("enabled"))
             body = request.get_json(silent=True) or {}
             cfg = _p6_cfg(app_name)
             was = cfg["enabled"]
@@ -18861,24 +18862,405 @@ def create_flask_app():
         return jsonify({"ok": True, "hypotheses": hyp[:15], "evidence": {"findings": ev["findings"], "keyword_hits": ev["keyword_hits"]},
                         "diff": {"from": d.get("from"), "to": d.get("to"), "commits": len(d.get("commits", [])), "files": len(files), "error": d.get("error", "")}})
 
+    # ── Investigation: issue categories (issue_categories.xlsx), assessment and per-category RCA write-ups ──
+    _IC_COLS = ["Key", "Category", "Enabled", "Possible Causes", "Recommended Actions"]
+    _IC_TARGETS = ["sql", "threads", "heap", "jfr", "dash", "metrics", "events", "logs", "appmap", "trace", "rca"]
+    _IC_DEFAULTS = [
+        ("slow_sql", "Slow SQL", ["Missing index", "Full table scan / bad execution plan", "Stale optimizer statistics", "Lock wait on row or table", "Large result set"],
+         ["Open SQL Analyzer > sql", "Capture Thread Dump > threads", "Review Events > events"]),
+        ("conn_pool", "Connection pool exhaustion", ["Connection leak", "Slow SQL holding connections", "Pool size too small", "Database or network unavailable"],
+         ["Capture Thread Dump > threads", "Open SQL Analyzer > sql", "Review Application Log > logs"]),
+        ("high_cpu", "High CPU", ["Hot loop / inefficient code", "GC activity", "Thread contention", "Runaway thread pool"],
+         ["Review JFR > jfr", "Capture Thread Dump > threads", "View Metrics > metrics"]),
+        ("memory", "Memory leak / OOM", ["Object retention (leak)", "Undersized heap", "Large result sets or caches", "Class loader leak"],
+         ["Analyze Heap Histogram > heap", "Take Heap Dump > heap", "View Metrics > metrics"]),
+        ("thread_pool", "Thread pool saturation", ["Threads blocked on JDBC", "Slow external calls", "Lock contention", "Pool maximum too low"],
+         ["Capture Thread Dump > threads", "Open SQL Analyzer > sql", "Review JFR > jfr"]),
+        ("external", "External service latency", ["Downstream service slow", "Network timeouts", "Retry storms", "DNS / TLS handshake delays"],
+         ["Review Application Trace > trace", "Open AppMap > appmap", "Review Application Log > logs"]),
+        ("config_drift", "Configuration drift", ["Property changed since last deploy", "Datasource / pool settings differ", "Missing environment property", "Feature flag mismatch"],
+         ["Review Events > events", "Review Application Log > logs"]),
+        ("it_failure", "Integration test failure", ["Slow SQL", "Connection pool exhaustion", "GC pressure", "Environment or configuration change", "Test data issue"],
+         ["Open SQL Analyzer > sql", "Capture Thread Dump > threads", "Review JFR > jfr"]),
+        ("parity", "Parity failure", ["Data difference between legacy and new", "Calculation or rounding difference", "Configuration difference", "Ordering / missing data"],
+         ["Open AppMap > appmap", "Open SQL Analyzer > sql", "Review Application Log > logs"]),
+        ("startup", "Deployment/startup failure", ["Bean / context initialisation failure", "Missing or invalid configuration", "Port or resource conflict", "Out of memory at startup", "Dependency / classpath problem"],
+         ["Review Application Log > logs", "Review Events > events", "View Metrics > metrics"]),
+    ]
+
+    def _ic_xlsx(app_name):
+        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "Investigation" / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "issue_categories.xlsx"
+
+    def _ic_save(app_name, rows):
+        import openpyxl as _xl
+        wb = _xl.Workbook()
+        ws = wb.active
+        ws.title = "issue_categories"
+        ws.append(_IC_COLS)
+        for r in rows:
+            ws.append([r["key"], r["name"], "TRUE" if r["enabled"] else "FALSE", "\n".join(r["causes"]), "\n".join(r["actions"])])
+        for col, w in zip("ABCDE", (16, 32, 9, 60, 60)): ws.column_dimensions[col].width = w
+        wb.save(str(_ic_xlsx(app_name)))
+
+    def _ic_load(app_name):
+        f = _ic_xlsx(app_name)
+        if not f.exists():
+            _ic_save(app_name, [{"key": k, "name": n, "enabled": True, "causes": c, "actions": a} for k, n, c, a in _IC_DEFAULTS])
+        import openpyxl as _xl
+        wb = _xl.load_workbook(str(f), read_only=True, data_only=True)
+        rows = []
+        for i, r in enumerate(wb.active.iter_rows(values_only=True)):
+            if i == 0 or not r or not r[0]: continue
+            r = list(r) + [None] * 5
+            sp = lambda v: [x.strip() for x in str(v or "").replace("\r", "").split("\n") if x.strip()]
+            rows.append({"key": str(r[0]).strip(), "name": str(r[1] or r[0]), "enabled": str(r[2]).strip().lower() in ("true", "1", "yes", "y"),
+                         "causes": sp(r[3]), "actions": sp(r[4])})
+        wb.close()
+        return rows
+
+    @app.route("/api/local-app/<app_name>/inv/categories", methods=["GET", "POST"])
+    def api_ic_categories(app_name):
+        import re as _r
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        if request.method == "POST":
+            rows, seen = [], set()
+            for x in ((request.get_json(silent=True) or {}).get("categories") or []):
+                k = _r.sub(r"[^A-Za-z0-9_]", "_", str(x.get("key", "")).strip())
+                if not k or not str(x.get("name", "")).strip(): return jsonify({"ok": False, "error": "Every category needs a key and a name"})
+                if k in seen: return jsonify({"ok": False, "error": "Duplicate key: " + k})
+                seen.add(k)
+                cl = lambda v: [s.strip() for s in (v if isinstance(v, list) else str(v or "").split("\n")) if str(s).strip()]
+                rows.append({"key": k, "name": str(x["name"]).strip(), "enabled": bool(x.get("enabled")), "causes": cl(x.get("causes")), "actions": cl(x.get("actions"))})
+            _ic_save(app_name, rows)
+            return jsonify({"ok": True})
+        out = []
+        for c in _ic_load(app_name):
+            acts = []
+            for a in c["actions"]:
+                lab, _, tg = a.rpartition(">")
+                acts.append({"label": (lab or a).strip(), "target": tg.strip() if lab else ""})
+            out.append({**c, "action_items": acts})
+        return jsonify({"ok": True, "categories": out, "file": str(_ic_xlsx(app_name)), "targets": _IC_TARGETS})
+
+    def _ic_score(cause, ev, diff):
+        """Score one possible cause (0-100) against the collected evidence. Returns (score, [signals])."""
+        import re as _r
+        t = cause.lower()
+        exc = ev.get("exceptions", [])
+        j = ev.get("jvm") or {}
+        sig, sc = [], 10
+        def exm(rx): return [g for g in exc if _r.search(rx, g["type"] + " " + g["message"], _r.I)]
+        heap = (j.get("heap_used_mb") * 100 // j["heap_total_mb"]) if j.get("heap_used_mb") and j.get("heap_total_mb") else None
+        blocked = (j.get("states") or {}).get("BLOCKED", 0)
+        if _r.search(r"sql|index|plan|statistic|result set|scan", t):
+            s = ev.get("slow_sql", [])
+            if s: sc = 40 + min(len(s) * 10, 30) + (20 if s[0]["ms"] >= 5000 else 0); sig.append("%d slow statements, slowest %d ms" % (len(s), s[0]["ms"]))
+        elif _r.search(r"pool|connection|leak", t) and not _r.search(r"class ?loader|object", t):
+            m = exm(r"pool|connection|timeout waiting|SQLTransient")
+            if m: sc = 70 + min(sum(g["count"] for g in m), 20); sig.append("%d pool/connection errors in log" % sum(g["count"] for g in m))
+            if blocked >= 5: sc = max(sc, 45); sig.append("%d BLOCKED threads" % blocked)
+        elif _r.search(r"gc|heap|memory|retention|oom|class ?loader|cache", t):
+            if exm(r"OutOfMemory"): sc = 90; sig.append("OutOfMemoryError in log")
+            elif heap is not None and heap >= 90: sc = 80; sig.append("heap %d%% full" % heap)
+            elif heap is not None and heap >= 75: sc = 50; sig.append("heap %d%% full" % heap)
+        elif _r.search(r"thread|lock|blocked|deadlock|jdbc", t):
+            if j.get("deadlock"): sc = 95; sig.append("deadlock in thread dump")
+            elif blocked >= 5: sc = 70; sig.append("%d BLOCKED threads" % blocked)
+        elif _r.search(r"external|downstream|network|timeout|dns|tls|retry", t):
+            m = exm(r"timeout|ConnectException|UnknownHost|SSL|SocketException|Retry")
+            if m: sc = 60 + min(sum(g["count"] for g in m), 25); sig.append("%d timeout/network errors in log" % sum(g["count"] for g in m))
+        elif _r.search(r"config|propert|datasource|flag|environment|classpath|port|bean|context|startup|init", t):
+            cf = [f["file"] for f in (diff.get("files") or []) if _r.search(r"\.(properties|xml|ya?ml|jocl|conf)$", f["file"])]
+            m = exm(r"BeanCreation|ClassNotFound|NoSuchBean|BindException|NoClassDef|Config")
+            if cf: sc = 50; sig.append("%d config files changed since deploy" % len(cf))
+            if m: sc = max(sc, 65) + 10; sig.append("%d startup/config errors in log" % sum(g["count"] for g in m))
+        elif _r.search(r"code|loop|calculation|difference", t):
+            jf = [f for f in (diff.get("files") or []) if f["file"].endswith(".java")]
+            if jf: sc = 30; sig.append("%d Java files changed since deploy" % len(jf))
+        return sc, sig
+
+    @app.route("/api/local-app/<app_name>/inv/assess", methods=["POST"])
+    def api_inv_assess(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        b = request.get_json(silent=True) or {}
+        cat = next((c for c in _ic_load(app_name) if c["key"] == b.get("category")), None)
+        if not cat: return jsonify({"ok": False, "error": "Unknown issue category"})
+        try: slow = max(1, int(b.get("slow_ms", 1000)))
+        except Exception: slow = 1000
+        text = str(b.get("text", ""))[:4000]
+        ev = _inv_collect(app_name, text, slow)
+        d = _inv_diff(app_name)
+        causes = []
+        for i, c in enumerate(cat["causes"]):
+            sc, sig = _ic_score(c, ev, d if d.get("ok") else {})
+            causes.append({"text": c, "score": sc, "confidence": "High" if sc >= 70 else "Medium" if sc >= 40 else "Low", "signals": sig, "_i": i})
+        causes.sort(key=lambda x: (-x["score"], x["_i"]))
+        for x in causes: x.pop("_i")
+        acts = []
+        for a in cat["actions"]:
+            lab, _, tg = a.rpartition(">")
+            acts.append({"label": (lab or a).strip(), "target": tg.strip() if lab else ""})
+        if d.get("ok") and d["commits"]:
+            ev["findings"].append({"area": "change", "severity": "info", "title": "%d commits / %d files changed since the last deploy" % (len(d["commits"]), len(d["files"])), "detail": ""})
+        return jsonify({"ok": True, "issue": text.strip().splitlines()[0][:200] if text.strip() else cat["name"], "category": cat["name"],
+                        "causes": causes, "confidence": causes[0]["confidence"] if causes else "Low", "actions": acts, "evidence": ev})
+
     @app.route("/api/local-app/<app_name>/inv/rca-notes", methods=["GET", "POST"])
     def api_inv_rca_notes(app_name):
-        import json as _js
+        import json as _js, re as _r
         if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
-        f = _inv_home(app_name) / "rca.json"
+        cat = _r.sub(r"[^A-Za-z0-9_]", "_", request.args.get("category", "general"))
+        f = _inv_home(app_name) / ("rca_%s.json" % cat)
+        keys = ("issue", "root_cause", "evidence", "impact", "resolution", "verification", "prevention")
         if request.method == "POST":
             b = request.get_json(silent=True) or {}
-            keys = ("title", "summary", "impact", "root_cause", "contributing", "fix", "prevention", "timeline")
             f.write_text(_js.dumps({k: str(b.get(k, ""))[:20000] for k in keys}), encoding="utf-8")
             return jsonify({"ok": True})
         try: return jsonify({"ok": True, "notes": _js.loads(f.read_text(encoding="utf-8"))})
         except Exception: return jsonify({"ok": True, "notes": {}})
+
+    # ── Observability > Events: configurable rules (event_config.xlsx) + timeline ──
+    _EV_COLS = ["Key", "Event", "Enabled", "Source", "Pattern", "Threshold", "Message", "Severity"]
+    _EV_SOURCES = ["log", "appmap_http", "appmap_slow", "sql", "jvm", "deploy", "store"]
+    _EV_DEFAULTS = [
+        ("app_start", "Application Start", True, "log", r"Server startup in", "", "Application Started", "info"),
+        ("app_stop", "Application Stop", True, "log", r"Stopping service \[Catalina\]|Stopping ProtocolHandler", "", "Application Stopped", "info"),
+        ("config_change", "Configuration Changes", True, "log", r"(?i)reloading context|configuration (has )?(changed|updated)", "", "Configuration Changed: {line}", "info"),
+        ("endpoint", "Endpoint Invocations", True, "appmap_http", r".*", "", "{method} {path}", "info"),
+        ("slow_api", "Slow API Calls", True, "appmap_slow", r".*", "2000", "Slow API {method} {path} ({sec} sec)", "warn"),
+        ("sql_events", "SQL Events", True, "sql", "", "1000", "Slow SQL Detected ({sec} sec)", "warn"),
+        ("external", "External Service Calls", True, "log", r"(?i)(RestTemplate|HttpClient|WebClient|SoapClient|outbound).{0,200}https?://", "", "External call: {line}", "info"),
+        ("exception", "Exception Events", True, "log", r"([A-Za-z_][\w.$]*(?:Exception|Error))", "", "Exception: {g1}", "error"),
+        ("jvm_threshold", "JVM Threshold Events", True, "jvm", "heap_pct>=85,threads>=500,blocked>=5", "", "", "warn"),
+        ("deployment", "Deployment Events", True, "deploy", "", "", "Deploy Completed ({branch})", "info"),
+    ]
+
+    def _ev_dir(app_name):
+        return _obs_cfg_file(app_name, "log").parent
+
+    def _ev_xlsx(app_name):
+        return _ev_dir(app_name) / "event_config.xlsx"
+
+    def _ev_load(app_name):
+        f = _ev_xlsx(app_name)
+        if not f.exists():
+            _ev_save(app_name, [dict(zip(("key", "name", "enabled", "source", "pattern", "threshold", "message", "severity"), d)) for d in _EV_DEFAULTS])
+        import openpyxl as _xl
+        wb = _xl.load_workbook(str(f), read_only=True, data_only=True)
+        rows = []
+        for i, r in enumerate(wb.active.iter_rows(values_only=True)):
+            if i == 0 or not r or not r[0]: continue
+            r = list(r) + [None] * 8
+            en = str(r[2]).strip().lower() in ("true", "1", "yes", "y")
+            rows.append({"key": str(r[0]).strip(), "name": str(r[1] or ""), "enabled": en, "source": str(r[3] or "log").strip(),
+                         "pattern": "" if r[4] is None else str(r[4]), "threshold": "" if r[5] is None else str(r[5]),
+                         "message": "" if r[6] is None else str(r[6]), "severity": str(r[7] or "info").strip()})
+        wb.close()
+        return rows
+
+    def _ev_save(app_name, rows):
+        import openpyxl as _xl
+        wb = _xl.Workbook()
+        ws = wb.active
+        ws.title = "Events"
+        ws.append(_EV_COLS)
+        for r in rows:
+            ws.append([r["key"], r["name"], "TRUE" if r["enabled"] else "FALSE", r["source"], r["pattern"], r["threshold"], r["message"], r["severity"]])
+        for col, w in zip("ABCDEFGH", (18, 28, 9, 14, 56, 11, 44, 10)): ws.column_dimensions[col].width = w
+        _ev_dir(app_name).mkdir(parents=True, exist_ok=True)
+        wb.save(str(_ev_xlsx(app_name)))
+
+    def _ev_store(app_name):
+        d = PROJECTS_HOME / "Setup" / "Dev_Softwares" / "Observability" / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "events.jsonl"
+
+    def _obs_record(app_name, key, msg, sev="info"):
+        """Append an event raised by the Workbench itself (deploy, settings changes, ...)."""
+        import json as _js, time as _t
+        try:
+            with open(_ev_store(app_name), "a", encoding="utf-8") as fh:
+                fh.write(_js.dumps({"ts": _t.time(), "key": key, "msg": msg, "sev": sev}) + "\n")
+        except Exception:
+            pass
+
+    @app.route("/api/local-app/<app_name>/obs/event-config", methods=["GET", "POST"])
+    def api_ev_config(app_name):
+        import re as _r
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        if request.method == "POST":
+            b = request.get_json(silent=True) or {}
+            rows, seen = [], set()
+            for x in (b.get("rules") or []):
+                k = _r.sub(r"[^A-Za-z0-9_]", "_", str(x.get("key", "")).strip())
+                if not k: return jsonify({"ok": False, "error": "Every event needs a key"})
+                if k in seen: return jsonify({"ok": False, "error": "Duplicate key: " + k})
+                seen.add(k)
+                src = str(x.get("source", "log"))
+                if src not in _EV_SOURCES: return jsonify({"ok": False, "error": "Unknown source: " + src})
+                pat = str(x.get("pattern", ""))
+                if src in ("log", "appmap_http", "appmap_slow", "sql"):
+                    try: _r.compile(pat)
+                    except Exception as e: return jsonify({"ok": False, "error": "Invalid regex in %s: %s" % (k, e)})
+                rows.append({"key": k, "name": str(x.get("name", k)), "enabled": bool(x.get("enabled")), "source": src, "pattern": pat,
+                             "threshold": str(x.get("threshold", "")), "message": str(x.get("message", "")),
+                             "severity": x.get("severity") if x.get("severity") in ("info", "warn", "error") else "info"})
+            _ev_save(app_name, rows)
+            return jsonify({"ok": True})
+        return jsonify({"ok": True, "rules": _ev_load(app_name), "sources": _EV_SOURCES, "file": str(_ev_xlsx(app_name))})
+
+    @app.route("/api/local-app/<app_name>/obs/events")
+    def api_ev_list(app_name):
+        import re as _r, json as _js, time as _t, datetime as _dt
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        try: minutes = max(5, min(int(request.args.get("minutes", "180")), 10080))
+        except Exception: minutes = 180
+        now = _t.time(); since = now - minutes * 60
+        rules = [r for r in _ev_load(app_name) if r["enabled"]]
+        by = {r["key"]: r for r in rules}
+        out, notes = [], []
+        def add(rule, ts, msg, extra=None):
+            out.append({"ts": ts, "key": rule["key"], "event": rule["name"], "msg": msg, "sev": rule["severity"], **(extra or {})})
+        def fmt(tpl, **kw):
+            try: return tpl.format(**kw)
+            except Exception: return tpl
+        c = _appmap_container_name(app_name)
+        # container log (one fetch shared by all log rules)
+        lrules = [r for r in rules if r["source"] == "log"]
+        if lrules and c:
+            ok, lg = _appmap_dk(["logs", "--timestamps", "--since", "%dm" % minutes, "--tail", "20000", c], timeout=90)
+            seen = set()
+            for ln in (lg.splitlines() if ok else []):
+                m = _r.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z\s?(.*)", ln)
+                if not m: continue
+                ts = _dt.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_dt.timezone.utc).timestamp()
+                body = m.group(2)
+                if body.lstrip().startswith("at "): continue
+                for r in lrules:
+                    try: mm = _r.search(r["pattern"], body)
+                    except Exception: continue
+                    if not mm: continue
+                    g1 = mm.group(1) if mm.groups() else mm.group(0)
+                    msg = fmt(r["message"] or "{line}", line=body.strip()[:160], g1=g1.rsplit(".", 1)[-1] if r["key"] == "exception" else g1)
+                    dk = (r["key"], msg, int(ts // 60))
+                    if dk in seen: continue
+                    seen.add(dk)
+                    add(r, ts, msg)
+        # AppMap HTTP recordings
+        hr = [r for r in rules if r["source"] in ("appmap_http", "appmap_slow")]
+        if hr and c:
+            try: _appmap_pull(app_name)
+            except Exception: pass
+            base = _appmap_home(app_name) / "tmp" / "appmap" / "server"
+            fs = [f for f in base.rglob("*.appmap.json") if f.stat().st_mtime >= since] if base.is_dir() else []
+            for f in sorted(fs, key=lambda p: p.stat().st_mtime, reverse=True)[:300]:
+                try: ev = _js.loads(f.read_text(encoding="utf-8")).get("events", [])
+                except Exception: continue
+                rets = {e.get("parent_id"): e for e in ev if e.get("event") == "return"}
+                for e in ev:
+                    h = e.get("http_server_request")
+                    if e.get("event") != "call" or not h: continue
+                    path = h.get("normalized_path_info") or h.get("path_info") or ""
+                    meth = h.get("request_method", "")
+                    el = float((rets.get(e.get("id")) or {}).get("elapsed", 0) or 0)
+                    for r in hr:
+                        try:
+                            if not _r.search(r["pattern"] or ".*", path): continue
+                        except Exception: continue
+                        if r["source"] == "appmap_slow":
+                            try: thr = float(r["threshold"] or 0) / 1000.0
+                            except Exception: thr = 2.0
+                            if el < thr: continue
+                        add(r, f.stat().st_mtime, fmt(r["message"] or "{method} {path}", method=meth, path=path, sec="%.1f" % el))
+        # P6Spy SQL
+        for r in [r for r in rules if r["source"] == "sql"]:
+            if not c: break
+            ok, sp = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", "tail -n 30000 /tmp/p6spy/spy.log 2>/dev/null"], timeout=30)
+            try: thr = float(r["threshold"] or 0)
+            except Exception: thr = 0
+            for ln in (sp.splitlines() if ok else []):
+                p = ln.split("@@")
+                if len(p) < 6 or p[2] != "statement" or not p[1].strip().isdigit(): continue
+                try:
+                    ts = _dt.datetime.strptime(p[0].strip(), "%d/%m/%y %H:%M:%S").timestamp()
+                except Exception:
+                    try: ts = _dt.datetime.strptime(p[0].strip()[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+                    except Exception: continue
+                if ts < since: continue
+                ms = int(p[1]); sql = "@@".join(p[5:]).strip()
+                hit = (thr > 0 and ms >= thr) or (r["pattern"] and _r.search(r["pattern"], sql))
+                if hit: add(r, ts, fmt(r["message"] or "SQL ({sec} sec): {sql}", sec="%.1f" % (ms / 1000.0), ms=ms, sql=sql[:120]))
+        # JVM thresholds (sampled now; breaches are stored so they stay on the timeline)
+        jr = by.get("jvm_threshold") or next((r for r in rules if r["source"] == "jvm"), None)
+        if jr and c:
+            vals = {}
+            c2, pid, user, b, err = _jv_target(app_name)
+            if not err:
+                used, tot = _jv_heap(_jv_run(app_name, ["GC.heap_info"], 20)[1])
+                if used and tot: vals["heap_pct"] = round(used * 100 / tot)
+                vals["threads"] = int(_jv_status(c2, pid).get("Threads", "0") or 0)
+                ok, td = _jv_run(app_name, ["Thread.print"], 30)
+                vals["blocked"] = len(_r.findall(r"java\.lang\.Thread\.State:\s*BLOCKED", td if ok else ""))
+            labels = {"heap_pct": "Heap Usage {v}%", "threads": "Thread count {v}", "blocked": "{v} BLOCKED threads"}
+            for part in [x.strip() for x in jr["pattern"].split(",") if x.strip()]:
+                m = _r.fullmatch(r"(\w+)\s*>=\s*([\d.]+)", part)
+                if not m or m.group(1) not in vals or vals[m.group(1)] < float(m.group(2)): continue
+                msg = labels.get(m.group(1), "{k} {v}").format(k=m.group(1), v=vals[m.group(1)])
+                if not any(x.get("key") == jr["key"] and x.get("msg") == msg and now - x.get("ts", 0) < 300 for x in _ev_read_store(app_name)):
+                    _obs_record(app_name, jr["key"], msg, jr["severity"])
+        # deployment info
+        for r in [r for r in rules if r["source"] == "deploy"]:
+            try:
+                df = _generic_app_deployed_file(app_name) if app_name != "payor" else _DEPLOYED_INFO_FILE
+                d = _js.loads(df.read_text(encoding="utf-8"))
+                ts = _dt.datetime.strptime(d["deployed_at"].replace(" UTC", ""), "%Y-%m-%d %H:%M").replace(tzinfo=_dt.timezone.utc).timestamp()
+                if ts >= since: add(r, ts, fmt(r["message"] or "Deploy Completed ({branch})", branch=d.get("branch") or "", ver=d.get("release_ver") or ""))
+            except Exception: pass
+        # events raised by the Workbench itself (match a rule by key; any enabled rule can receive them)
+        for e in _ev_read_store(app_name):
+            r = by.get(e.get("key"))
+            if r and e.get("ts", 0) >= since:
+                out.append({"ts": e["ts"], "key": r["key"], "event": r["name"], "msg": e.get("msg", ""), "sev": e.get("sev") or r["severity"]})
+        out.sort(key=lambda x: x["ts"])
+        for x in out:
+            x["time"] = _dt.datetime.fromtimestamp(x["ts"]).strftime("%H:%M")
+            x["date"] = _dt.datetime.fromtimestamp(x["ts"]).strftime("%Y-%m-%d")
+        return jsonify({"ok": True, "events": out[-500:], "rules": len(rules), "minutes": minutes})
+
+    def _ev_read_store(app_name):
+        import json as _js
+        out = []
+        try:
+            for ln in open(_ev_store(app_name), encoding="utf-8"):
+                try: out.append(_js.loads(ln))
+                except Exception: pass
+        except Exception:
+            pass
+        return out[-2000:]
+
+    @app.route("/api/local-app/<app_name>/obs/events/record", methods=["POST"])
+    def api_ev_record(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        b = request.get_json(silent=True) or {}
+        _obs_record(app_name, str(b.get("key", "store")), str(b.get("msg", ""))[:300], str(b.get("sev", "info")))
+        return jsonify({"ok": True})
+
+    @app.route("/api/local-app/<app_name>/obs/events/clear", methods=["POST"])
+    def api_ev_clear(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        try: _ev_store(app_name).unlink()
+        except Exception: pass
+        return jsonify({"ok": True})
 
     @app.route("/api/local-app/<app_name>/appmap/settings", methods=["GET", "POST"])
     def api_appmap_settings(app_name):
         import json as _js_as
         if app_name not in _KNOWN_GENERIC_LOCAL_APPS:
             return jsonify({"ok": False, "error": "Unknown app"}), 404
+        if request.method == "POST":
+            _obs_record(app_name, "config_change", "AppMap settings changed")
         d = _appmap_settings(app_name)
         if request.method == "POST":
             b = request.get_json(silent=True) or {}

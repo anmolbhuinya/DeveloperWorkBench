@@ -1,16 +1,16 @@
 import { useState, useEffect, useMemo } from 'react'
 
 const VIEWS = [
+  { key: 'services', label: 'Service Maps' },
+  { key: 'sequence', label: 'Sequence Diagram' },
+  { key: 'http',     label: 'Http Flow Visualization' },
   { key: 'deps',     label: 'Dependency Map' },
   { key: 'flame',    label: 'Flame Graph' },
   { key: 'trace',    label: 'Trace View' },
-  { key: 'sequence', label: 'Sequence diagrams' },
-  { key: 'calls',    label: 'Call graphs' },
-  { key: 'services', label: 'Service maps' },
-  { key: 'code',     label: 'Code-to-runtime navigation' },
-  { key: 'sql',      label: 'SQL visualization' },
+  { key: 'calls',    label: 'Call Graphs' },
+  { key: 'code',     label: 'Code to Runtime Navigation' },
+  { key: 'sql',      label: 'SQL Visualization' },
   { key: 'sqlx',     label: 'SQL Executions' },
-  { key: 'http',     label: 'HTTP flow visualization' },
 ]
 const short = (c) => String(c || '').split('.').pop() || String(c || '')
 const th = { textAlign: 'left', padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
@@ -323,7 +323,7 @@ export default function AppMapTab({ appName, displayName }) {
   const [maps, setMaps] = useState(C.maps ?? [])
   const [file, setFile] = useState(C.file ?? '')
   const [m, setM] = useState(C.m ?? null)
-  const [view, setView] = useState(C.view ?? 'deps')
+  const [view, setView] = useState(C.view ?? 'services')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [cfg, setCfg] = useState(C.cfg ?? null)       // { path, content, output, lib }

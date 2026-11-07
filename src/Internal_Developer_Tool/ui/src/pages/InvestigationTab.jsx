@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
-import { JvmDiagnosticsTab } from './ObservabilityTabs'
+import { JvmDiagnosticsTab, jumpJvm } from './ObservabilityTabs'
 
 const th = { textAlign: 'left', padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
 const td = { padding: '4px 8px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
 const mono = { fontFamily: 'monospace', fontSize: 11 }
-const inp = { ...mono, background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 4, padding: '4px 6px' }
+const inp = { ...mono, background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 4, padding: '4px 6px', boxSizing: 'border-box' }
 const pre = { ...mono, background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, margin: 0, maxHeight: 420, overflow: 'auto', whiteSpace: 'pre-wrap' }
 const btn = { padding: '4px 12px', fontSize: 12, borderRadius: 4, cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--surface2)', color: 'var(--text)' }
 const SEV = { critical: '#dc2626', high: '#ea580c', medium: '#ca8a04', info: '#2563eb' }
+const CONF = { High: '#16a34a', Medium: '#ca8a04', Low: '#6b7280' }
 
 const KEPT = {}
 function useKept(key, init) {
@@ -19,7 +20,28 @@ const getJson = (u, opt) => fetch(u, opt).then(r => r.json()).catch(() => ({ ok:
 const post = (u, b) => getJson(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) })
 const Err = ({ m }) => m ? <div style={{ color: '#dc2626', fontSize: 12, margin: '6px 0', whiteSpace: 'pre-wrap' }}>{m}</div> : null
 const Badge = ({ s }) => <span style={{ background: SEV[s] || '#6b7280', color: '#fff', fontSize: 10, padding: '1px 6px', borderRadius: 8, marginRight: 6 }}>{s}</span>
-const H = ({ children }) => <div style={{ fontWeight: 600, fontSize: 13, margin: '12px 0 6px' }}>{children}</div>
+const H = ({ children }) => <div style={{ fontWeight: 600, fontSize: 13, margin: '14px 0 6px' }}>{children}</div>
+
+// issue categories are shared by Investigate and RCA
+const CATS = { list: null }
+function useCategories(base) {
+  const [cats, setCats] = useState(CATS.list)
+  const load = () => getJson(`${base}/inv/categories`).then(r => { if (r.ok) { CATS.list = r; setCats(r) } })
+  useEffect(() => { if (!CATS.list) load() }, [])
+  return [cats, load]
+}
+function CategoryPills({ cats, value, onChange }) {
+  const list = (cats?.categories || []).filter(c => c.enabled)
+  useEffect(() => { if (list.length && !list.find(c => c.key === value)) onChange(list[0].key) }, [cats])
+  return (
+    <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+      {list.map(c => (
+        <button key={c.key} onClick={() => onChange(c.key)}
+          style={{ padding: '3px 10px', fontSize: 12, borderRadius: 14, cursor: 'pointer', border: '1px solid var(--border)',
+            background: value === c.key ? 'var(--primary, #2563eb)' : 'transparent', color: value === c.key ? '#fff' : 'inherit' }}>{c.name}</button>))}
+    </div>
+  )
+}
 
 function Findings({ list }) {
   return (
@@ -33,109 +55,77 @@ function Findings({ list }) {
   )
 }
 
-// ── 1. Investigate Issue ─────────────────────────────────────────────────────
-function Investigate({ base }) {
+// ── Investigate ──────────────────────────────────────────────────────────────
+function Investigate({ base, cats, onNav }) {
+  const [cat, setCat] = useKept('invcat', '')
   const [text, setText] = useKept(base + 'itext', '')
   const [slow, setSlow] = useKept(base + 'islow', 1000)
-  const [res, setRes] = useKept(base + 'ires', null)
+  const [results, setResults] = useKept(base + 'ires2', {})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const c = (cats?.categories || []).find(x => x.key === cat)
+  const res = results[cat]
   function run() {
     setBusy(true); setErr('')
-    post(`${base}/inv/investigate`, { text, slow_ms: slow }).then(r => { if (r.ok) setRes(r); else setErr(r.error) }).finally(() => setBusy(false))
+    post(`${base}/inv/assess`, { category: cat, text, slow_ms: slow }).then(r => { if (r.ok) setResults({ ...results, [cat]: r }); else setErr(r.error) }).finally(() => setBusy(false))
   }
+  const causes = res ? res.causes : (c?.causes || []).map(t => ({ text: t, confidence: '', signals: [] }))
+  const actions = res ? res.actions : (c?.action_items || [])
+  const ev = res?.evidence
   return (
     <div>
-      <textarea style={{ ...inp, width: '100%', height: 80 }} placeholder="Describe the issue, or paste an error message / stack trace / class name (optional - used to find matching log lines)"
+      <CategoryPills cats={cats} value={cat} onChange={setCat} />
+      <textarea style={{ ...inp, width: '100%', height: 56 }} placeholder="Optional: describe the issue, or paste an error message / class name (used to find matching log lines; the first line becomes the Issue)"
         value={text} onChange={e => setText(e.target.value)} />
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0', flexWrap: 'wrap' }}>
-        <button style={btn} onClick={run} disabled={busy}>{busy ? 'Investigating...' : 'Investigate'}</button>
+        <button style={btn} onClick={run} disabled={busy || !cat}>{busy ? 'Investigating...' : 'Investigate'}</button>
         <label style={{ fontSize: 12 }}>Slow SQL threshold (ms) <input type="number" style={{ ...inp, width: 80 }} value={slow} onChange={e => setSlow(+e.target.value)} /></label>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Checks container logs, JVM state, slow SQL (P6Spy) and changes since the last deploy.</span>
       </div>
       <Err m={err} />
-      {res && <>
-        <H>Findings ({res.findings.length})</H>
-        {res.findings.length ? <Findings list={res.findings} /> : <div style={{ fontSize: 12 }}>Nothing suspicious found in the evidence collected.</div>}
-        {res.jvm && <><H>JVM</H><div style={{ fontSize: 12 }}>Heap {res.jvm.heap_used_mb} / {res.jvm.heap_total_mb} MB - threads {Object.entries(res.jvm.states).map(([k, v]) => `${k}:${v}`).join('  ')}</div></>}
-        {res.exceptions.length > 0 && <><H>Exceptions in the container log</H>
+      {c && <div className="card" style={{ padding: '10px 14px', fontSize: 13, lineHeight: 1.7 }}>
+        <div><b>Issue:</b></div>
+        <div style={{ marginBottom: 8 }}>{res ? res.issue : (text.trim().split('\n')[0] || c.name)}</div>
+        <div><b>Possible Causes:</b></div>
+        <div style={{ marginBottom: 8 }}>
+          {causes.map((x, i) => (
+            <div key={i}>{i + 1}. {x.text}
+              {x.confidence && <span style={{ marginLeft: 8, fontSize: 11, color: CONF[x.confidence] }}>{x.confidence}</span>}
+              {x.signals?.length > 0 && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)' }}>- {x.signals.join('; ')}</span>}
+            </div>))}
+          {!res && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Run Investigate to rank these against live evidence.</div>}
+        </div>
+        <div><b>Confidence:</b></div>
+        <div style={{ marginBottom: 8 }}>
+          {['High', 'Medium', 'Low'].map((k, i) => (
+            <span key={k}>{i > 0 && ' / '}<span style={{ fontWeight: res?.confidence === k ? 700 : 400, color: res?.confidence === k ? CONF[k] : 'var(--text-muted)' }}>{k}</span></span>))}
+        </div>
+        <div><b>Recommended Actions:</b></div>
+        <div>{actions.map((a, i) => (
+          <div key={i}>{a.target ? <a href="#" onClick={e => { e.preventDefault(); onNav(a.target) }} style={{ color: 'var(--primary, #2563eb)' }}>{a.label}</a> : a.label}</div>))}</div>
+      </div>}
+      {ev && <details style={{ marginTop: 10 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Evidence ({ev.findings.length} findings)</summary>
+        {ev.findings.length ? <Findings list={ev.findings} /> : <div style={{ fontSize: 12 }}>Nothing suspicious found in the evidence collected.</div>}
+        {ev.jvm && <><H>JVM</H><div style={{ fontSize: 12 }}>Heap {ev.jvm.heap_used_mb} / {ev.jvm.heap_total_mb} MB - threads {Object.entries(ev.jvm.states).map(([k, v]) => `${k}:${v}`).join('  ')}</div></>}
+        {ev.exceptions.length > 0 && <><H>Exceptions in the container log</H>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr><th style={th}>Count</th><th style={th}>Exception</th><th style={th}>Message</th><th style={th}>App frame</th></tr></thead>
-            <tbody>{res.exceptions.map((g, i) => (
+            <tbody>{ev.exceptions.map((g, i) => (
               <tr key={i}><td style={td}>{g.count}</td><td style={{ ...td, ...mono }}>{g.type}</td><td style={{ ...td, ...mono }}>{g.message}</td>
                 <td style={{ ...td, ...mono }}>{g.frame ? `${g.frame.cls}.${g.frame.method} (${g.frame.file}:${g.frame.line})` : ''}</td></tr>))}</tbody>
           </table></>}
-        {res.slow_sql.length > 0 && <><H>Slow SQL</H>
+        {ev.slow_sql.length > 0 && <><H>Slow SQL</H>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr><th style={th}>ms</th><th style={th}>Time</th><th style={th}>SQL</th></tr></thead>
-            <tbody>{res.slow_sql.map((s, i) => (<tr key={i}><td style={td}>{s.ms}</td><td style={td}>{s.time}</td><td style={{ ...td, ...mono }}>{s.sql}</td></tr>))}</tbody>
+            <tbody>{ev.slow_sql.map((s, i) => (<tr key={i}><td style={td}>{s.ms}</td><td style={td}>{s.time}</td><td style={{ ...td, ...mono }}>{s.sql}</td></tr>))}</tbody>
           </table></>}
-        {res.keyword_hits.length > 0 && <><H>Log lines matching your description</H><pre style={pre}>{res.keyword_hits.join('\n')}</pre></>}
-      </>}
+        {ev.keyword_hits.length > 0 && <><H>Log lines matching your description</H><pre style={pre}>{ev.keyword_hits.join('\n')}</pre></>}
+      </details>}
     </div>
   )
 }
 
-// ── 2. Deployment Diff ───────────────────────────────────────────────────────
-export function DeploymentDiff({ base }) {
-  const [frm, setFrm] = useKept(base + 'dfrom', '')
-  const [to, setTo] = useKept(base + 'dto', 'HEAD')
-  const [res, setRes] = useKept(base + 'dres', null)
-  const [refs, setRefs] = useState([])
-  const [sel, setSel] = useState(null)
-  const [patch, setPatch] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
-  function run() {
-    setBusy(true); setErr(''); setSel(null); setPatch('')
-    getJson(`${base}/inv/diff?from=${encodeURIComponent(frm)}&to=${encodeURIComponent(to)}`).then(r => { if (r.ok) setRes(r); else setErr(r.error) }).finally(() => setBusy(false))
-  }
-  useEffect(() => { getJson(`${base}/inv/branches`).then(r => { if (r.ok) setRefs(r.refs) }); if (!res) run() }, [])
-  function openFile(f) {
-    setSel(f); setPatch('Loading...')
-    getJson(`${base}/inv/diff-file?from=${encodeURIComponent(res.from)}&to=${encodeURIComponent(res.to)}&file=${encodeURIComponent(f)}`).then(r => setPatch(r.ok ? (r.patch || '(no textual diff)') : r.error))
-  }
-  return (
-    <div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 12 }}>From <input list="inv-refs" style={{ ...inp, width: 200 }} placeholder="blank = commit at last deploy" value={frm} onChange={e => setFrm(e.target.value)} /></label>
-        <label style={{ fontSize: 12 }}>To <input list="inv-refs" style={{ ...inp, width: 160 }} value={to} onChange={e => setTo(e.target.value)} /></label>
-        <datalist id="inv-refs">{refs.map(r => <option key={r} value={r} />)}</datalist>
-        <button style={btn} onClick={run} disabled={busy}>{busy ? 'Comparing...' : 'Compare'}</button>
-      </div>
-      <Err m={err} />
-      {res && <>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
-          Deployed: {res.deployed_at || 'unknown'}{res.deployed_branch ? ` (${res.deployed_branch})` : ''}{res.release_ver ? ` v${res.release_ver}` : ''} - comparing <b>{res.from}</b> .. <b>{res.to}</b>
-          {res.note && <span> - {res.note}</span>}
-        </div>
-        <H>Commits ({res.commits.length})</H>
-        <div style={{ maxHeight: 220, overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr><th style={th}>Commit</th><th style={th}>Author</th><th style={th}>Date</th><th style={th}>Subject</th></tr></thead>
-            <tbody>{res.commits.map(c => (<tr key={c.hash}><td style={{ ...td, ...mono }}>{c.hash}</td><td style={td}>{c.author}</td><td style={td}>{c.date}</td><td style={td}>{c.subject}</td></tr>))}</tbody>
-          </table>
-        </div>
-        <H>Changed files ({res.files.length})</H>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ flex: '1 1 380px', maxHeight: 360, overflow: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <tbody>{res.files.map(f => (
-                <tr key={f.file} onClick={() => openFile(f.file)} style={{ cursor: 'pointer', background: sel === f.file ? 'var(--surface2)' : '' }}>
-                  <td style={{ ...td, ...mono }}>{f.file}</td><td style={{ ...td, color: '#16a34a' }}>+{f.add}</td><td style={{ ...td, color: '#dc2626' }}>-{f.del}</td></tr>))}</tbody>
-            </table>
-          </div>
-          <div style={{ flex: '2 1 480px' }}>
-            {sel ? <pre style={{ ...pre, maxHeight: 360 }}>{patch.split('\n').map((l, i) => <div key={i} style={{ color: l.startsWith('+') && !l.startsWith('+++') ? '#16a34a' : l.startsWith('-') && !l.startsWith('---') ? '#dc2626' : undefined }}>{l || ' '}</div>)}</pre>
-              : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Click a file to see its diff.</div>}
-          </div>
-        </div>
-      </>}
-    </div>
-  )
-}
-
-// ── 3. Root Cause Analysis ───────────────────────────────────────────────────
+// ── Root Cause Analysis ──────────────────────────────────────────────────────
 const RULES = [
   { rule: 'Exception in the log, thrown from a file that changed since the last deploy', score: '90 + min(count, 10)', max: 100, when: 'An exception type/message appears in the last 6000 container log lines, its first com.healthedge / com.healthrules stack frame maps to a .java file in the deployment diff.' },
   { rule: 'Thread deadlock', score: '95', max: 95, when: 'Thread.print reports a Java-level deadlock.' },
@@ -162,65 +152,120 @@ function RulesPanel() {
     </div>
   )
 }
-const NOTE_KEYS =[['title', 'Title'], ['summary', 'Summary'], ['impact', 'Impact'], ['timeline', 'Timeline'], ['root_cause', 'Root cause'], ['contributing', 'Contributing factors'], ['fix', 'Fix / mitigation'], ['prevention', 'Prevention']]
-function Rca({ base }) {
+const NOTE_KEYS = [['issue', 'Issue', 1], ['root_cause', 'Root Cause', 2], ['evidence', 'Evidence', 5], ['impact', 'Impact', 4], ['resolution', 'Resolution', 3], ['verification', 'Verification', 4], ['prevention', 'Prevention', 3]]
+function Rca({ base, cats }) {
+  const [cat, setCat] = useKept('invcat', '')
   const [text, setText] = useKept(base + 'rtext', '')
   const [res, setRes] = useKept(base + 'rres', null)
-  const [notes, setNotes] = useKept(base + 'rnotes', null)
+  const [allNotes, setAllNotes] = useKept(base + 'rnotes2', {})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [saved, setSaved] = useState('')
   const [showRules, setShowRules] = useKept(base + 'rrules', false)
-  useEffect(() => { if (!notes) getJson(`${base}/inv/rca-notes`).then(r => setNotes(r.notes || {})) }, [])
+  const c = (cats?.categories || []).find(x => x.key === cat)
+  useEffect(() => {
+    if (cat && !(cat in allNotes)) getJson(`${base}/inv/rca-notes?category=${cat}`).then(r => setAllNotes(a => ({ ...a, [cat]: r.notes || {} })))
+  }, [cat])
+  const n = allNotes[cat] || {}
+  const setN = (k, v) => setAllNotes({ ...allNotes, [cat]: { ...n, [k]: v } })
+  const val = k => k === 'issue' && n.issue === undefined ? (c?.name || '') : (n[k] || '')
   function run() {
     setBusy(true); setErr('')
     post(`${base}/inv/rca`, { text }).then(r => { if (r.ok) setRes(r); else setErr(r.error) }).finally(() => setBusy(false))
   }
-  const n = notes || {}
-  const save = () => post(`${base}/inv/rca-notes`, n).then(r => setSaved(r.ok ? 'Saved' : r.error))
-  const md = () => NOTE_KEYS.map(([k, l]) => k === 'title' ? `# ${n[k] || 'Root Cause Analysis'}` : `## ${l}\n${n[k] || ''}`).join('\n\n')
-  const useHyp = h => setNotes({ ...n, root_cause: `${h.title}\n${h.why}${h.files.length ? '\nFiles: ' + h.files.join(', ') : ''}${h.commits.length ? '\nCommits:\n' + h.commits.join('\n') : ''}` })
+  const save = () => post(`${base}/inv/rca-notes?category=${cat}`, { ...Object.fromEntries(NOTE_KEYS.map(([k]) => [k, val(k)])) }).then(r => setSaved(r.ok ? 'Saved' : r.error))
+  const md = () => NOTE_KEYS.map(([k, l]) => `${l}:\n${val(k)}`).join('\n\n')
+  const useHyp = h => setAllNotes({ ...allNotes, [cat]: { ...n, root_cause: h.title,
+    evidence: [h.why, ...h.files.map(f => 'Changed file: ' + f), ...h.commits.map(x => 'Commit: ' + x)].map(x => '• ' + x).join('\n') } })
   return (
     <div>
-      <textarea style={{ ...inp, width: '100%', height: 60 }} placeholder="Symptom / error text (optional)" value={text} onChange={e => setText(e.target.value)} />
-      <div style={{ margin: '8px 0' }}>
-        <button style={btn} onClick={run} disabled={busy}>{busy ? 'Analysing...' : 'Analyse likely causes'}</button>{' '}
-        <button style={{ ...btn, background: showRules ? 'var(--primary, #2563eb)' : btn.background, color: showRules ? '#fff' : btn.color }} onClick={() => setShowRules(v => !v)}>Rules</button>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>Correlates log exceptions, JVM and SQL evidence with files changed since the last deploy.</span>
+      <CategoryPills cats={cats} value={cat} onChange={setCat} />
+      <div className="card" style={{ padding: 10, marginBottom: 10 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input style={{ ...inp, flex: 1, minWidth: 260 }} placeholder="Symptom / error text (optional)" value={text} onChange={e => setText(e.target.value)} />
+          <button style={btn} onClick={run} disabled={busy}>{busy ? 'Analysing...' : 'Analyse likely causes'}</button>
+          <button style={{ ...btn, background: showRules ? 'var(--primary, #2563eb)' : btn.background, color: showRules ? '#fff' : btn.color }} onClick={() => setShowRules(v => !v)}>Rules</button>
+        </div>
+        <Err m={err} />
+        {showRules && <RulesPanel />}
+        {res && <>
+          {res.hypotheses.length === 0 && <div style={{ fontSize: 12, marginTop: 6 }}>No hypotheses - no symptoms were found.</div>}
+          {res.hypotheses.map((h, i) => (
+            <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 13 }}><b>#{i + 1}</b> {h.title} <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>[{h.kind}, score {h.score}]</span>
+                <button style={{ ...btn, float: 'right', padding: '1px 8px' }} onClick={() => useHyp(h)}>Use as root cause</button></div>
+              <div style={{ fontSize: 12, marginTop: 2 }}>{h.why}</div>
+              {h.files.map(f => <div key={f} style={mono}>changed: {f}</div>)}
+              {h.commits.map(x => <div key={x} style={mono}>commit: {x}</div>)}
+            </div>))}
+        </>}
       </div>
-      <Err m={err} />
-      {showRules && <RulesPanel />}
-      {res && <>
-        <H>Ranked hypotheses</H>
-        {res.hypotheses.length === 0 && <div style={{ fontSize: 12 }}>No hypotheses - no symptoms were found.</div>}
-        {res.hypotheses.map((h, i) => (
-          <div key={i} className="card" style={{ padding: '8px 10px', marginBottom: 6 }}>
-            <div style={{ fontSize: 13 }}><b>#{i + 1}</b> {h.title} <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>[{h.kind}, score {h.score}]</span>
-              <button style={{ ...btn, float: 'right', padding: '1px 8px' }} onClick={() => useHyp(h)}>Use as root cause</button></div>
-            <div style={{ fontSize: 12, marginTop: 3 }}>{h.why}</div>
-            {h.files.map(f => <div key={f} style={mono}>changed: {f}</div>)}
-            {h.commits.map(c => <div key={c} style={mono}>commit: {c}</div>)}
-          </div>))}
-        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Compared {res.diff.from}..{res.diff.to}: {res.diff.commits} commits, {res.diff.files} files. {res.diff.error}</div>
-      </>}
-      <H>RCA write-up</H>
-      {NOTE_KEYS.map(([k, l]) => (
-        <div key={k} style={{ marginBottom: 6 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{l}</div>
-          {k === 'title' ? <input style={{ ...inp, width: '100%' }} value={n[k] || ''} onChange={e => setNotes({ ...n, [k]: e.target.value })} />
-            : <textarea style={{ ...inp, width: '100%', height: k === 'root_cause' ? 90 : 56 }} value={n[k] || ''} onChange={e => setNotes({ ...n, [k]: e.target.value })} />}
+      {NOTE_KEYS.map(([k, l, rows]) => (
+        <div key={k} style={{ marginBottom: 8 }}>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>{l}:</div>
+          {rows === 1 ? <input style={{ ...inp, width: '100%' }} value={val(k)} onChange={e => setN(k, e.target.value)} />
+            : <textarea style={{ ...inp, width: '100%', height: rows * 20 + 12 }} placeholder={k === 'evidence' || k === 'impact' ? 'One item per line' : ''} value={val(k)} onChange={e => setN(k, e.target.value)} />}
         </div>))}
       <button style={btn} onClick={save}>Save</button>{' '}
-      <button style={btn} onClick={() => navigator.clipboard?.writeText(md())}>Copy as Markdown</button>
+      <button style={btn} onClick={() => navigator.clipboard?.writeText(md())}>Copy</button>
       <span style={{ fontSize: 12, marginLeft: 8, color: 'var(--text-muted)' }}>{saved}</span>
     </div>
   )
 }
 
+// ── Issue Categories ─────────────────────────────────────────────────────────
+function Categories({ base, cats, reload }) {
+  const [rows, setRows] = useState(null)
+  const [msg, setMsg] = useState('')
+  useEffect(() => { if (cats) setRows(cats.categories.map(c => ({ ...c, _old: true, causes: c.causes.join('\n'), actions: c.actions.join('\n') }))) }, [cats])
+  if (!rows) return <div style={{ fontSize: 12 }}>Loading...</div>
+  const set = (i, k, v) => setRows(rows.map((r, j) => j === i ? { ...r, [k]: v } : r))
+  const save = () => post(`${base}/inv/categories`, { categories: rows }).then(r => { setMsg(r.ok ? 'Saved to issue_categories.xlsx' : r.error); if (r.ok) { CATS.list = null; reload() } })
+  return (
+    <div>
+      <div style={{ overflow: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+          <thead><tr><th style={th}>On</th><th style={th}>Key</th><th style={th}>Category</th><th style={th}>Possible causes (one per line)</th><th style={th}>Recommended actions (one per line: Label &gt; target)</th><th style={th}></th></tr></thead>
+          <tbody>{rows.map((r, i) => (
+            <tr key={i}>
+              <td style={td}><input type="checkbox" checked={r.enabled} onChange={e => set(i, 'enabled', e.target.checked)} /></td>
+              <td style={{ ...td, width: 110 }}><input style={{ ...inp, width: '100%' }} value={r.key} readOnly={r._old} onChange={e => set(i, 'key', e.target.value)} /></td>
+              <td style={{ ...td, width: 170 }}><input style={{ ...inp, width: '100%' }} value={r.name} onChange={e => set(i, 'name', e.target.value)} /></td>
+              <td style={td}><textarea style={{ ...inp, width: '100%', height: 84 }} value={r.causes} onChange={e => set(i, 'causes', e.target.value)} /></td>
+              <td style={td}><textarea style={{ ...inp, width: '100%', height: 84 }} value={r.actions} onChange={e => set(i, 'actions', e.target.value)} /></td>
+              <td style={td}><button style={btn} onClick={() => setRows(rows.filter((_, j) => j !== i))}>Delete</button></td>
+            </tr>))}</tbody>
+        </table>
+      </div>
+      <div style={{ margin: '8px 0' }}>
+        <button style={btn} onClick={() => setRows([...rows, { key: '', name: '', enabled: true, causes: '', actions: '' }])}>Add category</button>{' '}
+        <button style={btn} onClick={save}>Save</button>{' '}
+        <button style={btn} onClick={() => { CATS.list = null; reload() }}>Discard changes</button>
+        <span style={{ fontSize: 12, marginLeft: 8, color: 'var(--text-muted)' }}>{msg}</span>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+        <div>Config file: {cats.file}</div>
+        <div>An action's target decides where it links: {(cats.targets || []).join(', ')}. For example <span style={mono}>Open SQL Analyzer &gt; sql</span>. An action without a target is shown as plain text.
+          Causes are ranked against live evidence by matching words in their text (sql, pool, gc/heap/memory, thread/lock, timeout/network, config/startup).</div>
+      </div>
+    </div>
+  )
+}
+
+// ── Root ─────────────────────────────────────────────────────────────────────
 export default function InvestigationTab({ appName }) {
   const [sub, setSub] = useKept('invsub', 'inv')
   const base = `/api/local-app/${appName}`
-  const items = [{ key: 'inv', label: 'Investigate Issue' }, { key: 'rca', label: 'Root Cause Analysis' }, { key: 'jvm', label: '☕ JVM Diagnostics' }]
+  const [cats, reload] = useCategories(base)
+  const items = [{ key: 'cats', label: 'Issue Categories' }, { key: 'inv', label: 'Investigate' }, { key: 'jvm', label: '☕ JVM Diagnostics' }, { key: 'rca', label: 'Root Cause Analysis' }]
+  const JVM = { threads: 'thr', heap: 'heap', jfr: 'jfr', dash: 'dash' }
+  const NAV = { sql: { sub: 'logs', inner: { logs: 'p6spy' } }, logs: { sub: 'logs', inner: { logs: 'applog' } }, metrics: { sub: 'metrics' },
+    events: { sub: 'events' }, appmap: { sub: 'traces', inner: { traces: 'appmap' } }, trace: { sub: 'traces', inner: { traces: 'apptrace' } } }
+  function onNav(t) {
+    if (t in JVM) { jumpJvm(JVM[t]); setSub('jvm') }
+    else if (t === 'rca') setSub('rca')
+    else if (t in NAV) window.dispatchEvent(new CustomEvent('dwb-nav', { detail: { tab: 'observability', ...NAV[t] } }))
+  }
   return (
     <div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
@@ -229,9 +274,10 @@ export default function InvestigationTab({ appName }) {
             style={{ padding: '4px 12px', fontSize: 12, borderRadius: 14, cursor: 'pointer', border: '1px solid var(--border)',
               background: sub === t.key ? 'var(--primary, #2563eb)' : 'transparent', color: sub === t.key ? '#fff' : 'inherit' }}>{t.label}</button>))}
       </div>
-      {sub === 'inv' && <Investigate base={base} />}
-      {sub === 'rca' && <Rca base={base} />}
+      {sub === 'inv' && <Investigate base={base} cats={cats} onNav={onNav} />}
       {sub === 'jvm' && <JvmDiagnosticsTab appName={appName} />}
+      {sub === 'rca' && <Rca base={base} cats={cats} />}
+      {sub === 'cats' && <Categories base={base} cats={cats} reload={reload} />}
     </div>
   )
 }

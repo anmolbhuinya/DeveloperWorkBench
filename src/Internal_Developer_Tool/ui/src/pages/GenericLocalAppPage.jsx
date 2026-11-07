@@ -5,7 +5,8 @@ import { GpRunTab } from './GpRunPage'
 import ItTab from './ItTab'
 import AppMapTab from './AppMapTab'
 import P6SpyTab from './P6SpyTab'
-import InvestigationTab, { DeploymentDiff } from './InvestigationTab'
+import InvestigationTab from './InvestigationTab'
+import EventsTab from './EventsTab'
 import { LogsTab, MetricsTab, ApplicationTraceTab } from './ObservabilityTabs'
 
 let _obsSub = 'metrics'
@@ -32,7 +33,7 @@ function ObservabilityTab({ appName, displayName }) {
     <div>
       <Pills2 items={subs} value={sub} onChange={pick} />
       {sub === 'metrics' && <MetricsTab appName={appName} />}
-      {sub === 'events' && <DeploymentDiff base={`/api/local-app/${appName}`} />}
+      {sub === 'events' && <EventsTab appName={appName} />}
       {sub === 'traces' && <>
         <Pills2 small value={inner.traces} onChange={k => pickInner('traces', k)} items={[{ key: 'appmap', label: '🗺️ AppMap' }, { key: 'apptrace', label: 'Application Trace' }]} />
         {inner.traces === 'appmap' && <AppMapTab appName={appName} displayName={displayName} />}
@@ -225,6 +226,11 @@ export default function GenericLocalAppPage({
     return () => clearInterval(id)
   }, [appName])
 
+  useEffect(() => {
+    const h = e => { const d = e.detail || {}; if (d.sub) _obsSub = d.sub; Object.assign(_obsInner, d.inner || {}); setActiveTab(d.tab || 'observability') }
+    window.addEventListener('dwb-nav', h)
+    return () => window.removeEventListener('dwb-nav', h)
+  }, [])
   const hdr         = screenCfg.header || DEFAULT_SCREEN_CFG.header
   const _baseTabs  = screenCfg.tabs || DEFAULT_SCREEN_CFG.tabs
   const _codeOrder = _baseTabs.find(t => t.key === 'code')?.order ?? 0

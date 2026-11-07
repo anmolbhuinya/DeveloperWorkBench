@@ -13,6 +13,7 @@ function useKept(key, init) {
   useEffect(() => { KEPT[key] = v }, [key, v])
   return [v, setV]
 }
+export const jumpJvm = k => { KEPT['jvmsub'] = k }
 const getJson = (u, opt) => fetch(u, opt).then(r => r.json()).catch(() => ({ ok: false, error: 'Could not reach server' }))
 const post = (u, b) => getJson(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) })
 const fmtB = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n > 1024 ? (n / 1024).toFixed(0) + ' KB' : n + ' B'
