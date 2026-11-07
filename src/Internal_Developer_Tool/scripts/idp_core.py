@@ -18402,6 +18402,217 @@ def create_flask_app():
         except Exception: pass
         return jsonify({"ok": True})
 
+    # ── Observability: JVM diagnostics (jcmd/jfr inside the app-server container), logs and metrics ──
+    def _jv_home(app_name):
+        d = PROJECTS_HOME / "Setup" / "Dev_Softwares" / "JvmDiagnostics" / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _jv_target(app_name):
+        """-> (container, pid, user, bindir, error)"""
+        c = _appmap_container_name(app_name)
+        if not c:
+            return "", "", "", "", "Container is not configured / running"
+        script = ("for p in /proc/[0-9]*; do if tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q 'org.apache.catalina.startup.Bootstrap'; then "
+                  "P=${p#/proc/}; echo $P; stat -c %U /proc/$P; dirname $(readlink -f /proc/$P/exe); break; fi; done")
+        ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", script], timeout=30)
+        parts = o.strip().splitlines()
+        if not ok or len(parts) < 3:
+            return c, "", "", "", "The app server JVM is not running in the container" if ok else o
+        return c, parts[0], parts[1], parts[2], ""
+
+    def _jv_run(app_name, args, timeout=60, tool="jcmd"):
+        c, pid, user, b, err = _jv_target(app_name)
+        if err: return False, err
+        cmd = ["exec", "-u", user, c, f"{b}/{tool}"] + ([pid] if tool == "jcmd" else []) + args
+        return _appmap_dk(cmd, timeout=timeout)
+
+    def _jv_ok(app_name):
+        return app_name in _KNOWN_GENERIC_LOCAL_APPS
+
+    def _jv_heap(txt):
+        import re as _r
+        m = _r.search(r"total\s+(\d+)K,\s+used\s+(\d+)K", txt or "")
+        return (int(m.group(2)) // 1024, int(m.group(1)) // 1024) if m else (None, None)
+
+    def _jv_status(c, pid):
+        ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", f"grep -E '^(VmRSS|Threads):' /proc/{pid}/status"], timeout=15)
+        d = {}
+        for ln in o.splitlines():
+            k, _, v = ln.partition(":")
+            d[k.strip()] = v.strip()
+        return d
+
+    @app.route("/api/local-app/<app_name>/jvm/info")
+    def api_jvm_info(app_name):
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c, pid, user, b, err = _jv_target(app_name)
+        if err: return jsonify({"ok": False, "error": err})
+        def J(a): return _jv_run(app_name, a, 30)[1]
+        heap = J(["GC.heap_info"])
+        used, tot = _jv_heap(heap)
+        st = _jv_status(c, pid)
+        pc = J(["PerfCounter.print"])
+        import re as _r
+        def pcv(k):
+            m = _r.search(r"^%s=(\S+)" % _r.escape(k), pc, _r.M)
+            return m.group(1).strip('"') if m else ""
+        return jsonify({"ok": True, "container": c, "pid": pid, "user": user, "java": b.rsplit("/bin", 1)[0],
+                        "uptime": J(["VM.uptime"]), "version": J(["VM.version"]).splitlines()[-3:] if J(["VM.version"]) else [],
+                        "heap_info": heap, "heap_used_mb": used, "heap_total_mb": tot,
+                        "threads": int(st.get("Threads", "0") or 0), "rss": st.get("VmRSS", ""),
+                        "classes_loaded": pcv("java.cls.loadedClasses"), "threads_live": pcv("java.threads.live"),
+                        "threads_daemon": pcv("java.threads.daemon"), "threads_peak": pcv("java.threads.livePeak"),
+                        "flags": J(["VM.command_line"])})
+
+    @app.route("/api/local-app/<app_name>/jvm/threads")
+    def api_jvm_threads(app_name):
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        ok, o = _jv_run(app_name, ["Thread.print", "-l"], 60)
+        return jsonify({"ok": ok, "text": o if ok else "", "error": "" if ok else o})
+
+    @app.route("/api/local-app/<app_name>/jvm/histogram")
+    def api_jvm_histogram(app_name):
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        live = request.args.get("live", "1") == "1"
+        ok, o = _jv_run(app_name, ["GC.class_histogram"] + ([] if live else ["-all=true"]), 120)
+        if not ok: return jsonify({"ok": False, "error": o})
+        rows = []
+        for ln in o.splitlines():
+            p = ln.split()
+            if len(p) >= 4 and p[0].endswith(":") and p[1].isdigit():
+                rows.append({"n": int(p[1]), "bytes": int(p[2]), "cls": " ".join(p[3:])})
+        return jsonify({"ok": True, "rows": rows[:300], "total_bytes": sum(r["bytes"] for r in rows), "total_n": sum(r["n"] for r in rows)})
+
+    @app.route("/api/local-app/<app_name>/jvm/heap", methods=["GET", "POST", "DELETE"])
+    def api_jvm_heap(app_name):
+        import time as _t
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        home = _jv_home(app_name) / "heap"; home.mkdir(parents=True, exist_ok=True)
+        if request.method == "POST":
+            c, pid, user, b, err = _jv_target(app_name)
+            if err: return jsonify({"ok": False, "error": err})
+            nm = "heap-%s.hprof" % _t.strftime("%Y%m%d-%H%M%S")
+            _appmap_dk(["exec", "-u", "root", c, "sh", "-c", "mkdir -p /tmp/dwb-jvm && chmod 777 /tmp/dwb-jvm"], timeout=15)
+            ok, o = _appmap_dk(["exec", "-u", user, c, f"{b}/jcmd", pid, "GC.heap_dump", f"/tmp/dwb-jvm/{nm}"], timeout=900)
+            if not ok: return jsonify({"ok": False, "error": o})
+            ok, o = _appmap_dk(["cp", f"{c}:/tmp/dwb-jvm/{nm}", str(home / nm)], timeout=900)
+            _appmap_dk(["exec", "-u", "root", c, "rm", "-f", f"/tmp/dwb-jvm/{nm}"], timeout=30)
+            return jsonify({"ok": ok, "error": "" if ok else o, "file": nm})
+        if request.method == "DELETE":
+            f = home / os.path.basename(request.args.get("file", ""))
+            try: f.unlink()
+            except Exception as e: return jsonify({"ok": False, "error": str(e)})
+            return jsonify({"ok": True})
+        fs = sorted(home.glob("*.hprof"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return jsonify({"ok": True, "dir": str(home), "files": [{"name": f.name, "mb": round(f.stat().st_size / 1048576, 1), "mtime": f.stat().st_mtime} for f in fs]})
+
+    def _jfr_analyze(c, user, b, remote):
+        import re as _r, collections as _co
+        ok, summ = _appmap_dk(["exec", "-u", user, c, f"{b}/jfr", "summary", remote], timeout=120)
+        ok2, txt = _appmap_dk(["exec", "-u", user, c, f"{b}/jfr", "print", "--events", "jdk.ExecutionSample", "--stack-depth", "8", remote], timeout=300)
+        tops, threads, n = _co.Counter(), _co.Counter(), 0
+        lines = txt.splitlines() if ok2 else []
+        for i, ln in enumerate(lines):
+            s = ln.strip()
+            if s.startswith("sampledThread"):
+                m = _r.search(r'"([^"]*)"', s)
+                if m: threads[_r.sub(r"\d+", "#", m.group(1))] += 1
+            elif s.startswith("stackTrace = ["):
+                n += 1
+                if i + 1 < len(lines): tops[_r.sub(r"\s+line:.*$", "", lines[i + 1].strip())] += 1
+        return {"summary": summ if ok else "", "samples": n,
+                "top_methods": [{"m": k, "n": v} for k, v in tops.most_common(40)],
+                "threads": [{"t": k, "n": v} for k, v in threads.most_common(20)]}
+
+    @app.route("/api/local-app/<app_name>/jvm/jfr", methods=["GET", "POST"])
+    def api_jvm_jfr(app_name):
+        import time as _t, json as _js
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        home = _jv_home(app_name) / "jfr"; home.mkdir(parents=True, exist_ok=True)
+        if request.method == "GET":
+            if request.args.get("file"):
+                f = home / (os.path.basename(request.args["file"]) + ".json")
+                try: return jsonify({"ok": True, **_js.loads(f.read_text(encoding="utf-8"))})
+                except Exception: return jsonify({"ok": False, "error": "No analysis for that recording"})
+            ok, o = _jv_run(app_name, ["JFR.check"], 30)
+            fs = sorted(home.glob("*.jfr"), key=lambda p: p.stat().st_mtime, reverse=True)
+            return jsonify({"ok": True, "status": o if ok else "", "dir": str(home),
+                            "files": [{"name": f.name, "mb": round(f.stat().st_size / 1048576, 1), "mtime": f.stat().st_mtime} for f in fs]})
+        body = request.get_json(silent=True) or {}
+        act = body.get("action")
+        c, pid, user, b, err = _jv_target(app_name)
+        if err: return jsonify({"ok": False, "error": err})
+        if act == "start":
+            st = body.get("settings", "profile")
+            if st not in ("profile", "default"): st = "profile"
+            _appmap_dk(["exec", "-u", "root", c, "sh", "-c", "mkdir -p /tmp/dwb-jvm && chmod 777 /tmp/dwb-jvm"], timeout=15)
+            ok, o = _appmap_dk(["exec", "-u", user, c, f"{b}/jcmd", pid, "JFR.start", "name=dwb", f"settings={st}"], timeout=60)
+            return jsonify({"ok": ok, "error": "" if ok else o, "message": o})
+        if act == "stop":
+            nm = "rec-%s.jfr" % _t.strftime("%Y%m%d-%H%M%S")
+            remote = f"/tmp/dwb-jvm/{nm}"
+            ok, o = _appmap_dk(["exec", "-u", user, c, f"{b}/jcmd", pid, "JFR.stop", "name=dwb", f"filename={remote}"], timeout=300)
+            if not ok: return jsonify({"ok": False, "error": o})
+            an = _jfr_analyze(c, user, b, remote)
+            ok, o = _appmap_dk(["cp", f"{c}:{remote}", str(home / nm)], timeout=300)
+            _appmap_dk(["exec", "-u", "root", c, "rm", "-f", remote], timeout=30)
+            (home / (nm + ".json")).write_text(_js.dumps(an), encoding="utf-8")
+            return jsonify({"ok": True, "file": nm, **an})
+        if act == "delete":
+            nm = os.path.basename(body.get("file", ""))
+            for x in (home / nm, home / (nm + ".json")):
+                try: x.unlink()
+                except Exception: pass
+            return jsonify({"ok": True})
+        return jsonify({"ok": False, "error": "Unknown action"})
+
+    @app.route("/api/local-app/<app_name>/obs/log-files")
+    def api_obs_log_files(app_name):
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c = _appmap_container_name(app_name)
+        if not c: return jsonify({"ok": False, "error": "Container is not configured / running"})
+        ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c",
+                            "find /home/weblogic/tomcat/logs /home/weblogic/domains /tmp/p6spy -maxdepth 4 -type f \\( -name '*.log' -o -name 'catalina.out' -o -name '*.out' \\) 2>/dev/null | head -200"], timeout=30)
+        return jsonify({"ok": True, "files": ["@docker"] + [x for x in o.splitlines() if x.startswith("/")]})
+
+    @app.route("/api/local-app/<app_name>/obs/log")
+    def api_obs_log(app_name):
+        import re as _r
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c = _appmap_container_name(app_name)
+        if not c: return jsonify({"ok": False, "error": "Container is not configured / running"})
+        f = request.args.get("file", "@docker")
+        n = max(10, min(int(request.args.get("lines", "500") or 500), 5000))
+        if f == "@docker":
+            ok, o = _appmap_dk(["logs", "--tail", str(n), c], timeout=60)
+        else:
+            if not _r.fullmatch(r"/[A-Za-z0-9_./-]+", f): return jsonify({"ok": False, "error": "Invalid file path"})
+            ok, o = _appmap_dk(["exec", "-u", "root", c, "tail", "-n", str(n), f], timeout=60)
+        return jsonify({"ok": ok, "text": o if ok else "", "error": "" if ok else o})
+
+    @app.route("/api/local-app/<app_name>/obs/metrics")
+    def api_obs_metrics(app_name):
+        import json as _js
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c = _appmap_container_name(app_name)
+        if not c: return jsonify({"ok": False, "error": "Container is not configured / running"})
+        ok, o = _appmap_dk(["stats", "--no-stream", "--format", "{{json .}}", c], timeout=30)
+        if not ok: return jsonify({"ok": False, "error": o})
+        try: d = _js.loads(o.strip().splitlines()[-1])
+        except Exception: return jsonify({"ok": False, "error": o})
+        def pct(s):
+            try: return float(str(s).strip().rstrip("%"))
+            except Exception: return 0.0
+        out = {"ok": True, "t": __import__("time").time(), "cpu": pct(d.get("CPUPerc")), "mem_pct": pct(d.get("MemPerc")),
+               "mem": d.get("MemUsage", ""), "net": d.get("NetIO", ""), "block": d.get("BlockIO", ""), "pids": d.get("PIDs", "")}
+        c2, pid, user, b, err = _jv_target(app_name)
+        if not err:
+            used, tot = _jv_heap(_jv_run(app_name, ["GC.heap_info"], 20)[1])
+            st = _jv_status(c2, pid)
+            out.update({"heap_used_mb": used, "heap_total_mb": tot, "threads": int(st.get("Threads", "0") or 0), "rss": st.get("VmRSS", "")})
+        return jsonify(out)
+
     @app.route("/api/local-app/<app_name>/appmap/settings", methods=["GET", "POST"])
     def api_appmap_settings(app_name):
         import json as _js_as
