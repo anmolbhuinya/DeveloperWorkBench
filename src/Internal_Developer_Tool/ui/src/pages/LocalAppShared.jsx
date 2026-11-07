@@ -111,7 +111,7 @@ export function CurrentBranchPanel({ appName, icon, branch, branchLoad, branchEr
 
   return (
     <div className="card" style={{ flex: '1 1 320px', marginBottom: 0 }}>
-      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Current Branch</div>
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>{appName ? appName.charAt(0).toUpperCase() + appName.slice(1) : 'App'} Environment</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <div style={{ fontSize: 28, lineHeight: 1, flexShrink: 0 }}>{icon}</div>
         {branchLoad ? (
@@ -130,7 +130,7 @@ export function CurrentBranchPanel({ appName, icon, branch, branchLoad, branchEr
             </div>
             <Field label={`${appName ? appName.charAt(0).toUpperCase() + appName.slice(1) : 'Release'} Version`}><code>{branch.release_ver || '—'}</code></Field>
             {branch.env_type && <Field label="App Server">{branch.env_type}</Field>}
-            <Field label="Clone Directory">
+            <Field label="Repository">
               <code
                 onClick={branch.srcdir ? copyDir : undefined}
                 title={copiedDir ? '✓ copied' : (branch.srcdir ? 'Click to copy' : undefined)}
@@ -162,6 +162,44 @@ export function CurrentBranchPanel({ appName, icon, branch, branchLoad, branchEr
           )}
         </div>
       </div>
+      <EnvTools appName={appName} />
+    </div>
+  )
+}
+
+// runtimes (JDK, Node, Python), build tools (Gradle, Maven, npm) and the application server - configured in the application's Environment settings
+function EnvTools({ appName }) {
+  const [tools, setTools] = useState(null)
+  const [up, setUp] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const load = (force) => {
+    setBusy(true)
+    fetch(`/api/local-app/${appName}/environment-runtime${force ? '?force=1' : ''}`).then(r => r.json()).then(r => setTools(r.ok ? r.tools : [])).catch(() => setTools([])).finally(() => setBusy(false))
+    fetch(`/api/local-app/${appName}/server-status`).then(r => r.json()).then(d => { if (d.ok) setUp(!!(d.running ?? d[appName])) }).catch(() => {})
+  }
+  useEffect(() => { load(false) }, [appName])
+  const groups = [['runtime', 'Runtime'], ['build', 'Build tools'], ['server', 'Server']]
+  const chip = t => (
+    <span key={t.key} title={t.ok ? t.path : (t.error || 'not available')} style={{ fontSize: 12, padding: '2px 10px', borderRadius: 12, border: '1px solid ' + (t.ok ? 'rgba(76,175,80,0.35)' : 'rgba(244,67,54,0.3)'),
+      background: t.ok ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.06)', color: t.ok ? 'inherit' : '#c62828', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <b>{t.label}</b> {t.ok ? t.version : (t.error || 'n/a')}
+      {t.kind === 'server' && up !== null && <><span style={{ width: 6, height: 6, borderRadius: '50%', background: up ? '#4caf50' : '#f44336', display: 'inline-block' }} />{up ? 'running' : 'stopped'}</>}
+    </span>
+  )
+  return (
+    <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      {!tools ? <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} /> : groups.map(([k, title], gi) => {
+        const rows = tools.filter(t => t.kind === k)
+        if (!rows.length) return null
+        return (
+          <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {gi > 0 && <span style={{ color: 'var(--border)', margin: '0 4px' }}>|</span>}
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{title}</span>
+            {rows.map(chip)}
+          </span>)
+      })}
+      {tools && tools.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No runtime, build tool or server is configured (settings icon, Environment tab).</span>}
+      <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={() => load(true)} disabled={busy} title="Re-check versions">{busy ? '...' : '\u21BB'}</button>
     </div>
   )
 }

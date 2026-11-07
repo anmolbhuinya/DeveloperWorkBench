@@ -168,7 +168,7 @@ const DEFAULT_SCREEN_CFG = {
     { key: 'gp_run',     label: '🚀 GP Run',  enabled: true, order: 99 },
   ],
   panels: [
-    { key: 'current_branch',    label: 'Current Branch',    enabled: true, order: 1 },
+    { key: 'current_branch',    label: 'Environment',       enabled: true, order: 1 },
     { key: 'set_branch',        label: 'Set Branch',        enabled: true, order: 2 },
     { key: 'branch_management', label: 'Branch Management', enabled: true, order: 3 },
     { key: 'build_deploy',      label: 'Build & Deploy',    enabled: true, order: 4 },
@@ -284,7 +284,7 @@ export default function GenericLocalAppPage({
         backPath={backPath} backLabel={backLabel}
         branch={branch} deployed={deployed} serverUp={serverUp}
         hdr={hdr}
-        right={<ScreenConfigButton kind="local" appName={appName} cfg={screenCfg} onSaved={reloadScreenCfg} />}
+        right={<ScreenConfigButton kind="local" appName={appName} cfg={screenCfg} onSaved={reloadScreenCfg} onDeleted={() => navigate(backPath)} />}
       />
       <TabBar visibleTabs={visibleTabs} resolvedTab={resolvedTab} onTabChange={setActiveTab} />
 

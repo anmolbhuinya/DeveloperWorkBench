@@ -2,7 +2,7 @@ import { createContext, useContext, useState } from 'react'
 
 // ── what the page may show, per kind of application page ─────────────────────
 const P = (key, label) => ({ key, label })
-const CODE_PANELS = [P('current_branch', 'Current Branch'), P('set_branch', 'Set Branch'), P('branch_management', 'Branch Management'), P('build_deploy', 'Build & Deploy'),
+const CODE_PANELS = [P('current_branch', 'Environment'), P('set_branch', 'Set Branch'), P('branch_management', 'Branch Management'), P('build_deploy', 'Build & Deploy'),
   P('modules', 'Modules'), P('ide', 'Open in IDE'), P('terminal', 'Open in Terminal')]
 
 export const CATALOG = {
@@ -110,7 +110,7 @@ function build(kind, cfg) {
   return { header, tabs, panels }
 }
 
-export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
+export function ScreenConfigButton({ kind, appName, cfg, onSaved, onDeleted }) {
   const [open, setOpen] = useState(false)
   const [d, setD] = useState(null)
   const [sel, setSel] = useState('')
@@ -121,9 +121,27 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
   const [appMsg, setAppMsg] = useState('')
   const [dev, setDev] = useState(null)
   const [devMsg, setDevMsg] = useState('')
+  const [del_, setDel] = useState(null)
+  const [envc, setEnvc] = useState(null)
+  const [envMsg, setEnvMsg] = useState('')
+  const appLabel = app?.values?.application_name || (appName.charAt(0).toUpperCase() + appName.slice(1))
+  function openDelete() {
+    setDel({ items: null, inc: { codebase: true, projects: true, config: true }, typed: '', busy: false, error: '' })
+    fetch(`/api/${kind}-app/${appName}/environment-info`).then(r => r.json())
+      .then(r => setDel(r.ok ? { items: r.items, inc: { codebase: true, projects: true, config: true }, typed: '', busy: false, error: '' } : { items: null, error: r.error || 'Could not read the environment' }))
+      .catch(() => setDel({ items: null, error: 'Could not reach server' }))
+  }
+  function doDelete() {
+    setDel(d0 => ({ ...d0, busy: true, error: '' }))
+    fetch(`/api/${kind}-app/${appName}/environment-delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: del_.typed.trim(), include: Object.keys(del_.inc).filter(k => del_.inc[k]) }) }).then(r => r.json())
+      .then(r => setDel(d0 => r.results ? { ...d0, busy: false, results: r.results } : { ...d0, busy: false, error: r.error || 'Delete failed' }))
+      .catch(() => setDel(d0 => ({ ...d0, busy: false, error: 'Could not reach server' })))
+  }
   const base = `/api/${kind}-app/${appName}/screen-config`
   const show = () => {
-    const b = build(kind, cfg); setD(b); setSel(b.tabs[0]?.key || ''); setMsg(''); setAppMsg(''); setDevMsg(''); setView('app'); setApp(null); setDev(null); setOpen(true)
+    const b = build(kind, cfg); setD(b); setSel(b.tabs[0]?.key || ''); setMsg(''); setAppMsg(''); setDevMsg(''); setEnvMsg(''); setView('app'); setApp(null); setDev(null); setEnvc(null); setOpen(true)
+    if (kind === 'local') fetch(`/api/local-app/${appName}/environment-config`).then(r => r.json()).then(r => { if (r.ok && r.rows) setEnvc(r); else setEnvMsg(r.error || 'Could not load') }).catch(() => setEnvMsg('Could not reach server'))
     if (kind === 'local') fetch(`/api/local-app/${appName}/devtool-config`).then(r => r.json()).then(r => { if (r.ok && r.rows) setDev(r); else setDevMsg(r.error || 'Could not load') }).catch(() => setDevMsg('Could not reach server'))
     fetch(`/api/${kind}-app/${appName}/application-info`).then(r => r.json()).then(r => { if (r.ok && r.fields) setApp(r); else setAppMsg(r.error || 'Could not load - restart the Workbench') }).catch(() => setAppMsg('Could not reach server'))
   }
@@ -133,6 +151,13 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
     fetch(`/api/local-app/${appName}/devtool-config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rows: dev.rows }) }).then(r => r.json())
       .then(r => { setDevMsg(r.ok ? 'Saved' : r.error || 'Save failed'); if (r.ok) onSaved && onSaved() })
       .catch(() => setDevMsg('Could not reach server')).finally(() => setBusy(false))
+  }
+  const setEnvRow = (i, k, v) => setEnvc({ ...envc, rows: envc.rows.map((r, j) => j === i ? { ...r, [k]: v } : r) })
+  function saveEnv() {
+    setBusy(true); setEnvMsg('')
+    fetch(`/api/local-app/${appName}/environment-config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rows: envc.rows }) }).then(r => r.json())
+      .then(r => { setEnvMsg(r.ok ? 'Saved' : r.error || 'Save failed'); if (r.ok) onSaved && onSaved() })
+      .catch(() => setEnvMsg('Could not reach server')).finally(() => setBusy(false))
   }
   function saveApp() {
     setBusy(true); setAppMsg('')
@@ -171,7 +196,7 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
               <button style={{ ...btn, marginLeft: 'auto' }} onClick={() => setOpen(false)}>Close</button>
             </div>
             <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', padding: '0 16px' }}>
-              {[['app', 'Application'], ...(kind === 'local' ? [['devtool', 'DevTool']] : []), ['screen', 'Screen']].map(([k, l]) => (
+              {[['app', 'Application'], ...(kind === 'local' ? [['env', 'Environment'], ['devtool', 'DevTool']] : []), ['screen', 'Screen']].map(([k, l]) => (
                 <button key={k} onClick={() => setView(k)} style={{ padding: '8px 18px', fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', fontFamily: 'inherit',
                   borderBottom: view === k ? '2px solid var(--primary, #3b82f6)' : '2px solid transparent', color: view === k ? 'var(--primary, #3b82f6)' : 'var(--text-muted)', fontWeight: view === k ? 600 : 400 }}>{l}</button>))}
             </div>
@@ -190,6 +215,35 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
                     {kind === 'local' && <button style={btn} onClick={() => setApp({ ...app, values: { ...app.values, ...Object.fromEntries(Object.entries(app.detected || {}).filter(([, v]) => v)) } })}>Fill from local clone</button>}
                     <span style={{ fontSize: 12, color: appMsg === 'Saved' ? '#16a34a' : '#dc2626' }}>{appMsg}</span>
                     <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>Saved to {app.file}</span>
+                  </div>
+                </>}
+              </div>
+            )}
+            {view === 'env' && (
+              <div style={{ overflow: 'auto', padding: 16 }}>
+                {!envc ? <div style={{ fontSize: 12 }}>{envMsg || 'Loading...'}</div> : <>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead><tr>{['On', 'Key', 'Kind', 'Label', 'Executable', 'Home (optional)', 'Version argument', ''].map(h => <th key={h} style={{ textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', padding: '4px 6px', borderBottom: '2px solid var(--border)' }}>{h}</th>)}</tr></thead>
+                    <tbody>{envc.rows.map((r, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: '3px 4px', borderBottom: '1px solid var(--border)' }}><input type="checkbox" checked={r.enabled} onChange={e => setEnvRow(i, 'enabled', e.target.checked)} /></td>
+                        {['key', 'kind', 'label', 'executable', 'home', 'version_args'].map(c => (
+                          <td key={c} style={{ padding: '3px 4px', borderBottom: '1px solid var(--border)', width: c === 'key' || c === 'kind' ? 90 : undefined }}>
+                            {c === 'kind'
+                              ? <select style={{ ...inp, width: '100%' }} value={r.kind} onChange={e => setEnvRow(i, 'kind', e.target.value)}><option value="runtime">runtime</option><option value="build">build</option><option value="server">server</option></select>
+                              : <input style={{ ...inp, width: '100%', boxSizing: 'border-box', fontFamily: 'monospace' }} value={r[c] || ''} onChange={e => setEnvRow(i, c, e.target.value)} />}
+                          </td>))}
+                        <td style={{ padding: '3px 4px', borderBottom: '1px solid var(--border)' }}><button style={btn} onClick={() => setEnvc({ ...envc, rows: envc.rows.filter((_, j) => j !== i) })}>Remove</button></td>
+                      </tr>))}</tbody>
+                  </table>
+                  <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button style={btn} onClick={() => setEnvc({ ...envc, rows: [...envc.rows, { key: '', kind: 'runtime', label: '', executable: '', home: '', version_args: '--version', enabled: true }] })}>Add tool</button>
+                    <button style={btn} onClick={saveEnv} disabled={busy}>{busy ? 'Saving...' : 'Save'}</button>
+                    <span style={{ fontSize: 12, color: envMsg === 'Saved' ? '#16a34a' : '#dc2626' }}>{envMsg}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>Saved to {envc.file} (sheet Environment)</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.6 }}>
+                    These runtimes (JDK, Node, Python) and build tools (Gradle, Maven, npm) are shown in the application's Environment panel on the Code tab. Leave <b>Home</b> empty to use the tool found on PATH; with a Home folder the tool is taken from its <b>bin</b> folder (and JAVA_HOME is set for the JDK). For a <b>server</b> row the executable is a command run inside the application's container; its output must contain the version.
                   </div>
                 </>}
               </div>
@@ -259,6 +313,49 @@ export function ScreenConfigButton({ kind, appName, cfg, onSaved }) {
               <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>Saved to screen_config.xlsx of this application</span>
             </div>
             )}
+            <div style={{ padding: '10px 16px', borderTop: '1px solid #dc2626', background: 'rgba(220,38,38,0.06)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <b style={{ color: '#dc2626', fontSize: 12, letterSpacing: '0.04em' }}>DANGER ZONE</b>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Removes this application's projects, configuration, codebase and scripts.</span>
+              <button onClick={openDelete} style={{ ...btn, marginLeft: 'auto', borderColor: '#dc2626', color: '#dc2626', fontWeight: 600 }}>Delete {appLabel} Environment</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {del_ && (
+        <div onClick={() => !del_.busy && setDel(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 70 }}>
+          <div className="card" onClick={e => e.stopPropagation()} style={{ width: 'min(760px, 94vw)', maxHeight: '82vh', overflow: 'auto', border: '2px solid #dc2626', background: 'var(--surface)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#dc2626', marginBottom: 8 }}>{'\u26A0\uFE0F'} Delete {appLabel} Environment</div>
+            {!del_.items ? <div style={{ fontSize: 13 }}>{del_.error || 'Collecting what would be deleted...'}</div> : del_.results ? <>
+              <div style={{ fontSize: 13, marginBottom: 8 }}>{del_.results.every(r => r.ok) ? 'The environment was deleted.' : 'Some items could not be deleted:'}</div>
+              {del_.results.map(r => <div key={r.path} style={{ fontFamily: 'monospace', fontSize: 11, color: r.ok ? '#16a34a' : '#dc2626', wordBreak: 'break-all' }}>{r.ok ? 'deleted ' : 'FAILED '}{r.path}{r.error ? ' - ' + r.error : ''}</div>)}
+              <div style={{ marginTop: 12 }}><button style={btn} onClick={() => { setDel(null); setOpen(false); onDeleted && onDeleted() }}>Close</button></div>
+            </> : <>
+              <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
+                <b>This permanently deletes the projects, configuration, codebase and scripts related to {appLabel}.</b> It cannot be undone.
+                Files are removed from disk, not sent to the recycle bin. Stop the application server first, or files in use will be left behind.
+              </div>
+              {[['codebase', 'Codebase (git clones on this PC)'], ['projects', 'Projects (generated data, saved queries and contracts)'], ['config', 'Configuration and scripts']].map(([cat, title]) => {
+                const rows = del_.items.filter(i => i.category === cat)
+                return (
+                  <div key={cat} style={{ marginBottom: 8, opacity: rows.length ? 1 : 0.5 }}>
+                    <label style={{ fontWeight: 600, fontSize: 13 }}><input type="checkbox" disabled={!rows.length} checked={rows.length > 0 && del_.inc[cat]} onChange={e => setDel({ ...del_, inc: { ...del_.inc, [cat]: e.target.checked } })} /> {title}{rows.length ? '' : ' - nothing found'}</label>
+                    {rows.map(i => (
+                      <div key={i.path} style={{ marginLeft: 22, fontSize: 11, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        {i.path} <span style={{ color: 'var(--text-muted)' }}>({i.mb}{i.size_cut ? '+' : ''} MB)</span>
+                        {i.uncommitted > 0 && <b style={{ color: '#dc2626' }}> - {i.uncommitted} uncommitted file(s)</b>}
+                        {i.unpushed > 0 && <b style={{ color: '#dc2626' }}> - {i.unpushed} unpushed commit(s)</b>}
+                      </div>))}
+                  </div>)
+              })}
+              <div style={{ margin: '12px 0 6px', fontSize: 13 }}>Type <b style={{ fontFamily: 'monospace' }}>{appName}</b> to confirm:</div>
+              <input style={{ ...inp, width: '100%', boxSizing: 'border-box', padding: '6px 8px' }} value={del_.typed} onChange={e => setDel({ ...del_, typed: e.target.value })} placeholder={appName} />
+              {del_.error && <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{del_.error}</div>}
+              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <button style={{ ...btn, background: '#dc2626', borderColor: '#dc2626', color: '#fff', opacity: (del_.typed.trim().toLowerCase() === appName.toLowerCase() && Object.keys(del_.inc).some(k => del_.inc[k] && del_.items.some(i => i.category === k))) && !del_.busy ? 1 : 0.4 }}
+                  disabled={del_.busy || del_.typed.trim().toLowerCase() !== appName.toLowerCase() || !Object.keys(del_.inc).some(k => del_.inc[k] && del_.items.some(i => i.category === k))} onClick={doDelete}>{del_.busy ? 'Deleting...' : 'Delete permanently'}</button>
+                <button style={btn} onClick={() => setDel(null)} disabled={del_.busy}>Cancel</button>
+              </div>
+            </>}
           </div>
         </div>
       )}

@@ -72,7 +72,7 @@ export function RemoteCurrentBranchPanel({ appIcon, appLabel = 'App', branch, br
                                            onRefresh, onPull, pulling, pullOk, pullErr }) {
   return (
     <div className="card" style={{ flex: '1 1 320px', marginBottom: 0 }}>
-      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Current Branch</div>
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>{appLabel} Environment</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <div style={{ fontSize: 30, lineHeight: 1, flexShrink: 0 }}>{appIcon}</div>
         {branchLoad ? (
@@ -86,7 +86,7 @@ export function RemoteCurrentBranchPanel({ appIcon, appLabel = 'App', branch, br
             </Field>
             <Field label={`${appLabel} Version`}><code>{branch.release_ver || '—'}</code></Field>
             <Field label="App Server">{branch.env_type || '—'}</Field>
-            <Field label="Clone Directory">
+            <Field label="Repository">
               <code style={{ fontSize: 11, color: 'var(--text-muted)', wordBreak: 'break-all' }}>{branch.srcdir || '—'}</code>
             </Field>
           </div>

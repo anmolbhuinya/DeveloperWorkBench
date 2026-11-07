@@ -28352,6 +28352,194 @@ done
                         "known": {"env_tool": "sets the branch", "build_tool": "builds the application", "terminal_init": "run when a terminal opens",
                                   "default_branch_file": "file that holds the current branch", "git_pattern": "name pattern of the git clones"}})
 
+    # ── Environment (app_config.xlsx, sheet "Environment"): runtimes and build tools shown in the Code tab ──
+    _ENV_COLS = ["Key", "Kind", "Label", "Executable", "Home", "VersionArgs", "Enabled"]
+    _ENV_DEFAULTS = [["jdk", "runtime", "JDK", "java", "", "-version", True], ["node", "runtime", "Node", "node", "", "--version", True],
+                     ["python", "runtime", "Python", "python", "", "--version", True], ["gradle", "build", "Gradle", "gradle", "", "--version", True],
+                     ["maven", "build", "Maven", "mvn", "", "--version", True], ["npm", "build", "npm", "npm", "", "--version", True]]
+    _env_probe_cache = {}
+
+    def _env_server_default(app_name):
+        """The application server row: Tomcat or Karaf, versioned by a command run inside the application's container."""
+        et = "tomcat" if app_name == "payor" else str(_LOCAL_APP_DEFAULTS.get(app_name, {}).get("env_type", "tomcat")).lower()
+        if et == "karaf":
+            home = _LOCAL_APP_DEFAULTS.get(app_name, {}).get("karaf_home") or "/opt/karaf"
+            return ["server", "server", "Karaf", "ls %s/lib/boot | grep -i org.apache.karaf.main" % home, "", "", True]
+        return ["server", "server", "Tomcat", "/home/weblogic/tomcat/bin/version.sh 2>&1 | grep -i 'Server number'", "", "", True]
+
+    def _envtools_read(app_name):
+        import openpyxl as _xl
+        path = _generic_app_root(app_name) / "app_config.xlsx"
+        rows = None
+        if path.exists():
+            wb = _xl.load_workbook(str(path), read_only=True, data_only=True)
+            if "Environment" in wb.sheetnames:
+                rows = []
+                for r in list(wb["Environment"].iter_rows(min_row=2, values_only=True)):
+                    if not r or not r[0]: continue
+                    c = [("" if v is None else str(v).strip()) for v in list(r) + [None] * 7]
+                    rows.append({"key": c[0], "kind": c[1] or "runtime", "label": c[2] or c[0], "executable": c[3], "home": c[4], "version_args": c[5] or "--version",
+                                 "enabled": c[6].lower() not in ("false", "0", "no", "n")})
+            wb.close()
+        if rows is None:
+            rows = [{"key": k, "kind": kd, "label": lb, "executable": ex, "home": hm, "version_args": va, "enabled": en}
+                    for k, kd, lb, ex, hm, va, en in _ENV_DEFAULTS + [_env_server_default(app_name)]]
+        return rows, path
+
+    @app.route("/api/local-app/<app_name>/environment-config", methods=["GET", "POST"])
+    def api_environment_config(app_name):
+        import openpyxl as _xl
+        if app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"}): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        rows, path = _envtools_read(app_name)
+        if request.method == "POST":
+            data, seen = [], set()
+            for x in ((request.get_json(silent=True) or {}).get("rows") or []):
+                k = str(x.get("key", "")).strip()
+                if not k: return jsonify({"ok": False, "error": "Every row needs a key"})
+                if k.lower() in seen: return jsonify({"ok": False, "error": "Duplicate key: " + k})
+                seen.add(k.lower())
+                data.append([k, str(x.get("kind")) if str(x.get("kind")) in ("build", "server") else "runtime", str(x.get("label", "")).strip() or k, str(x.get("executable", "")).strip(),
+                             str(x.get("home", "")).strip(), str(x.get("version_args", "")).strip() or "--version", "TRUE" if x.get("enabled", True) else "FALSE"])
+            try:
+                wb = _xl.load_workbook(str(path)) if path.exists() else _xl.Workbook()
+                if "Environment" in wb.sheetnames: del wb["Environment"]
+                ws = wb.create_sheet("Environment")
+                ws.append(_ENV_COLS)
+                for r in data: ws.append(r)
+                if "Sheet" in wb.sheetnames and wb["Sheet"].max_row <= 1: del wb["Sheet"]
+                for col, w in zip("ABCDEFG", (12, 10, 14, 30, 36, 14, 9)): ws.column_dimensions[col].width = w
+                wb.save(str(path))
+                _env_probe_cache.pop(app_name, None)
+                return jsonify({"ok": True})
+            except Exception as e:
+                return jsonify({"ok": False, "error": "Could not save %s (is it open in Excel?): %s" % (path.name, e)})
+        return jsonify({"ok": True, "rows": rows, "file": str(path)})
+
+    @app.route("/api/local-app/<app_name>/environment-runtime", methods=["GET"])
+    def api_environment_runtime(app_name):
+        """Versions of the configured runtimes (JDK, Node, Python) and build tools (Gradle, Maven, npm)."""
+        import re as _r, shutil as _sh, subprocess as _sp, time as _t
+        from concurrent.futures import ThreadPoolExecutor
+        if app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"}): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        ent = _env_probe_cache.get(app_name)
+        if ent and _t.time() - ent[0] < 120 and not request.args.get("force"): return jsonify({"ok": True, "tools": ent[1], "cached": True})
+        rows, _ = _envtools_read(app_name)
+        def probe(r):
+            out = {"key": r["key"], "kind": r["kind"], "label": r["label"], "version": "", "path": "", "ok": False, "error": ""}
+            try:
+                if r["kind"] == "server":              # the executable is a command run inside the application's container
+                    cont = _appmap_container_name(app_name)
+                    if not cont:
+                        out["error"] = "no container"
+                        return out
+                    p = _sp.run(["docker", "exec", cont, "bash", "-c", r["executable"]], capture_output=True, text=True, timeout=25, creationflags=0x08000000 if sys.platform == "win32" else 0)
+                    txt = (p.stdout + "\n" + p.stderr).strip()
+                    m = _r.search(r"\d+(?:\.\d+){1,3}(?:[._+-][A-Za-z0-9]+)*", txt)
+                    out.update({"path": "container " + cont, "ok": bool(m), "version": m.group(0) if m else "", "error": "" if m else (txt.splitlines()[0][:120] if txt else "no output")})
+                    return out
+                exe = r["executable"] or r["key"]
+                if r["home"]:
+                    cand = Path(r["home"]) / "bin" / exe
+                    exe = next((str(c) for c in (cand, cand.with_suffix(".exe"), cand.with_suffix(".cmd"), cand.with_suffix(".bat")) if c.is_file()), "")
+                else:
+                    exe = _sh.which(exe) or ""
+                if not exe:
+                    out["error"] = "not found"
+                    return out
+                env = dict(os.environ)
+                if r["home"] and r["key"].lower() in ("jdk", "java"): env["JAVA_HOME"] = r["home"]
+                p = _sp.run([exe] + r["version_args"].split(), capture_output=True, text=True, timeout=12, env=env, creationflags=0x08000000 if sys.platform == "win32" else 0)
+                txt = (p.stdout + "\n" + p.stderr).strip()
+                m = _r.search(r"\d+(?:\.\d+){1,3}(?:[._+-][A-Za-z0-9]+)*", txt)
+                out.update({"path": exe, "ok": bool(m), "version": m.group(0) if m else "", "error": "" if m else (txt.splitlines()[0][:120] if txt else "no output")})
+            except Exception as e:
+                out["error"] = str(e)[:120]
+            return out
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            tools = list(ex.map(probe, [r for r in rows if r["enabled"]]))
+        _env_probe_cache[app_name] = (_t.time(), tools)
+        return jsonify({"ok": True, "tools": tools})
+
+    # ── Danger zone: delete an application's environment (configuration + scripts, projects data, git clones) ──
+    def _env_items(kind, app_name):
+        """What 'Delete <App> Environment' would remove. Every path is computed here, never taken from the client."""
+        import fnmatch as _fn
+        dwb = Path(os.environ["DWB_HOME"])
+        scope = "Remote" if kind == "remote" else "Local"
+        t, appdir = app_name.title(), _APP_DIR_NAMES.get(app_name, app_name.capitalize())
+        items = []
+        def add(cat, label, path, base, note=""):
+            p = Path(path)
+            if p.exists() and not p.is_symlink():
+                items.append({"category": cat, "label": label, "path": str(p), "base": str(base), "note": note})
+        root = _generic_app_root(app_name) if kind == "local" else _remote_app_root(app_name)
+        add("config", "Configuration and scripts of the application", root, root.parent)
+        for d in sorted((PROJECTS_HOME / "Setup" / "Dev_Softwares").glob("*")):
+            add("projects", "Project data: " + d.name, d / t, PROJECTS_HOME / "Setup" / "Dev_Softwares")
+        add("projects", "Saved SQL queries", dwb / "SQL_Queries" / scope / appdir, dwb / "SQL_Queries")
+        add("projects", "Saved API contracts", dwb / "API_Contracts" / scope / appdir, dwb / "API_Contracts")
+        if kind == "local":
+            git_home = os.environ.get("GIT_HOME", "").strip()
+            pat = (_read_local_deps(app_name).get("git_pattern") or "").strip()
+            if git_home and pat and Path(git_home).is_dir():
+                for c in sorted(Path(git_home).glob(pat)):
+                    if c.parent == Path(git_home) and (c / ".git").exists():
+                        add("codebase", "Git clone", c, git_home)
+        return items
+
+    def _env_size(p, cap=400000):
+        tot, n = 0, 0
+        for dp, dn, fn in os.walk(p):
+            for f in fn:
+                try: tot += os.path.getsize(os.path.join(dp, f))
+                except OSError: pass
+                n += 1
+                if n > cap: return tot, True
+        return tot, False
+
+    @app.route("/api/<kind>-app/<app_name>/environment-info", methods=["GET"])
+    def api_env_info(kind, app_name):
+        if kind not in ("local", "remote") or app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"} | set(_KNOWN_REMOTE_APPS)): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        out = []
+        for it in _env_items(kind, app_name):
+            sz, cut = _env_size(it["path"])
+            it["mb"] = round(sz / 1048576, 1); it["size_cut"] = cut
+            if it["category"] == "codebase":
+                ok, o = _inv_git(it["path"], ["status", "--porcelain"], 30)
+                it["uncommitted"] = len(o.splitlines()) if ok else 0
+                ok, o = _inv_git(it["path"], ["log", "--branches", "--not", "--remotes", "--oneline"], 30)
+                it["unpushed"] = len(o.splitlines()) if ok else 0
+            it.pop("base", None)
+            out.append(it)
+        return jsonify({"ok": True, "items": out, "app": app_name})
+
+    @app.route("/api/<kind>-app/<app_name>/environment-delete", methods=["POST"])
+    def api_env_delete(kind, app_name):
+        import shutil as _sh, stat as _st
+        if kind not in ("local", "remote") or app_name not in (set(_KNOWN_GENERIC_LOCAL_APPS) | {"payor"} | set(_KNOWN_REMOTE_APPS)): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        b = request.get_json(silent=True) or {}
+        if str(b.get("confirm", "")).strip().lower() != app_name.lower():
+            return jsonify({"ok": False, "error": "Type the application name (%s) to confirm" % app_name})
+        want = set(b.get("include") or [])
+        items = [i for i in _env_items(kind, app_name) if i["category"] in want]
+        if not items: return jsonify({"ok": False, "error": "Nothing selected"})
+        def unlock(fn, path, exc):                        # .git objects are read-only on Windows
+            try: os.chmod(path, _st.S_IWRITE); fn(path)
+            except Exception: pass
+        results = []
+        order = {"codebase": 0, "projects": 1, "config": 2}          # the configuration (which knows where the clones are) goes last
+        for it in sorted(items, key=lambda i: order.get(i["category"], 9)):
+            p, base = Path(it["path"]).resolve(), Path(it["base"]).resolve()
+            try:
+                if p == base or base not in p.parents: raise RuntimeError("path is outside the allowed location")
+                _sh.rmtree(str(p), onerror=unlock)
+                if p.exists(): raise RuntimeError("some files could not be removed (in use?)")
+                results.append({"path": str(p), "ok": True})
+            except Exception as e:
+                results.append({"path": str(p), "ok": False, "error": str(e)})
+        _local_screen_cfg_cache.pop(app_name, None); _screen_cfg_cache.pop(app_name, None); _local_deps_cache.pop(app_name, None); _tab_cfg_migrated.discard(app_name)
+        return jsonify({"ok": all(r["ok"] for r in results), "results": results})
+
     # ── Local-app screen configuration (driven by screen_config.xlsx) ────────────
 
     _local_screen_cfg_cache: dict = {}
