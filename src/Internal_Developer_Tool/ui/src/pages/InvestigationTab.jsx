@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { JvmDiagnosticsTab } from './ObservabilityTabs'
 
 const th = { textAlign: 'left', padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
 const td = { padding: '4px 8px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
@@ -76,7 +77,7 @@ function Investigate({ base }) {
 }
 
 // ── 2. Deployment Diff ───────────────────────────────────────────────────────
-function DeploymentDiff({ base }) {
+export function DeploymentDiff({ base }) {
   const [frm, setFrm] = useKept(base + 'dfrom', '')
   const [to, setTo] = useKept(base + 'dto', 'HEAD')
   const [res, setRes] = useKept(base + 'dres', null)
@@ -219,7 +220,7 @@ function Rca({ base }) {
 export default function InvestigationTab({ appName }) {
   const [sub, setSub] = useKept('invsub', 'inv')
   const base = `/api/local-app/${appName}`
-  const items = [{ key: 'inv', label: 'Investigate Issue' }, { key: 'diff', label: 'Deployment Diff' }, { key: 'rca', label: 'Root Cause Analysis' }]
+  const items = [{ key: 'inv', label: 'Investigate Issue' }, { key: 'rca', label: 'Root Cause Analysis' }, { key: 'jvm', label: '☕ JVM Diagnostics' }]
   return (
     <div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
@@ -229,8 +230,8 @@ export default function InvestigationTab({ appName }) {
               background: sub === t.key ? 'var(--primary, #2563eb)' : 'transparent', color: sub === t.key ? '#fff' : 'inherit' }}>{t.label}</button>))}
       </div>
       {sub === 'inv' && <Investigate base={base} />}
-      {sub === 'diff' && <DeploymentDiff base={base} />}
       {sub === 'rca' && <Rca base={base} />}
+      {sub === 'jvm' && <JvmDiagnosticsTab appName={appName} />}
     </div>
   )
 }

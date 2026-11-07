@@ -5,28 +5,44 @@ import { GpRunTab } from './GpRunPage'
 import ItTab from './ItTab'
 import AppMapTab from './AppMapTab'
 import P6SpyTab from './P6SpyTab'
-import InvestigationTab from './InvestigationTab'
-import { JvmDiagnosticsTab, LogsTab, MetricsTab } from './ObservabilityTabs'
+import InvestigationTab, { DeploymentDiff } from './InvestigationTab'
+import { LogsTab, MetricsTab, ApplicationTraceTab } from './ObservabilityTabs'
 
-let _obsSub = 'appmap'
+let _obsSub = 'metrics'
+const _obsInner = { traces: 'appmap', logs: 'applog' }
+function Pills2({ items, value, onChange, small }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+      {items.map(t => (
+        <button key={t.key} onClick={() => onChange(t.key)}
+          style={{ padding: small ? '3px 10px' : '5px 14px', fontSize: small ? 12 : 13, borderRadius: 16, cursor: 'pointer', border: '1px solid var(--border)',
+            background: value === t.key ? 'var(--primary, #2563eb)' : 'transparent', color: value === t.key ? '#fff' : 'inherit' }}>{t.label}</button>
+      ))}
+    </div>
+  )
+}
 function ObservabilityTab({ appName, displayName }) {
   const [sub, setSub] = useState(_obsSub)
+  const [inner, setInner] = useState({ ..._obsInner })
   const pick = k => { _obsSub = k; setSub(k) }
-  const subs = [{ key: 'appmap', label: '\uD83D\uDDFA\uFE0F AppMap' }, { key: 'p6spy', label: '\uD83D\uDD2C P6Spy' }, { key: 'jvm', label: '☕ JVM Diagnostics' }, { key: 'logs', label: '📜 Logs' }, { key: 'metrics', label: '📊 Metrics' }]
+  const pickInner = (g, k) => { _obsInner[g] = k; setInner({ ..._obsInner }) }
+  const subs = [{ key: 'metrics', label: '📊 Metrics' }, { key: 'events', label: '📅 Events' }, { key: 'traces', label: '🧵 Traces' },
+    { key: 'logs', label: '📜 Logs' }]
   return (
     <div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-        {subs.map(t => (
-          <button key={t.key} onClick={() => pick(t.key)}
-            style={{ padding: '5px 14px', fontSize: 13, borderRadius: 16, cursor: 'pointer', border: '1px solid var(--border)',
-              background: sub === t.key ? 'var(--primary, #2563eb)' : 'transparent', color: sub === t.key ? '#fff' : 'inherit' }}>{t.label}</button>
-        ))}
-      </div>
-      {sub === 'appmap' && <AppMapTab appName={appName} displayName={displayName} />}
-      {sub === 'p6spy' && <P6SpyTab appName={appName} />}
-      {sub === 'jvm' && <JvmDiagnosticsTab appName={appName} />}
-      {sub === 'logs' && <LogsTab appName={appName} />}
+      <Pills2 items={subs} value={sub} onChange={pick} />
       {sub === 'metrics' && <MetricsTab appName={appName} />}
+      {sub === 'events' && <DeploymentDiff base={`/api/local-app/${appName}`} />}
+      {sub === 'traces' && <>
+        <Pills2 small value={inner.traces} onChange={k => pickInner('traces', k)} items={[{ key: 'appmap', label: '🗺️ AppMap' }, { key: 'apptrace', label: 'Application Trace' }]} />
+        {inner.traces === 'appmap' && <AppMapTab appName={appName} displayName={displayName} />}
+        {inner.traces === 'apptrace' && <ApplicationTraceTab appName={appName} />}
+      </>}
+      {sub === 'logs' && <>
+        <Pills2 small value={inner.logs} onChange={k => pickInner('logs', k)} items={[{ key: 'applog', label: 'Application Log' }, { key: 'p6spy', label: '🔬 P6Spy' }]} />
+        {inner.logs === 'applog' && <LogsTab appName={appName} />}
+        {inner.logs === 'p6spy' && <P6SpyTab appName={appName} />}
+      </>}
     </div>
   )
 }

@@ -18567,14 +18567,64 @@ def create_flask_app():
             return jsonify({"ok": True})
         return jsonify({"ok": False, "error": "Unknown action"})
 
+    _OBS_DEFAULTS = {"log": [{"path": "/home/weblogic/tomcat/logs", "file": r".*\.(log|out)$"},
+                             {"path": "/home/weblogic/domains/healthedge", "file": r".*\.log$"}],
+                     "trace": [{"path": "/home/weblogic/domains/healthedge", "file": r".*trace.*"}]}
+
+    def _obs_cfg_file(app_name, kind):
+        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / "Observability" / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d / ("application_log.json" if kind == "log" else "application_trace.json")
+
+    def _obs_sources(app_name, kind):
+        import json as _js, re as _r
+        try:
+            v = _js.loads(_obs_cfg_file(app_name, kind).read_text(encoding="utf-8")).get("sources")
+        except Exception:
+            v = None
+        if not isinstance(v, list): v = _OBS_DEFAULTS[kind]
+        out = []
+        for x in v:
+            pth, fl = str((x or {}).get("path", "")).strip(), str((x or {}).get("file", "")).strip()
+            if _r.fullmatch(r"/[A-Za-z0-9_./-]*", pth) and fl:
+                try: _r.compile(fl)
+                except Exception: continue
+                out.append({"path": pth, "file": fl})
+        return out
+
+    @app.route("/api/local-app/<app_name>/obs/sources/<kind>", methods=["GET", "POST"])
+    def api_obs_sources(app_name, kind):
+        import json as _js
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS or kind not in ("log", "trace"): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        if request.method == "POST":
+            b = request.get_json(silent=True) or {}
+            src = b.get("sources") if isinstance(b.get("sources"), list) else []
+            bad = [x for x in src if not isinstance(x, dict)]
+            if bad: return jsonify({"ok": False, "error": "Invalid sources"})
+            import re as _r
+            for x in src:
+                if not _r.fullmatch(r"/[A-Za-z0-9_./-]*", str(x.get("path", "")).strip()):
+                    return jsonify({"ok": False, "error": "Invalid path: %s" % x.get("path")})
+                try: _r.compile(str(x.get("file", "")))
+                except Exception as e: return jsonify({"ok": False, "error": "Invalid regex %s: %s" % (x.get("file"), e)})
+            _obs_cfg_file(app_name, kind).write_text(_js.dumps({"sources": [{"path": str(x["path"]).strip(), "file": str(x.get("file", "")).strip()} for x in src]}, indent=2), encoding="utf-8")
+            return jsonify({"ok": True})
+        return jsonify({"ok": True, "sources": _obs_sources(app_name, kind), "config_file": str(_obs_cfg_file(app_name, kind))})
+
     @app.route("/api/local-app/<app_name>/obs/log-files")
     def api_obs_log_files(app_name):
-        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        import re as _r
+        kind = request.args.get("kind", "log")
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS or kind not in ("log", "trace"): return jsonify({"ok": False, "error": "Unknown app"}), 404
         c = _appmap_container_name(app_name)
         if not c: return jsonify({"ok": False, "error": "Container is not configured / running"})
-        ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c",
-                            "find /home/weblogic/tomcat/logs /home/weblogic/domains /tmp/p6spy -maxdepth 4 -type f \\( -name '*.log' -o -name 'catalina.out' -o -name '*.out' \\) 2>/dev/null | head -200"], timeout=30)
-        return jsonify({"ok": True, "files": ["@docker"] + [x for x in o.splitlines() if x.startswith("/")]})
+        files = []
+        for sc in _obs_sources(app_name, kind):
+            ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", "find '%s' -maxdepth 4 -type f 2>/dev/null | head -2000" % (sc["path"] or "/")], timeout=30)
+            rx = _r.compile(sc["file"])
+            for x in (o.splitlines() if ok else []):
+                if x.startswith("/") and rx.search(x.rsplit("/", 1)[-1]) and x not in files: files.append(x)
+        return jsonify({"ok": True, "files": (["@docker"] if kind == "log" else []) + files[:300]})
 
     @app.route("/api/local-app/<app_name>/obs/log")
     def api_obs_log(app_name):

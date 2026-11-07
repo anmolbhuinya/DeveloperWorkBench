@@ -285,45 +285,83 @@ export function JvmDiagnosticsTab({ appName }) {
   )
 }
 
-// ── Logs ─────────────────────────────────────────────────────────────────────
-export function LogsTab({ appName }) {
+// ── Application Log / Application Trace (file based, sources configurable) ──
+function SourcesEditor({ base, kind, onSaved }) {
+  const [src, setSrc] = useState(null)
+  const [cfg, setCfg] = useState('')
+  const [msg, setMsg] = useState('')
+  useEffect(() => { getJson(`${base}/sources/${kind}`).then(r => { if (r.ok) { setSrc(r.sources); setCfg(r.config_file) } }) }, [])
+  if (!src) return null
+  const set = (i, k, v) => setSrc(src.map((s, j) => j === i ? { ...s, [k]: v } : s))
+  const save = () => post(`${base}/sources/${kind}`, { sources: src }).then(r => { setMsg(r.ok ? 'Saved' : r.error); if (r.ok) onSaved() })
+  return (
+    <div className="card" style={{ padding: 10, marginBottom: 10 }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Sources (folder inside the container + file name regex)</div>
+      {src.map((s, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+          <input style={{ ...inp, flex: 2 }} placeholder="/home/weblogic/tomcat/logs" value={s.path} onChange={e => set(i, 'path', e.target.value)} />
+          <input style={{ ...inp, flex: 2 }} placeholder="file name regex, e.g. .*\.log$" value={s.file} onChange={e => set(i, 'file', e.target.value)} />
+          <button style={btn} onClick={() => setSrc(src.filter((_, j) => j !== i))}>Remove</button>
+        </div>))}
+      <button style={btn} onClick={() => setSrc([...src, { path: '', file: '' }])}>Add source</button>{' '}
+      <button style={btn} onClick={save}>Save</button>
+      <span style={{ fontSize: 12, marginLeft: 8, color: 'var(--text-muted)' }}>{msg}</span>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Folders are searched up to 4 levels deep; the regex is matched against the file name. Config file: {cfg}</div>
+    </div>
+  )
+}
+
+function FileLogTab({ appName, kind }) {
   const base = `/api/local-app/${appName}/obs`
-  const [files, setFiles] = useKept(appName + 'logfiles', ['@docker'])
-  const [file, setFile] = useKept(appName + 'logfile', '@docker')
-  const [lines, setLines] = useKept(appName + 'loglines', 500)
-  const [q, setQ] = useKept(appName + 'logq', '')
-  const [lvl, setLvl] = useKept(appName + 'loglvl', '')
-  const [text, setText] = useKept(appName + 'logtext', '')
+  const K = appName + kind
+  const [files, setFiles] = useKept(K + 'files', kind === 'log' ? ['@docker'] : [])
+  const [file, setFile] = useKept(K + 'file', kind === 'log' ? '@docker' : '')
+  const [lines, setLines] = useKept(K + 'lines', 500)
+  const [q, setQ] = useKept(K + 'q', '')
+  const [lvl, setLvl] = useKept(K + 'lvl', '')
+  const [text, setText] = useKept(K + 'text', '')
   const [auto, setAuto] = useState(false)
+  const [cfgOpen, setCfgOpen] = useState(false)
   const [err, setErr] = useState('')
   const box = useRef(null)
-  function load() {
-    getJson(`${base}/log?file=${encodeURIComponent(file)}&lines=${lines}`).then(r => { if (r.ok) { setText(r.text); setErr('') } else setErr(r.error) })
+  function load(f = file) {
+    if (!f) return
+    getJson(`${base}/log?file=${encodeURIComponent(f)}&lines=${lines}`).then(r => { if (r.ok) { setText(r.text); setErr('') } else setErr(r.error) })
   }
-  useEffect(() => { getJson(`${base}/log-files`).then(r => { if (r.ok) setFiles(r.files) }); if (!text) load() }, [])
+  function loadFiles() {
+    getJson(`${base}/log-files?kind=${kind}`).then(r => {
+      if (r.ok) { setFiles(r.files); if (!r.files.includes(file)) setFile(r.files[0] || '') } else setErr(r.error)
+    })
+  }
+  useEffect(() => { loadFiles(); if (!text) load() }, [])
   useEffect(() => { if (!auto) return; const id = setInterval(load, 3000); return () => clearInterval(id) }, [auto, file, lines])
   const shown = useMemo(() => text.split('\n').filter(l => (!q || l.toLowerCase().includes(q.toLowerCase())) && (!lvl || new RegExp('\\b' + lvl + '\\b').test(l))).join('\n'), [text, q, lvl])
   useEffect(() => { if (auto && box.current) box.current.scrollTop = box.current.scrollHeight }, [shown, auto])
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
-        <select style={{ ...inp, maxWidth: 420 }} value={file} onChange={e => setFile(e.target.value)}>
+        <select style={{ ...inp, maxWidth: 420 }} value={file} onChange={e => { setFile(e.target.value); load(e.target.value) }}>
+          {files.length === 0 && <option value="">No matching files</option>}
           {files.map(f => <option key={f} value={f}>{f === '@docker' ? 'Container output (docker logs)' : f}</option>)}
         </select>
         <select style={inp} value={lines} onChange={e => setLines(+e.target.value)}>{[200, 500, 1000, 2000, 5000].map(n => <option key={n} value={n}>{n} lines</option>)}</select>
         <select style={inp} value={lvl} onChange={e => setLvl(e.target.value)}>
-          <option value="">All levels</option>{['ERROR', 'WARN', 'INFO', 'DEBUG', 'SEVERE'].map(l => <option key={l}>{l}</option>)}
+          <option value="">All levels</option>{['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE', 'SEVERE'].map(l => <option key={l}>{l}</option>)}
         </select>
         <input style={{ ...inp, width: 220 }} placeholder="Filter text" value={q} onChange={e => setQ(e.target.value)} />
-        <button style={btn} onClick={load}>Load</button>
+        <button style={btn} onClick={() => { loadFiles(); load() }}>Load</button>
         <label style={{ fontSize: 12 }}><input type="checkbox" checked={auto} onChange={e => setAuto(e.target.checked)} /> Follow</label>
         <button style={btn} onClick={() => navigator.clipboard?.writeText(shown)}>Copy</button>
+        <button style={btn} onClick={() => setCfgOpen(v => !v)}>{cfgOpen ? 'Hide config' : 'Configure'}</button>
       </div>
+      {cfgOpen && <SourcesEditor base={base} kind={kind} onSaved={loadFiles} />}
       <Err m={err} />
-      <pre ref={box} style={{ ...pre, maxHeight: 560 }}>{shown || 'No log lines'}</pre>
+      <pre ref={box} style={{ ...pre, maxHeight: 560 }}>{shown || 'No lines'}</pre>
     </div>
   )
 }
+export const LogsTab = ({ appName }) => <FileLogTab appName={appName} kind="log" />
+export const ApplicationTraceTab = ({ appName }) => <FileLogTab appName={appName} kind="trace" />
 
 // ── Metrics ──────────────────────────────────────────────────────────────────
 const HIST = {}
