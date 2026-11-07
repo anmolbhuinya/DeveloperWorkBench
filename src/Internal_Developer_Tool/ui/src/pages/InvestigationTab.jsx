@@ -135,7 +135,33 @@ function DeploymentDiff({ base }) {
 }
 
 // ── 3. Root Cause Analysis ───────────────────────────────────────────────────
-const NOTE_KEYS = [['title', 'Title'], ['summary', 'Summary'], ['impact', 'Impact'], ['timeline', 'Timeline'], ['root_cause', 'Root cause'], ['contributing', 'Contributing factors'], ['fix', 'Fix / mitigation'], ['prevention', 'Prevention']]
+const RULES = [
+  { rule: 'Exception in the log, thrown from a file that changed since the last deploy', score: '90 + min(count, 10)', max: 100, when: 'An exception type/message appears in the last 6000 container log lines, its first com.healthedge / com.healthrules stack frame maps to a .java file in the deployment diff.' },
+  { rule: 'Thread deadlock', score: '95', max: 95, when: 'Thread.print reports a Java-level deadlock.' },
+  { rule: 'Heap pressure', score: '80', max: 80, when: 'Heap used is 90% or more of committed heap.' },
+  { rule: 'Lock contention', score: '70', max: 70, when: '5 or more threads are BLOCKED.' },
+  { rule: 'Slow SQL', score: '50 + min(slowest ms / 1000, 20)', max: 70, when: 'P6Spy logged statements of 1000 ms or more (the slowest one is used).' },
+  { rule: 'Exception in the log, no matching changed file', score: '35 + min(count, 10)', max: 45, when: 'Same as the first rule, but no changed file matches the app frame (or there is no app frame / no diff).' },
+  { rule: 'No runtime symptom', score: '20', max: 20, when: 'Nothing above fired but there are commits since the deploy.' },
+]
+function RulesPanel() {
+  return (
+    <div className="card" style={{ padding: 10, margin: '8px 0' }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Scoring rules</div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr><th style={th}>Rule</th><th style={th}>Score</th><th style={th}>Max</th><th style={th}>Fires when</th></tr></thead>
+        <tbody>{RULES.map(r => (<tr key={r.rule}><td style={td}><b>{r.rule}</b></td><td style={{ ...td, ...mono }}>{r.score}</td><td style={td}>{r.max}</td><td style={td}>{r.when}</td></tr>))}</tbody>
+      </table>
+      <div style={{ fontSize: 12, marginTop: 8, lineHeight: 1.6 }}>
+        <b>How scoring works:</b> every symptom found in the evidence becomes one hypothesis with a fixed base score from the table, plus a bonus for how often it occurred (exceptions) or how slow it was (SQL).
+        Hypotheses are sorted by score, highest first, and the top 15 are shown. Scores rank leads against each other; they are not probabilities.
+        A changed file is the strongest signal because it ties a symptom to a specific deployment change. Only the 25 most frequent exception groups are considered.
+        Evidence is read from the running container; the diff is the deployment diff (last deploy to HEAD).
+      </div>
+    </div>
+  )
+}
+const NOTE_KEYS =[['title', 'Title'], ['summary', 'Summary'], ['impact', 'Impact'], ['timeline', 'Timeline'], ['root_cause', 'Root cause'], ['contributing', 'Contributing factors'], ['fix', 'Fix / mitigation'], ['prevention', 'Prevention']]
 function Rca({ base }) {
   const [text, setText] = useKept(base + 'rtext', '')
   const [res, setRes] = useKept(base + 'rres', null)
@@ -143,6 +169,7 @@ function Rca({ base }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [saved, setSaved] = useState('')
+  const [showRules, setShowRules] = useKept(base + 'rrules', false)
   useEffect(() => { if (!notes) getJson(`${base}/inv/rca-notes`).then(r => setNotes(r.notes || {})) }, [])
   function run() {
     setBusy(true); setErr('')
@@ -156,10 +183,12 @@ function Rca({ base }) {
     <div>
       <textarea style={{ ...inp, width: '100%', height: 60 }} placeholder="Symptom / error text (optional)" value={text} onChange={e => setText(e.target.value)} />
       <div style={{ margin: '8px 0' }}>
-        <button style={btn} onClick={run} disabled={busy}>{busy ? 'Analysing...' : 'Analyse likely causes'}</button>
+        <button style={btn} onClick={run} disabled={busy}>{busy ? 'Analysing...' : 'Analyse likely causes'}</button>{' '}
+        <button style={{ ...btn, background: showRules ? 'var(--primary, #2563eb)' : btn.background, color: showRules ? '#fff' : btn.color }} onClick={() => setShowRules(v => !v)}>Rules</button>
         <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>Correlates log exceptions, JVM and SQL evidence with files changed since the last deploy.</span>
       </div>
       <Err m={err} />
+      {showRules && <RulesPanel />}
       {res && <>
         <H>Ranked hypotheses</H>
         {res.hypotheses.length === 0 && <div style={{ fontSize: 12 }}>No hypotheses - no symptoms were found.</div>}
