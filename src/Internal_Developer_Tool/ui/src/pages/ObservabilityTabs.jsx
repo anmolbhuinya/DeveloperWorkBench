@@ -276,7 +276,7 @@ export function JvmDiagnosticsTab({ appName }) {
   const base = `/api/local-app/${appName}`
   return (
     <div>
-      <Pills value={sub} onChange={setSub} items={[{ key: 'dash', label: 'Dashboard' }, { key: 'thr', label: 'Thread Analyzer' }, { key: 'heap', label: 'HeapDump Analyzer' }, { key: 'jfr', label: 'JFR' }]} />
+      <Pills value={sub} onChange={setSub} items={[{ key: 'dash', label: 'Dashboard' }, { key: 'thr', label: 'Thread Analyzer' }, { key: 'heap', label: 'Heap Analyzer' }, { key: 'jfr', label: 'JFR' }]} />
       {sub === 'dash' && <Dashboard base={base} />}
       {sub === 'thr' && <ThreadAnalyzer base={base} />}
       {sub === 'heap' && <HeapAnalyzer base={base} />}

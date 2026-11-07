@@ -18613,6 +18613,217 @@ def create_flask_app():
             out.update({"heap_used_mb": used, "heap_total_mb": tot, "threads": int(st.get("Threads", "0") or 0), "rss": st.get("VmRSS", "")})
         return jsonify(out)
 
+    # ── Investigation: investigate issue, deployment diff, root cause analysis ──
+    def _inv_home(app_name):
+        d = PROJECTS_HOME / "Setup" / "Dev_Softwares" / "Investigation" / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _inv_git(repo, args, timeout=60):
+        import subprocess as _sp
+        try:
+            r = _sp.run(["git", "-C", str(repo)] + args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        timeout=timeout, creationflags=0x08000000 if sys.platform == "win32" else 0)
+            return r.returncode == 0, (r.stdout if r.returncode == 0 else r.stderr).strip()
+        except Exception as e:
+            return False, str(e)
+
+    def _inv_ref_ok(r):
+        import re as _r
+        return bool(r) and bool(_r.fullmatch(r"[A-Za-z0-9_./~^@{}:-]+", r)) and not r.startswith("-")
+
+    def _inv_diff(app_name, frm="", to="HEAD"):
+        """Commits and changed files between two refs (default: the commit that was current at the last deploy .. HEAD)."""
+        import json as _js
+        repo = _find_repo_dir(app_name)
+        if not repo:
+            return {"ok": False, "error": "Git repository for this app was not found"}
+        dep = {}
+        try:
+            df = _generic_app_deployed_file(app_name) if app_name != "payor" else _DEPLOYED_INFO_FILE
+            if df.exists(): dep = _js.loads(df.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        to = to or "HEAD"
+        note = ""
+        if not frm:
+            at = (dep.get("deployed_at") or "").replace(" UTC", "")
+            if at:
+                ok, o = _inv_git(repo, ["rev-list", "-1", "--before=%s +0000" % at, to])
+                frm = o if ok and o else ""
+            if not frm:
+                frm, note = "HEAD~20", "No deploy time recorded - showing the last 20 commits"
+        if not (_inv_ref_ok(frm) and _inv_ref_ok(to)):
+            return {"ok": False, "error": "Invalid ref"}
+        ok, o = _inv_git(repo, ["log", "--no-merges", "--format=%h%x09%an%x09%ad%x09%s", "--date=format:%Y-%m-%d %H:%M", f"{frm}..{to}", "-n", "300"])
+        if not ok: return {"ok": False, "error": o}
+        commits = [dict(zip(("hash", "author", "date", "subject"), ln.split("\t", 3))) for ln in o.splitlines() if ln.count("\t") >= 3]
+        ok, o = _inv_git(repo, ["diff", "--numstat", f"{frm}..{to}"])
+        files = []
+        for ln in (o.splitlines() if ok else []):
+            p = ln.split("\t")
+            if len(p) == 3: files.append({"file": p[2], "add": int(p[0]) if p[0].isdigit() else 0, "del": int(p[1]) if p[1].isdigit() else 0})
+        return {"ok": True, "from": frm, "to": to, "deployed_at": dep.get("deployed_at"), "deployed_branch": dep.get("branch"),
+                "release_ver": dep.get("release_ver"), "note": note, "commits": commits, "files": files[:1000]}
+
+    @app.route("/api/local-app/<app_name>/inv/diff")
+    def api_inv_diff(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        return jsonify(_inv_diff(app_name, request.args.get("from", "").strip(), request.args.get("to", "").strip()))
+
+    @app.route("/api/local-app/<app_name>/inv/diff-file")
+    def api_inv_diff_file(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        repo = _find_repo_dir(app_name)
+        frm, to, f = request.args.get("from", ""), request.args.get("to", "HEAD"), request.args.get("file", "")
+        if not repo or not (_inv_ref_ok(frm) and _inv_ref_ok(to)) or f.startswith("-"):
+            return jsonify({"ok": False, "error": "Invalid request"})
+        ok, o = _inv_git(repo, ["diff", f"{frm}..{to}", "--", f])
+        return jsonify({"ok": ok, "patch": o[:200000], "error": "" if ok else o})
+
+    @app.route("/api/local-app/<app_name>/inv/branches")
+    def api_inv_refs(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        repo = _find_repo_dir(app_name)
+        if not repo: return jsonify({"ok": True, "refs": []})
+        ok, o = _inv_git(repo, ["for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/heads", "refs/remotes", "refs/tags"])
+        return jsonify({"ok": True, "refs": (o.splitlines()[:150] if ok else [])})
+
+    def _inv_collect(app_name, text, slow_ms):
+        """Gather evidence from the running app-server container: log exceptions, JVM state, slow SQL (P6Spy)."""
+        import re as _r, collections as _co
+        out = {"exceptions": [], "keyword_hits": [], "jvm": None, "slow_sql": [], "findings": [], "container": ""}
+        c = _appmap_container_name(app_name)
+        out["container"] = c
+        if not c:
+            out["findings"].append({"area": "setup", "severity": "info", "title": "Container is not configured / running", "detail": "Only the code diff is available."})
+            return out
+        ok, lg = _appmap_dk(["logs", "--tail", "6000", c], timeout=60)
+        lines = lg.splitlines() if ok else []
+        exre = _r.compile(r"((?:[a-z_][\w$]*\.)+[A-Z][\w$]*(?:Exception|Error))(?::\s*(.{0,160}))?")
+        frre = _r.compile(r"^\s+at ((?:com\.(?:healthedge|healthrules)\.)[\w.$]*)\.([\w$<>]+)\(([\w.]+):(\d+)\)")
+        grp = {}
+        for i, ln in enumerate(lines):
+            if ln.lstrip().startswith("at ") or ln.lstrip().startswith("..."): continue
+            m = exre.search(ln)
+            if not m: continue
+            key = (m.group(1), (m.group(2) or "")[:100])
+            g = grp.setdefault(key, {"type": key[0], "message": key[1], "count": 0, "line": i, "frame": None, "sample": ln.strip()[:300]})
+            g["count"] += 1
+            g["line"] = i
+            if g["frame"] is None:
+                for nx in lines[i + 1:i + 40]:
+                    fm = frre.match(nx)
+                    if fm:
+                        g["frame"] = {"cls": fm.group(1), "method": fm.group(2), "file": fm.group(3), "line": int(fm.group(4))}
+                        break
+        out["exceptions"] = sorted(grp.values(), key=lambda g: -g["count"])[:25]
+        toks = [t for t in _r.findall(r"[A-Za-z_][\w.$-]{4,}", text or "") if t.lower() not in ("error", "exception", "failed", "issue", "after", "before", "should", "would")][:6]
+        if toks:
+            rx = _r.compile("|".join(_r.escape(t) for t in toks), _r.I)
+            hits = [ln.strip()[:300] for ln in lines if rx.search(ln)]
+            out["keyword_hits"] = hits[-30:]
+        for g in out["exceptions"][:10]:
+            out["findings"].append({"area": "logs", "severity": "high" if g["count"] >= 5 else "medium",
+                                    "title": "%s x%d" % (g["type"].rsplit(".", 1)[-1], g["count"]),
+                                    "detail": (g["message"] + ("  @ %s.%s (%s:%d)" % (g["frame"]["cls"], g["frame"]["method"], g["frame"]["file"], g["frame"]["line"]) if g["frame"] else "")).strip()})
+        # JVM state
+        c2, pid, user, b, err = _jv_target(app_name)
+        if not err:
+            heap = _jv_run(app_name, ["GC.heap_info"], 30)[1]
+            used, tot = _jv_heap(heap)
+            ok, td = _jv_run(app_name, ["Thread.print", "-l"], 60)
+            st = _co.Counter(_r.findall(r"java\.lang\.Thread\.State:\s*(\w+)", td if ok else ""))
+            dead = bool(_r.search(r"Found (one )?(\d+ )?Java-level deadlock", td if ok else ""))
+            out["jvm"] = {"heap_used_mb": used, "heap_total_mb": tot, "states": dict(st), "deadlock": dead}
+            if dead: out["findings"].append({"area": "jvm", "severity": "critical", "title": "Java-level deadlock detected", "detail": "See JVM Diagnostics > Thread Analyzer"})
+            if used and tot and used * 100 / tot >= 90:
+                out["findings"].append({"area": "jvm", "severity": "high", "title": "Heap is %d%% full" % (used * 100 // tot), "detail": "%d / %d MB" % (used, tot)})
+            if st.get("BLOCKED", 0) >= 5:
+                out["findings"].append({"area": "jvm", "severity": "high", "title": "%d BLOCKED threads" % st["BLOCKED"], "detail": "Possible lock contention"})
+        elif "not running" in err:
+            out["findings"].append({"area": "jvm", "severity": "high", "title": "App-server JVM is not running", "detail": err})
+        # slow SQL
+        ok, sp = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", "tail -n 30000 /tmp/p6spy/spy.log 2>/dev/null"], timeout=30)
+        rows = []
+        for ln in (sp.splitlines() if ok else []):
+            p = ln.split("@@")
+            if len(p) >= 6 and p[2] == "statement" and p[1].strip().isdigit() and int(p[1]) >= slow_ms:
+                rows.append({"ms": int(p[1]), "time": p[0], "sql": "@@".join(p[5:]).strip()[:400]})
+        out["slow_sql"] = sorted(rows, key=lambda x: -x["ms"])[:15]
+        if out["slow_sql"]:
+            out["findings"].append({"area": "sql", "severity": "medium", "title": "%d SQL statements >= %d ms" % (len(rows), slow_ms),
+                                    "detail": "Slowest: %d ms - %s" % (out["slow_sql"][0]["ms"], out["slow_sql"][0]["sql"][:150])})
+        return out
+
+    @app.route("/api/local-app/<app_name>/inv/investigate", methods=["POST"])
+    def api_inv_investigate(app_name):
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        b = request.get_json(silent=True) or {}
+        try: slow = max(1, int(b.get("slow_ms", 1000)))
+        except Exception: slow = 1000
+        out = _inv_collect(app_name, str(b.get("text", ""))[:4000], slow)
+        d = _inv_diff(app_name)
+        if d.get("ok") and d["commits"]:
+            out["findings"].append({"area": "change", "severity": "info", "title": "%d commits / %d files changed since the last deploy" % (len(d["commits"]), len(d["files"])),
+                                    "detail": "See Deployment Diff"})
+        out["ok"] = True
+        return jsonify(out)
+
+    @app.route("/api/local-app/<app_name>/inv/rca", methods=["POST"])
+    def api_inv_rca(app_name):
+        """Rank likely root causes by correlating exceptions / JVM / SQL evidence with what changed since the deploy."""
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        b = request.get_json(silent=True) or {}
+        ev = _inv_collect(app_name, str(b.get("text", ""))[:4000], int(b.get("slow_ms", 1000) or 1000))
+        d = _inv_diff(app_name, str(b.get("from", "")).strip(), str(b.get("to", "")).strip())
+        repo = _find_repo_dir(app_name)
+        files = [f["file"] for f in d.get("files", [])] if d.get("ok") else []
+        hyp = []
+        for g in ev["exceptions"]:
+            fr = g.get("frame")
+            suspects = []
+            if fr and files:
+                path = fr["cls"].split("$")[0].replace(".", "/") + ".java"
+                suspects = [f for f in files if f.endswith(path)]
+            commits = []
+            if suspects and repo and d.get("ok"):
+                ok, o = _inv_git(repo, ["log", "--no-merges", "--format=%h %an %s", f"{d['from']}..{d['to']}", "--", suspects[0]], 30)
+                commits = o.splitlines()[:5] if ok else []
+            score = (90 if suspects else 35) + min(g["count"], 10)
+            hyp.append({"score": score, "kind": "exception", "title": "%s: %s" % (g["type"].rsplit(".", 1)[-1], g["message"][:120]),
+                        "why": ("Thrown %d times at %s.%s (%s:%d)" % (g["count"], fr["cls"], fr["method"], fr["file"], fr["line"]) if fr else "Thrown %d times" % g["count"])
+                               + (". That file changed since the last deploy." if suspects else "."),
+                        "files": suspects, "commits": commits})
+        j = ev.get("jvm") or {}
+        if j.get("deadlock"):
+            hyp.append({"score": 95, "kind": "jvm", "title": "Thread deadlock", "why": "A Java-level deadlock was reported in the thread dump.", "files": [], "commits": []})
+        if j.get("heap_used_mb") and j.get("heap_total_mb") and j["heap_used_mb"] * 100 / j["heap_total_mb"] >= 90:
+            hyp.append({"score": 80, "kind": "jvm", "title": "Heap pressure", "why": "Heap is %d / %d MB." % (j["heap_used_mb"], j["heap_total_mb"]), "files": [], "commits": []})
+        if (j.get("states") or {}).get("BLOCKED", 0) >= 5:
+            hyp.append({"score": 70, "kind": "jvm", "title": "Lock contention", "why": "%d threads are BLOCKED." % j["states"]["BLOCKED"], "files": [], "commits": []})
+        if ev["slow_sql"]:
+            s0 = ev["slow_sql"][0]
+            hyp.append({"score": 50 + min(s0["ms"] // 1000, 20), "kind": "sql", "title": "Slow SQL (%d ms)" % s0["ms"], "why": s0["sql"][:300], "files": [], "commits": []})
+        if not hyp and d.get("ok") and d["commits"]:
+            hyp.append({"score": 20, "kind": "change", "title": "No runtime symptom found", "why": "Review the %d commits since the deploy." % len(d["commits"]), "files": [], "commits": []})
+        hyp.sort(key=lambda h: -h["score"])
+        return jsonify({"ok": True, "hypotheses": hyp[:15], "evidence": {"findings": ev["findings"], "keyword_hits": ev["keyword_hits"]},
+                        "diff": {"from": d.get("from"), "to": d.get("to"), "commits": len(d.get("commits", [])), "files": len(files), "error": d.get("error", "")}})
+
+    @app.route("/api/local-app/<app_name>/inv/rca-notes", methods=["GET", "POST"])
+    def api_inv_rca_notes(app_name):
+        import json as _js
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        f = _inv_home(app_name) / "rca.json"
+        if request.method == "POST":
+            b = request.get_json(silent=True) or {}
+            keys = ("title", "summary", "impact", "root_cause", "contributing", "fix", "prevention", "timeline")
+            f.write_text(_js.dumps({k: str(b.get(k, ""))[:20000] for k in keys}), encoding="utf-8")
+            return jsonify({"ok": True})
+        try: return jsonify({"ok": True, "notes": _js.loads(f.read_text(encoding="utf-8"))})
+        except Exception: return jsonify({"ok": True, "notes": {}})
+
     @app.route("/api/local-app/<app_name>/appmap/settings", methods=["GET", "POST"])
     def api_appmap_settings(app_name):
         import json as _js_as
