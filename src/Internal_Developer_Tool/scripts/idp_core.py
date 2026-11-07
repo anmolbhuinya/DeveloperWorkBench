@@ -18409,18 +18409,106 @@ def create_flask_app():
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    _JVC_DEFAULTS = [
+        ("process_pattern", "org.apache.catalina.startup.Bootstrap", "Regex matched against the JVM command line to find the app-server process"),
+        ("java_home", "", "JDK folder inside the container (leave empty to detect it from the process, then from the search paths)"),
+        ("jdk_search_paths", "/usr/lib/jvm/*/bin/jcmd /opt/*/bin/jcmd /opt/*/*/bin/jcmd /usr/java/*/bin/jcmd /home/*/*/bin/jcmd /home/*/*/*/bin/jcmd", "Space separated jcmd locations (globs allowed) tried when java_home is empty"),
+        ("run_as_user", "", "User that runs jcmd/jfr (leave empty to use the owner of the JVM process)"),
+        ("visualvm_path", "", "VisualVM executable on this PC (leave empty to auto-detect)"),
+        ("mat_path", "", "Eclipse MAT: MemoryAnalyzer.exe or the folder that contains it (leave empty to auto-detect)"),
+        ("jmx_address", "", "host:port of the application's JMX endpoint for Open in VisualVM under Metrics > Application (leave empty to use the JVM's own -Dcom.sun.management.jmxremote.port on localhost; the container must publish that port)"),
+        ("jmc_path", "", "JDK Mission Control executable (jmc.exe) on this PC (leave empty to auto-detect)"),
+    ]
+
+    def _jvc_xlsx(app_name):
+        return _obs_cfg_file(app_name, "log").parent / "jvm_config.xlsx"
+
+    def _jvc_save(app_name, rows):
+        import openpyxl as _xl
+        wb = _xl.Workbook()
+        ws = wb.active
+        ws.title = "jvm_config"
+        ws.append(["Setting", "Value", "Description"])
+        for r in rows: ws.append([r["key"], r["value"], r["desc"]])
+        for col, w in zip("ABC", (22, 70, 90)): ws.column_dimensions[col].width = w
+        wb.save(str(_jvc_xlsx(app_name)))
+
+    def _jvc_load(app_name):
+        if not _jvc_xlsx(app_name).exists():
+            _jvc_save(app_name, [{"key": k, "value": v, "desc": d} for k, v, d in _JVC_DEFAULTS])
+        import openpyxl as _xl
+        wb = _xl.load_workbook(str(_jvc_xlsx(app_name)), read_only=True, data_only=True)
+        got = {}
+        for i, r in enumerate(wb.active.iter_rows(values_only=True)):
+            if i and r and r[0]: got[str(r[0]).strip()] = "" if len(r) < 2 or r[1] is None else str(r[1]).strip()
+        wb.close()
+        return [{"key": k, "value": got.get(k, v), "desc": d} for k, v, d in _JVC_DEFAULTS]
+
+    @app.route("/api/local-app/<app_name>/jvm/config", methods=["GET", "POST"])
+    def api_jvm_config(app_name):
+        import re as _r
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        if request.method == "POST":
+            vals = {str(x.get("key")): str(x.get("value", "")).strip() for x in ((request.get_json(silent=True) or {}).get("settings") or [])}
+            try: _r.compile(vals.get("process_pattern", ""))
+            except Exception as e: return jsonify({"ok": False, "error": "Invalid regex: %s" % e})
+            for k in ("java_home", "jdk_search_paths", "run_as_user"):
+                if not _r.fullmatch(r"[A-Za-z0-9_./*\- ]*", vals.get(k, "")): return jsonify({"ok": False, "error": "Invalid characters in " + k})
+            if not _r.fullmatch(r"[A-Za-z0-9_.:\-]*", vals.get("jmx_address", "")): return jsonify({"ok": False, "error": "jmx_address must look like host:port"})
+            for k in ("visualvm_path", "mat_path", "jmc_path"):
+                if vals.get(k) and not os.path.exists(vals[k]): return jsonify({"ok": False, "error": "Path not found: " + vals[k]})
+            _jvc_save(app_name, [{"key": k, "value": vals.get(k, v), "desc": d} for k, v, d in _JVC_DEFAULTS])
+            return jsonify({"ok": True})
+        return jsonify({"ok": True, "settings": _jvc_load(app_name), "file": str(_jvc_xlsx(app_name))})
+
     def _jv_target(app_name):
         """-> (container, pid, user, bindir, error)"""
         c = _appmap_container_name(app_name)
         if not c:
             return "", "", "", "", "Container is not configured / running"
-        script = ("for p in /proc/[0-9]*; do if tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q 'org.apache.catalina.startup.Bootstrap'; then "
-                  "P=${p#/proc/}; echo $P; stat -c %U /proc/$P; dirname $(readlink -f /proc/$P/exe); break; fi; done")
-        ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", script], timeout=30)
+        cfg = {x["key"]: x["value"] for x in _jvc_load(app_name)}
+        script = r"""
+SELF=$$
+for p in /proc/[0-9]*; do
+  Q=${p#/proc/}
+  [ "$Q" = "$SELF" ] && continue
+  if tr '\0' ' ' < $p/cmdline 2>/dev/null | grep -Eq -- "$JV_PAT"; then
+    case "$(tr '\0' ' ' < $p/cmdline 2>/dev/null)" in *grep*|*"sh -c"*) continue;; esac
+    P=$Q; break
+  fi
+done
+if [ -n "$JV_PID" ] && [ -d "/proc/$JV_PID" ]; then P=$JV_PID; fi
+[ -n "$P" ] || exit 0
+U=$JV_USER; [ -n "$U" ] || U=$(stat -c %U /proc/$P 2>/dev/null)
+B=""
+if [ -n "$JV_HOME" ] && [ -x "$JV_HOME/bin/jcmd" ]; then B="$JV_HOME/bin"; fi
+if [ -z "$B" ]; then E=$(readlink /proc/$P/exe 2>/dev/null); [ -n "$E" ] && [ -x "$(dirname "$E")/jcmd" ] && B=$(dirname "$E"); fi
+if [ -z "$B" ]; then
+  J=$(tr '\0' '\n' < /proc/$P/environ 2>/dev/null | sed -n 's/^JAVA_HOME=//p' | head -1)
+  [ -n "$J" ] && [ -x "$J/bin/jcmd" ] && B="$J/bin"
+fi
+if [ -z "$B" ]; then
+  for d in $(command -v jcmd 2>/dev/null) $JV_PATHS; do
+    [ -x "$d" ] && B=$(dirname "$d") && break
+  done
+fi
+echo "$P"; echo "$U"; echo "$B"
+"""
+        want = ""
+        try: want = request.args.get("pid", "")
+        except Exception: pass
+        if not want.isdigit(): want = ""
+        ok, o = _appmap_dk(["exec", "-u", "root", "-e", "JV_PID=" + want, "-e", "JV_PAT=" + (cfg["process_pattern"] or "org.apache.catalina.startup.Bootstrap"),
+                            "-e", "JV_HOME=" + cfg["java_home"], "-e", "JV_PATHS=" + cfg["jdk_search_paths"], "-e", "JV_USER=" + cfg["run_as_user"],
+                            c, "sh", "-c", script], timeout=30)
         parts = o.strip().splitlines()
-        if not ok or len(parts) < 3:
-            return c, "", "", "", "The app server JVM is not running in the container" if ok else o
-        return c, parts[0], parts[1], parts[2], ""
+        if not ok:
+            return c, "", "", "", o
+        if len(parts) < 1 or not parts[0].strip().isdigit():
+            return c, "", "", "", "The app server JVM is not running in the container (no process matches the configured pattern)"
+        if len(parts) < 3 or not parts[2].strip():
+            return c, "", "", "", "jcmd was not found in the container (a JDK is needed, not just a JRE) - set java_home in the JVM Diagnostics configuration"
+        return c, parts[0].strip(), (parts[1].strip() or "root"), parts[2].strip(), ""
 
     def _jv_run(app_name, args, timeout=60, tool="jcmd"):
         c, pid, user, b, err = _jv_target(app_name)
@@ -18471,6 +18559,158 @@ def create_flask_app():
         if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
         ok, o = _jv_run(app_name, ["Thread.print", "-l"], 60)
         return jsonify({"ok": ok, "text": o if ok else "", "error": "" if ok else o})
+
+    @app.route("/api/local-app/<app_name>/jvm/processes")
+    def api_jvm_processes(app_name):
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c = _appmap_container_name(app_name)
+        if not c: return jsonify({"ok": False, "error": "Container is not configured / running"})
+        script = r"""
+for p in /proc/[0-9]*; do
+  Q=${p#/proc/}; [ "$Q" = "$$" ] && continue
+  C=$(tr '\0' ' ' < $p/cmdline 2>/dev/null)
+  case "$C" in *java*) echo "$Q|$(stat -c %U $p 2>/dev/null)|$C";; esac
+done
+"""
+        ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", script], timeout=30)
+        if not ok: return jsonify({"ok": False, "error": o})
+        out = []
+        for ln in o.splitlines():
+            pid, _, rest = ln.partition("|")
+            user, _, cmd = rest.partition("|")
+            tk = cmd.split()
+            if not pid.isdigit() or not tk or tk[0].rsplit("/", 1)[-1] != "java": continue
+            main, i = "", 1
+            while i < len(tk):
+                t = tk[i]
+                if t in ("-cp", "-classpath", "--class-path", "-p"): i += 2; continue
+                if t == "-jar": main = tk[i + 1] if i + 1 < len(tk) else ""; break
+                if t.startswith("-"): i += 1; continue
+                main = t; break
+            out.append({"pid": pid, "user": user, "main": main.rsplit("/", 1)[-1] if main.endswith(".jar") else main, "cmd": cmd[:300]})
+        return jsonify({"ok": True, "processes": out})
+
+    @app.route("/api/local-app/<app_name>/jvm/threaddump", methods=["GET", "POST", "DELETE"])
+    def api_jvm_threaddump(app_name):
+        import time as _t
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        home = _jv_home(app_name) / "threads"; home.mkdir(parents=True, exist_ok=True)
+        if request.method == "POST":
+            ok, o = _jv_run(app_name, ["Thread.print", "-l"], 90)
+            if not ok: return jsonify({"ok": False, "error": o})
+            nm = "thread-%s.tdump" % _t.strftime("%Y%m%d-%H%M%S")
+            (home / nm).write_text(o, encoding="utf-8")
+            return jsonify({"ok": True, "file": nm, "text": o})
+        f = home / os.path.basename(request.args.get("file", ""))
+        if request.method == "DELETE":
+            try: f.unlink()
+            except Exception as e: return jsonify({"ok": False, "error": str(e)})
+            return jsonify({"ok": True})
+        if request.args.get("file"):
+            try: return jsonify({"ok": True, "text": f.read_text(encoding="utf-8", errors="replace")})
+            except Exception as e: return jsonify({"ok": False, "error": str(e)})
+        fs = sorted(home.glob("*.tdump"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return jsonify({"ok": True, "dir": str(home), "files": [{"name": x.name, "mb": round(x.stat().st_size / 1048576, 2), "mtime": x.stat().st_mtime} for x in fs]})
+
+    def _jv_tool_exe(app_name, tool):
+        import shutil as _sh, glob as _gl
+        cfg = {x["key"]: x["value"] for x in _jvc_load(app_name)}
+        exes = {"visualvm": ["visualvm.exe", "visualvm", "jvisualvm.exe"], "mat": ["MemoryAnalyzer.exe", "MemoryAnalyzer"], "jmc": ["jmc.exe", "jmc"]}[tool]
+        if sys.platform == "win32": exes = [e for e in exes if e.lower().endswith(".exe")]
+        p = cfg.get(tool + "_path", "")
+        if p and os.path.isfile(p): return p
+        if p and os.path.isdir(p):           # a folder was configured: look for the executable inside it
+            for dp, dn, fn in os.walk(p):
+                for e in exes:
+                    if e in fn and os.path.isfile(os.path.join(dp, e)): return os.path.join(dp, e)
+                if dp[len(p):].count(os.sep) >= 3: dn[:] = []
+        for n in exes:
+            w = _sh.which(n)
+            if w and os.path.isfile(w): return w
+        roots = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA"), os.environ.get("USERPROFILE"),
+                 os.path.join(os.environ.get("USERPROFILE", ""), "Downloads"), os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"), str(INSTALLED_SOFTWARES)]
+        for r in [x for x in roots if x and os.path.isdir(x)]:
+            for depth in ("", "*/", "*/*/", "*/*/*/"):
+                for e in exes:
+                    for sub in ("", "bin/"):
+                        hit = [h for h in _gl.glob(os.path.join(r, depth + sub + e)) if os.path.isfile(h)]
+                        if hit: return hit[0]
+        return ""
+
+    @app.route("/api/local-app/<app_name>/jvm/open", methods=["POST"])
+    def api_jvm_open(app_name):
+        import subprocess as _sp
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        b = request.get_json(silent=True) or {}
+        kind, tool = b.get("kind"), b.get("tool")
+        folder = {"thread": "threads", "heap": "heap", "jfr": "jfr"}.get(kind)
+        if kind == "jmx":
+            if tool != "visualvm": return jsonify({"ok": False, "error": "Invalid request"})
+            f = None
+            addr = {x["key"]: x["value"] for x in _jvc_load(app_name)}.get("jmx_address", "")
+            if not addr:        # not configured: use the JMX port the application JVM was started with (published by the container)
+                import re as _rj
+                m = _rj.search(r"jmxremote\.port=(\d+)", _jv_run(app_name, ["VM.command_line"], 20)[1])
+                if m: addr = "localhost:" + m.group(1)
+            if not addr: return jsonify({"ok": False, "error": "The JVM has no JMX port (-Dcom.sun.management.jmxremote.port) and jmx_address is not set in JVM Diagnostics > Configure"})
+        else:
+            if not folder or tool not in ("visualvm", "mat", "jmc"): return jsonify({"ok": False, "error": "Invalid request"})
+            f = _jv_home(app_name) / folder / os.path.basename(str(b.get("file", "")))
+            if not f.is_file(): return jsonify({"ok": False, "error": "File not found"})
+        exe = _jv_tool_exe(app_name, tool)
+        if not exe:
+            return jsonify({"ok": False, "error": "%s was not found. Set its path in JVM Diagnostics > Configure (%s_path)." % ({"visualvm": "VisualVM", "mat": "Eclipse MAT", "jmc": "JDK Mission Control"}[tool], tool)})
+        args = [exe, "--openjmx", addr] if kind == "jmx" else {"visualvm": [exe, "--openfile", str(f)], "mat": [exe, str(f)], "jmc": [exe, "-open", str(f)]}[tool]
+        flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
+        kw = dict(close_fds=True, stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        errs = []
+        for how in ("direct", "cmd", "powershell"):
+            try:
+                if how == "direct":
+                    _sp.Popen(args, creationflags=flags, **kw)
+                elif sys.platform != "win32":
+                    break
+                elif how == "cmd":       # lets Windows resolve aliases / manifests that CreateProcess refuses
+                    _sp.Popen(["cmd.exe", "/c", "start", "", "/D", os.path.dirname(exe)] + args, creationflags=0x08000000, **kw)
+                else:
+                    ps = "Start-Process -FilePath '%s' -ArgumentList %s -WorkingDirectory '%s'" % (
+                        exe.replace("'", "''"), ",".join("'%s'" % a.replace("'", "''") for a in args[1:]), os.path.dirname(exe).replace("'", "''"))
+                    _sp.Popen(["powershell.exe", "-NoProfile", "-Command", ps], creationflags=0x08000000, **kw)
+                return jsonify({"ok": True, "message": "Opened with %s (%s)" % (os.path.basename(exe), how)})
+            except Exception as e:
+                errs.append("%s: %s" % (how, e))
+        return jsonify({"ok": False, "error": "Could not start %s - %s" % (exe, " | ".join(errs))})
+
+    @app.route("/api/local-app/<app_name>/jvm/metrics")
+    def api_jvm_metrics(app_name):
+        import re as _r, time as _t
+        if not _jv_ok(app_name): return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c, pid, user, b, err = _jv_target(app_name)
+        if err: return jsonify({"ok": False, "error": err})
+        def J(a, t=30): return _jv_run(app_name, a, t)[1]
+        used, tot = _jv_heap(J(["GC.heap_info"]))
+        pc = J(["PerfCounter.print"])
+        def pcv(k):
+            m = _r.search(r"^%s=(\S+)" % _r.escape(k), pc, _r.M)
+            try: return float(m.group(1).strip('"')) if m else None
+            except Exception: return None
+        freq = pcv("sun.os.hrt.frequency") or 1e9
+        gcn = sum(pcv("sun.gc.collector.%d.invocations" % i) or 0 for i in range(3))
+        gct = sum(pcv("sun.gc.collector.%d.time" % i) or 0 for i in range(3)) * 1000.0 / freq
+        ok, st = _appmap_dk(["exec", "-u", "root", c, "sh", "-c", f"cat /proc/{pid}/stat; grep -E '^(VmRSS|Threads):' /proc/{pid}/status"], timeout=15)
+        cpu, rss, thr = None, "", None
+        if ok:
+            ln = st.splitlines()
+            try:
+                f = ln[0].rsplit(")", 1)[1].split()
+                cpu = int(f[11]) + int(f[12])      # utime + stime in clock ticks
+            except Exception: pass
+            for x in ln[1:]:
+                if x.startswith("VmRSS"): rss = x.split(":", 1)[1].strip()
+                if x.startswith("Threads"): thr = int(x.split(":", 1)[1].strip() or 0)
+        return jsonify({"ok": True, "t": _t.time(), "pid": pid, "heap_used_mb": used, "heap_total_mb": tot,
+                        "threads": pcv("java.threads.live") or thr, "daemon": pcv("java.threads.daemon"), "peak_threads": pcv("java.threads.livePeak"),
+                        "classes": pcv("java.cls.loadedClasses"), "gc_count": gcn, "gc_ms": round(gct), "cpu_ticks": cpu, "rss": rss})
 
     @app.route("/api/local-app/<app_name>/jvm/histogram")
     def api_jvm_histogram(app_name):

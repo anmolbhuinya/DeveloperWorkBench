@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 
 const th = { textAlign: 'left', padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
 const td = { padding: '4px 8px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
@@ -14,7 +14,9 @@ function useKept(key, init) {
   return [v, setV]
 }
 export const jumpJvm = k => { KEPT['jvmsub'] = k }
-const getJson = (u, opt) => fetch(u, opt).then(r => r.json()).catch(() => ({ ok: false, error: 'Could not reach server' }))
+let _pid = ''
+const withPid = u => (_pid && u.includes('/jvm/') && !u.includes('/jvm/config') && !u.includes('/jvm/open') && !u.includes('/jvm/processes')) ? u + (u.includes('?') ? '&' : '?') + 'pid=' + _pid : u
+const getJson = (u, opt) => fetch(withPid(u), opt).then(r => r.json()).catch(() => ({ ok: false, error: 'Could not reach server' }))
 const post = (u, b) => getJson(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) })
 const fmtB = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n > 1024 ? (n / 1024).toFixed(0) + ' KB' : n + ' B'
 const when = t => new Date(t * 1000).toLocaleString()
@@ -95,17 +97,40 @@ function parseThreads(txt) {
   }
   return out.filter(t => t.state || t.stack.length)
 }
+const TOOLS = { visualvm: 'VisualVM', mat: 'Eclipse MAT', jmc: 'Mission Control' }
+function OpenIn({ base, kind, file, tools }) {
+  const [msg, setMsg] = useState('')
+  const go = t => { setMsg('...'); post(`${base}/jvm/open`, { kind, file, tool: t }).then(r => setMsg(r.ok ? r.message : r.error)) }
+  return (
+    <span>
+      <select style={{ ...inp, width: 'auto' }} value="" onChange={e => e.target.value && go(e.target.value)}>
+        <option value="">Open in...</option>{tools.map(t => <option key={t} value={t}>{TOOLS[t]}</option>)}
+      </select>
+      {msg && <span style={{ fontSize: 11, marginLeft: 6, color: 'var(--text-muted)' }}>{msg}</span>}
+    </span>
+  )
+}
+
 function ThreadAnalyzer({ base }) {
   const [txt, setTxt] = useKept(base + 'thr', '')
+  const [cur, setCur] = useKept(base + 'thrfile', '')
   const [filter, setFilter] = useKept(base + 'thrf', '')
   const [stateF, setStateF] = useKept(base + 'thrs', '')
   const [group, setGroup] = useKept(base + 'thrg', false)
+  const [files, setFiles] = useState([])
+  const [dir, setDir] = useState('')
   const [open, setOpen] = useState(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  function load() {
-    setBusy(true)
-    getJson(`${base}/jvm/threads`).then(r => { if (r.ok) { setTxt(r.text); setErr('') } else setErr(r.error) }).finally(() => setBusy(false))
+  const list = () => getJson(`${base}/jvm/threaddump`).then(r => { if (r.ok) { setFiles(r.files); setDir(r.dir) } })
+  useEffect(() => { list() }, [])
+  function take() {
+    setBusy(true); setErr('')
+    post(`${base}/jvm/threaddump`).then(r => { if (r.ok) { setTxt(r.text); setCur(r.file) } else setErr(r.error); list() }).finally(() => setBusy(false))
+  }
+  function view(f) {
+    setErr('')
+    getJson(`${base}/jvm/threaddump?file=${encodeURIComponent(f)}`).then(r => { if (r.ok) { setTxt(r.text); setCur(f); setOpen(null) } else setErr(r.error) })
   }
   const th_ = useMemo(() => parseThreads(txt), [txt])
   const counts = useMemo(() => { const c = {}; th_.forEach(t => { c[t.state] = (c[t.state] || 0) + 1 }); return c }, [th_])
@@ -119,35 +144,49 @@ function ThreadAnalyzer({ base }) {
   }, [th_, filter, stateF, group])
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-        <button style={btn} onClick={load} disabled={busy}>{busy ? 'Capturing...' : 'Capture thread dump'}</button>
-        <input style={{ ...inp, width: 240 }} placeholder="Filter name / stack" value={filter} onChange={e => setFilter(e.target.value)} />
-        <select style={inp} value={stateF} onChange={e => setStateF(e.target.value)}>
-          <option value="">All states</option>{Object.keys(counts).map(s => <option key={s} value={s}>{s} ({counts[s]})</option>)}
-        </select>
-        <label style={{ fontSize: 12 }}><input type="checkbox" checked={group} onChange={e => setGroup(e.target.checked)} /> Group identical stacks</label>
-      </div>
+      <div style={{ marginBottom: 8 }}><button style={btn} onClick={take} disabled={busy}>{busy ? 'Taking thread dump...' : 'Take thread dump'}</button></div>
       <Err m={err} />
-      {txt && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-        <Stat label="Threads" value={th_.length} />
-        {Object.keys(counts).map(s => <Stat key={s} label={s} value={counts[s]} />)}
-        <Stat label="Deadlock" value={dead ? 'YES' : 'none'} />
-      </div>}
-      {dead && <pre style={{ ...pre, borderColor: '#dc2626', marginBottom: 10 }}>{txt.slice(txt.search(/Found/))}</pre>}
-      <div style={{ maxHeight: 460, overflow: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead><tr><th style={th}>{group ? 'Count' : '#'}</th><th style={th}>Thread</th><th style={th}>State</th><th style={th}>Top frame</th></tr></thead>
-          <tbody>{rows.map((t, i) => (<>
-            <tr key={i} onClick={() => setOpen(open === i ? null : i)} style={{ cursor: 'pointer' }}>
-              <td style={td}>{group ? t.n : i + 1}</td>
-              <td style={{ ...td, ...mono }}>{group ? t.names.slice(0, 2).join(', ') + (t.names.length > 2 ? ' ...' : '') : t.name}</td>
-              <td style={td}>{t.state}</td><td style={{ ...td, ...mono }}>{t.stack[0] || ''}</td>
-            </tr>
-            {open === i && <tr key={'d' + i}><td colSpan={4} style={td}><pre style={pre}>{t.stack.join('\n')}</pre></td></tr>}
-          </>))}</tbody>
-        </table>
-      </div>
-      {!txt && !busy && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Capture a thread dump of the app-server JVM (jcmd Thread.print).</div>}
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 12 }}>
+        <thead><tr><th style={th}>Thread dump</th><th style={th}>Size</th><th style={th}>Taken</th><th style={th}></th></tr></thead>
+        <tbody>{files.map(f => (
+          <tr key={f.name} style={{ background: cur === f.name ? 'var(--surface2)' : '' }}>
+            <td style={{ ...td, ...mono }}>{f.name}</td><td style={td}>{f.mb} MB</td><td style={td}>{when(f.mtime)}</td>
+            <td style={td}><button style={btn} onClick={() => view(f.name)}>View</button>{' '}
+              <OpenIn base={base} kind="thread" file={f.name} tools={['jmc', 'visualvm', 'mat']} />{' '}
+              <button style={btn} onClick={() => navigator.clipboard?.writeText(`${dir}\\${f.name}`)}>Copy path</button>{' '}
+              <button style={btn} onClick={() => getJson(`${base}/jvm/threaddump?file=${encodeURIComponent(f.name)}`, { method: 'DELETE' }).then(list)}>Delete</button></td></tr>))}
+        </tbody>
+      </table>
+      {txt && <>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{cur || 'Thread dump'}</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+          <input style={{ ...inp, width: 240 }} placeholder="Filter name / stack" value={filter} onChange={e => setFilter(e.target.value)} />
+          <select style={inp} value={stateF} onChange={e => setStateF(e.target.value)}>
+            <option value="">All states</option>{Object.keys(counts).map(s => <option key={s} value={s}>{s} ({counts[s]})</option>)}
+          </select>
+          <label style={{ fontSize: 12 }}><input type="checkbox" checked={group} onChange={e => setGroup(e.target.checked)} /> Group identical stacks</label>
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+          <Stat label="Threads" value={th_.length} />
+          {Object.keys(counts).map(s => <Stat key={s} label={s} value={counts[s]} />)}
+          <Stat label="Deadlock" value={dead ? 'YES' : 'none'} />
+        </div>
+        {dead && <pre style={{ ...pre, borderColor: '#dc2626', marginBottom: 10 }}>{txt.slice(txt.search(/Found/))}</pre>}
+        <div style={{ maxHeight: 460, overflow: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr><th style={th}>{group ? 'Count' : '#'}</th><th style={th}>Thread</th><th style={th}>State</th><th style={th}>Top frame</th></tr></thead>
+            <tbody>{rows.map((t, i) => (<Fragment key={i}>
+              <tr onClick={() => setOpen(open === i ? null : i)} style={{ cursor: 'pointer' }}>
+                <td style={td}>{group ? t.n : i + 1}</td>
+                <td style={{ ...td, ...mono }}>{group ? t.names.slice(0, 2).join(', ') + (t.names.length > 2 ? ' ...' : '') : t.name}</td>
+                <td style={td}>{t.state}</td><td style={{ ...td, ...mono }}>{t.stack[0] || ''}</td>
+              </tr>
+              {open === i && <tr><td colSpan={4} style={td}><pre style={pre}>{t.stack.join('\n')}</pre></td></tr>}
+            </Fragment>))}</tbody>
+          </table>
+        </div>
+      </>}
+      {!txt && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Take a thread dump of the application JVM, then View it here or open it in VisualVM.</div>}
     </div>
   )
 }
@@ -196,7 +235,7 @@ function HeapAnalyzer({ base }) {
         <thead><tr><th style={th}>File</th><th style={th}>Size</th><th style={th}>Taken</th><th style={th}></th></tr></thead>
         <tbody>{files.map(f => (
           <tr key={f.name}><td style={{ ...td, ...mono }}>{f.name}</td><td style={td}>{f.mb} MB</td><td style={td}>{when(f.mtime)}</td>
-            <td style={td}><button style={btn} onClick={() => { navigator.clipboard?.writeText(`${dir}\\${f.name}`) }}>Copy path</button>{' '}
+            <td style={td}><button style={btn} onClick={() => { navigator.clipboard?.writeText(`${dir}\\${f.name}`) }}>Copy path</button>{' '}<OpenIn base={base} kind="heap" file={f.name} tools={['mat', 'visualvm', 'jmc']} />{' '}
               <button style={btn} onClick={() => getJson(`${base}/jvm/heap?file=${encodeURIComponent(f.name)}`, { method: 'DELETE' }).then(list)}>Delete</button></td></tr>))}
         </tbody>
       </table>
@@ -263,7 +302,7 @@ function Jfr({ base }) {
         <tbody>{info.files.map(f => (
           <tr key={f.name}><td style={{ ...td, ...mono }}>{f.name}</td><td style={td}>{f.mb} MB</td><td style={td}>{when(f.mtime)}</td>
             <td style={td}><button style={btn} onClick={() => open(f.name)}>Analysis</button>{' '}
-              <button style={btn} onClick={() => navigator.clipboard?.writeText(`${info.dir}\\${f.name}`)}>Copy path</button>{' '}
+              <button style={btn} onClick={() => navigator.clipboard?.writeText(`${info.dir}\\${f.name}`)}>Copy path</button>{' '}<OpenIn base={base} kind="jfr" file={f.name} tools={['jmc', 'visualvm', 'mat']} />{' '}
               <button style={btn} onClick={() => act('delete', { file: f.name })}>Delete</button></td></tr>))}
         </tbody>
       </table>
@@ -272,16 +311,63 @@ function Jfr({ base }) {
   )
 }
 
+function JvmConfig({ base }) {
+  const [rows, setRows] = useState(null)
+  const [file, setFile] = useState('')
+  const [msg, setMsg] = useState('')
+  useEffect(() => { getJson(`${base}/jvm/config`).then(r => { if (r.ok) { setRows(r.settings); setFile(r.file) } else setMsg(r.error) }) }, [])
+  if (!rows) return <div style={{ fontSize: 12 }}>{msg || 'Loading...'}</div>
+  const set = (i, v) => setRows(rows.map((r, j) => j === i ? { ...r, value: v } : r))
+  const save = () => post(`${base}/jvm/config`, { settings: rows }).then(r => setMsg(r.ok ? 'Saved to jvm_config.xlsx' : r.error))
+  return (
+    <div className="card" style={{ padding: 10, marginBottom: 10 }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>JVM discovery settings</div>
+      {rows.map((r, i) => (
+        <div key={r.key} style={{ marginBottom: 6 }}>
+          <div style={{ fontSize: 12 }}><b>{r.key}</b> <span style={{ color: 'var(--text-muted)' }}>- {r.desc}</span></div>
+          <input style={{ ...inp, width: '100%', boxSizing: 'border-box' }} value={r.value} onChange={e => set(i, e.target.value)} />
+        </div>))}
+      <button style={btn} onClick={save}>Save</button>
+      <span style={{ fontSize: 12, marginLeft: 8, color: 'var(--text-muted)' }}>{msg}</span>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Config file: {file}</div>
+    </div>
+  )
+}
+
 export function JvmDiagnosticsTab({ appName }) {
   const [sub, setSub] = useKept('jvmsub', 'dash')
+  const [cfgOpen, setCfgOpen] = useState(false)
+  const [procs, setProcs] = useState([])
+  const [pid, setPid] = useKept('jvmpid', '')
+  const [perr, setPerr] = useState('')
   const base = `/api/local-app/${appName}`
+  _pid = pid
+  const loadProcs = () => getJson(`${base}/jvm/processes`).then(r => { if (r.ok) { setProcs(r.processes); setPerr('') } else setPerr(r.error) })
+  useEffect(() => { loadProcs() }, [])
+  function choose(v) {
+    Object.keys(KEPT).filter(k => k.startsWith(base)).forEach(k => delete KEPT[k])
+    _pid = v; setPid(v)
+  }
   return (
     <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12 }}>Application JVM</span>
+        <select style={{ ...inp, maxWidth: 520 }} value={pid} onChange={e => choose(e.target.value)}>
+          <option value="">Auto (process pattern from Configure)</option>
+          {procs.map(x => <option key={x.pid} value={x.pid}>{x.pid} - {x.main || x.cmd.slice(0, 60)} ({x.user})</option>)}
+        </select>
+        <button style={btn} onClick={loadProcs}>Reload</button>
+        <button style={btn} onClick={() => setCfgOpen(v => !v)}>{cfgOpen ? 'Hide config' : 'Configure'}</button>
+      </div>
+      <Err m={perr} />
+      {cfgOpen && <JvmConfig base={base} />}
       <Pills value={sub} onChange={setSub} items={[{ key: 'dash', label: 'Dashboard' }, { key: 'thr', label: 'Thread Analyzer' }, { key: 'heap', label: 'Heap Analyzer' }, { key: 'jfr', label: 'JFR' }]} />
-      {sub === 'dash' && <Dashboard base={base} />}
-      {sub === 'thr' && <ThreadAnalyzer base={base} />}
-      {sub === 'heap' && <HeapAnalyzer base={base} />}
-      {sub === 'jfr' && <Jfr base={base} />}
+      <div key={pid}>
+        {sub === 'dash' && <Dashboard base={base} />}
+        {sub === 'thr' && <ThreadAnalyzer base={base} />}
+        {sub === 'heap' && <HeapAnalyzer base={base} />}
+        {sub === 'jfr' && <Jfr base={base} />}
+      </div>
     </div>
   )
 }
@@ -366,7 +452,7 @@ export const ApplicationTraceTab = ({ appName }) => <FileLogTab appName={appName
 
 // ── Metrics ──────────────────────────────────────────────────────────────────
 const HIST = {}
-export function MetricsTab({ appName }) {
+function SystemMetrics({ appName }) {
   const [pts, setPts] = useState(HIST[appName] || [])
   const [on, setOn] = useState(true)
   const [err, setErr] = useState('')
@@ -412,6 +498,76 @@ export function MetricsTab({ appName }) {
         <Stat label="Block I/O" value={last.block} />
         <Stat label="Container PIDs" value={last.pids} />
       </div>
+    </div>
+  )
+}
+
+const AHIST = {}
+function AppMetrics({ appName }) {
+  const base = `/api/local-app/${appName}`
+  const [pts, setPts] = useState(AHIST[appName] || [])
+  const [on, setOn] = useState(true)
+  const [err, setErr] = useState('')
+  const [msg, setMsg] = useState('')
+  useEffect(() => { AHIST[appName] = pts }, [appName, pts])
+  useEffect(() => {
+    if (!on) return
+    let dead = false
+    const tick = () => getJson(`${base}/jvm/metrics`).then(r => {
+      if (dead) return
+      if (r.ok) { setErr(''); setPts(p => [...p, r].slice(-120)) } else setErr(r.error)
+    })
+    tick(); const id = setInterval(tick, 5000)
+    return () => { dead = true; clearInterval(id) }
+  }, [appName, on])
+  const last = pts[pts.length - 1] || {}
+  const prev = pts[pts.length - 2]
+  const dt = prev ? last.t - prev.t : 0
+  const cpuPct = prev && dt > 0 && last.cpu_ticks != null && prev.cpu_ticks != null ? Math.max(0, (last.cpu_ticks - prev.cpu_ticks) / 100 / dt * 100) : null
+  const cpuSeries = pts.map((p, i) => i && p.cpu_ticks != null && pts[i - 1].cpu_ticks != null && p.t > pts[i - 1].t ? Math.max(0, (p.cpu_ticks - pts[i - 1].cpu_ticks) / 100 / (p.t - pts[i - 1].t) * 100) : 0)
+  const gcSeries = pts.map((p, i) => i ? Math.max(0, (p.gc_count || 0) - (pts[i - 1].gc_count || 0)) : 0)
+  const s = k => pts.map(p => p[k] ?? 0)
+  const cards = [
+    { t: 'Heap used (MB)', v: last.heap_used_mb != null ? `${last.heap_used_mb} / ${last.heap_total_mb}` : '-', d: s('heap_used_mb'), max: last.heap_total_mb },
+    { t: 'Process CPU %', v: cpuPct != null ? cpuPct.toFixed(1) + '%' : '-', d: cpuSeries },
+    { t: 'Live threads', v: last.threads ?? '-', d: s('threads') },
+    { t: 'GC collections per sample', v: last.gc_count != null ? `${last.gc_count} total / ${last.gc_ms} ms` : '-', d: gcSeries },
+    { t: 'Classes loaded', v: last.classes ?? '-', d: s('classes') },
+  ]
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+        <label style={{ fontSize: 12 }}><input type="checkbox" checked={on} onChange={e => setOn(e.target.checked)} /> Live (every 5s)</label>
+        <button style={btn} onClick={() => setPts([])}>Reset</button>
+        <button style={btn} onClick={() => { setMsg('...'); post(`${base}/jvm/open`, { kind: 'jmx', tool: 'visualvm' }).then(r => setMsg(r.ok ? r.message : r.error)) }}>Open in VisualVM</button>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{last.pid ? `JVM pid ${last.pid} - ` : ''}{pts.length} samples {msg && ` - ${msg}`}</span>
+      </div>
+      <Err m={err} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 10 }}>
+        {cards.map(c => (
+          <div key={c.t} className="card" style={{ padding: 10 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.t}</div>
+            <div style={{ fontSize: 20, fontWeight: 600 }}>{c.v}</div>
+            <Spark data={c.d} max={c.max} />
+          </div>))}
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+        <Stat label="JVM RSS" value={last.rss} />
+        <Stat label="Daemon threads" value={last.daemon} />
+        <Stat label="Peak threads" value={last.peak_threads} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>Follows the JVM chosen in Investigation &gt; JVM Diagnostics (Auto uses the process pattern from its Configure). VisualVM connects over JMX: set jmx_address in that Configure panel.</div>
+    </div>
+  )
+}
+
+export function MetricsTab({ appName }) {
+  const [sub, setSub] = useKept('metricssub', 'system')
+  return (
+    <div>
+      <Pills value={sub} onChange={setSub} items={[{ key: 'system', label: 'System' }, { key: 'app', label: 'Application' }]} />
+      {sub === 'system' && <SystemMetrics appName={appName} />}
+      {sub === 'app' && <AppMetrics appName={appName} />}
     </div>
   )
 }
