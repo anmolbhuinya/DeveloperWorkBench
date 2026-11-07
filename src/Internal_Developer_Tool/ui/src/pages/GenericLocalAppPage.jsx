@@ -241,7 +241,7 @@ export default function GenericLocalAppPage({
   const _pin = { user_interface: 0.01, api: 0.02 }
   const _asOrder = _withIt.find(t => t.key === 'app_server')?.order ?? 2
   const _pin2 = { database: 0.01, queue: 0.02 }
-  const _extra = [{ key: 'cache', label: '\u26A1 Cache', order: 0.03 }, { key: 'ldap', label: '\uD83D\uDCD2 LDAP', order: 0.04 }, { key: 'vault', label: '\uD83D\uDD10 Secrets / Vault', order: 0.05 }]
+  const _extra = [{ key: 'cache', label: '\u26A1 Cache', order: 0.03 }, { key: 'ldap', label: '\uD83D\uDCC7 LDAP', order: 0.04 }, { key: 'vault', label: '\uD83D\uDD10 Secrets / Vault', order: 0.05 }]
     .filter(x => !_withIt.some(t => t.key === x.key)).map(x => ({ key: x.key, label: x.label, enabled: true, order: _asOrder + x.order }))
   const visibleTabs = [..._withIt.filter(t => t.key !== 'appmap' && t.key !== 'p6spy' && t.key !== 'observability').map(t => t.key in _pin ? { ...t, order: _itOrder + _pin[t.key] } : t.key in _pin2 ? { ...t, order: _asOrder + _pin2[t.key] } : t), ..._extra, { key: 'observability', label: '\uD83D\uDD2D Observability', enabled: true, order: _itOrder + 0.1 }, { key: 'investigation', label: '\uD83D\uDD0E Investigation', enabled: true, order: _itOrder + 0.15 }]
     .filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)

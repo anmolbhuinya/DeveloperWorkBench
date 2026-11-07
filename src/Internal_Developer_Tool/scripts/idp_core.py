@@ -19496,13 +19496,13 @@ done
 
     # ── Cache / LDAP / Secrets-Vault: connections kept in <kind>_config.xlsx, test + browse ──
     _SVC = {"cache": ("Cache", "cache_config.xlsx"), "ldap": ("Ldap", "ldap_config.xlsx"), "vault": ("Vault", "vault_config.xlsx")}
-    _SVC_COLS = ["Name", "Enabled", "Provider", "Host", "Port", "Username", "Secret", "Scope", "Options"]
+    _SVC_COLS = ["Name", "Enabled", "Provider", "Host", "Port", "Username", "Secret", "Scope", "Options", "Settings"]
     _SVC_DEFAULTS = {
         "cache": [("he-blob", True, "he-blob", "localhost", "1521", "PAYOR_OLTP", "", "", ""), ("redis-local", False, "redis", "localhost", "6379", "", "", "0", "")],
-        "ldap": [("ldap-local", True, "ldap", "localhost", "389", "cn=admin,dc=example,dc=org", "", "dc=example,dc=org", "")],
+        "ldap": [("ActiveDirectory1", False, "activedirectory", "localhost", "1389", "", "", "", ""), ("CompanyOpenLDAP", False, "openldap", "localhost", "389", "", "", "", "")],
         "vault": [("vault-local", True, "hashicorp", "localhost", "8200", "", "", "secret", "kv=2")],
     }
-    _SVC_PROVIDERS = {"cache": ["he-blob", "redis", "memcached", "hazelcast", "ehcache", "other"], "ldap": ["ldap", "openldap", "activedirectory"],
+    _SVC_PROVIDERS = {"cache": ["he-blob", "redis", "memcached", "hazelcast", "ehcache", "other"], "ldap": ["activedirectory", "openldap", "ldap"],
                       "vault": ["hashicorp"]}
     _SVC_SCOPE = {"cache": "Database number", "ldap": "Base DN", "vault": "KV mount"}
 
@@ -19518,26 +19518,31 @@ done
         ws.title = kind
         ws.append(_SVC_COLS)
         for r in rows:
-            ws.append([r["name"], "TRUE" if r["enabled"] else "FALSE", r["provider"], r["host"], r["port"], r["username"], r["secret"], r["scope"], r["options"]])
-        for col, w in zip("ABCDEFGHI", (20, 9, 14, 24, 8, 28, 24, 24, 28)): ws.column_dimensions[col].width = w
+            ws.append([r["name"], "TRUE" if r["enabled"] else "FALSE", r["provider"], r["host"], r["port"], r["username"], r["secret"], r["scope"], r["options"], r.get("settings", "")])
+        for col, w in zip("ABCDEFGHIJ", (20, 9, 16, 24, 8, 34, 24, 28, 28, 80)): ws.column_dimensions[col].width = w
         wb.save(str(_svc_xlsx(app_name, kind)))
 
     def _svc_load(app_name, kind):
         f = _svc_xlsx(app_name, kind)
         if not f.exists():
-            _svc_save(app_name, kind, [dict(zip(("name", "enabled", "provider", "host", "port", "username", "secret", "scope", "options"), d)) for d in _SVC_DEFAULTS[kind]])
+            _svc_save(app_name, kind, [dict(zip(("name", "enabled", "provider", "host", "port", "username", "secret", "scope", "options"), d), settings="") for d in _SVC_DEFAULTS[kind]])
         import openpyxl as _xl
         wb = _xl.load_workbook(str(f), read_only=True, data_only=True)
         rows = []
         for i, r in enumerate(wb.active.iter_rows(values_only=True)):
             if i == 0 or not r or not r[0]: continue
-            r = [("" if v is None else str(v).strip()) for v in list(r) + [None] * 9]
+            r = [("" if v is None else str(v).strip()) for v in list(r) + [None] * 10]
             rows.append({"name": r[0], "enabled": r[1].lower() in ("true", "1", "yes", "y"), "provider": r[2], "host": r[3], "port": r[4].replace(".0", ""),
-                         "username": r[5], "secret": r[6], "scope": r[7].replace(".0", "") if kind == "cache" else r[7], "options": r[8]})
+                         "username": r[5], "secret": r[6], "scope": r[7].replace(".0", "") if kind == "cache" else r[7], "options": r[8], "settings": r[9]})
         wb.close()
+        if kind == "ldap" and not any(r["settings"] or r["secret"] for r in rows):
+            seeded = _ldap_rows_from_text(_LDAP_SEED)
+            if seeded:
+                rows = seeded
+                _svc_save(app_name, kind, rows)
         if kind == "cache" and not any(r["provider"].lower() == "he-blob" for r in rows) and not request.args.get("nohe"):
             d = _SVC_DEFAULTS["cache"][0]
-            rows.insert(0, dict(zip(("name", "enabled", "provider", "host", "port", "username", "secret", "scope", "options"), d)))
+            rows.insert(0, dict(zip(("name", "enabled", "provider", "host", "port", "username", "secret", "scope", "options"), d), settings=""))
         return rows
 
     @app.route("/api/local-app/<app_name>/svc/<kind>/config", methods=["GET", "POST"])
@@ -19557,17 +19562,67 @@ done
                 sec = str(x.get("secret", ""))
                 if sec == "********": sec = old.get(nm, {}).get("secret", "")
                 rows.append({"name": nm, "enabled": bool(x.get("enabled")), "provider": str(x.get("provider", "")).strip(), "host": str(x.get("host", "")).strip(),
-                             "port": port, "username": str(x.get("username", "")).strip(), "secret": sec, "scope": str(x.get("scope", "")).strip(), "options": str(x.get("options", "")).strip()})
+                             "port": port, "username": str(x.get("username", "")).strip(), "secret": sec, "scope": str(x.get("scope", "")).strip(), "options": str(x.get("options", "")).strip(),
+                             "settings": str(x.get("settings", "")).strip()})
             _svc_save(app_name, kind, rows)
             return jsonify({"ok": True})
         rows = [{**r, "secret": "********" if r["secret"] else ""} for r in old.values()]
         return jsonify({"ok": True, "connections": rows, "providers": _SVC_PROVIDERS[kind], "scope_label": _SVC_SCOPE[kind], "file": str(_svc_xlsx(app_name, kind))})
 
     # --- Redis / memcached (plain sockets) ---
+    class _PipeSock:
+        """Socket look-alike that reaches host:port from INSIDE the container (docker exec + bash /dev/tcp)."""
+        def __init__(self, container, host, port):
+            import subprocess as _sp, re as _r
+            if not _r.fullmatch(r"[A-Za-z0-9_.-]+", host or "") or not str(port).isdigit(): raise ValueError("Invalid host/port")
+            script = 'exec 3<>/dev/tcp/%s/%s || exit 7; (cat <&3) & B=$!; cat >&3; kill $B 2>/dev/null' % (host, port)
+            self.p = _sp.Popen(["docker", "exec", "-i", container, "bash", "-c", script], stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE,
+                               creationflags=0x08000000 if sys.platform == "win32" else 0)
+            self.host, self.port = host, port
+        def sendall(self, b):
+            try:
+                self.p.stdin.write(b); self.p.stdin.flush()
+            except Exception:
+                raise IOError(self.why())
+        def makefile(self, mode="rb"): return _PipeReader(self)
+        def recv(self, n): return self.p.stdout.read1(n)
+        def why(self):
+            try: self.p.kill()
+            except Exception: pass
+            try: e = self.p.stderr.read().decode("utf-8", "replace").strip()
+            except Exception: e = ""
+            return "Could not connect to %s:%s from inside the container%s" % (self.host, self.port, (" - " + e) if e else " (connection refused or closed)")
+        def close(self):
+            for x in (self.p.stdin,):
+                try: x.close()
+                except Exception: pass
+            try: self.p.kill()
+            except Exception: pass
+
+    class _PipeReader:
+        def __init__(self, ps): self.ps = ps
+        def read(self, n):
+            d = self.ps.p.stdout.read(n)
+            if len(d) < n: raise IOError(self.ps.why())
+            return d
+        def readline(self):
+            d = self.ps.p.stdout.readline()
+            if not d: raise IOError(self.ps.why())
+            return d
+
     def _svc_sock(c, timeout=6):
         import socket as _s, ssl as _ssl
-        sk = _s.create_connection((c["host"] or "localhost", int(c["port"] or 0)), timeout=timeout)
-        if "ssl=true" in c["options"].lower().replace(" ", ""):
+        opts = c["options"].lower().replace(" ", "")
+        host, port, cont = c["host"] or "localhost", int(c["port"] or 0), c.get("_container")
+        if cont and "via=container-only" in opts:
+            return _PipeSock(cont, host, port)
+        try:
+            sk = _s.create_connection((host, port), timeout=timeout if "via=direct" in opts or not cont else 3)
+        except OSError:
+            if cont and "via=direct" not in opts:       # not reachable from this PC: try from inside the container
+                return _PipeSock(cont, host, port)
+            raise
+        if "ssl=true" in opts:
             ctx = _ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = _ssl.CERT_NONE
             sk = ctx.wrap_socket(sk, server_hostname=c["host"])
         return sk
@@ -19616,17 +19671,40 @@ done
         import re as _r
         f = (f or "(objectClass=*)").strip()
         if not f.startswith("("): f = "(" + f + ")"
-        m = _r.fullmatch(r"\(\s*([A-Za-z0-9.;-]+)\s*=\s*(.*?)\s*\)", f)
-        if not m: raise ValueError("Filter must look like (attribute=value), * wildcards allowed")
-        a, v = m.group(1), m.group(2)
-        if v == "*": return _b_str(a, 0x87)
-        if "*" not in v: return _tlv(0xa3, _b_str(a) + _b_str(v))
-        parts, subs = v.split("*"), b""
-        if parts[0]: subs += _b_str(parts[0], 0x80)
-        for x in parts[1:-1]:
-            if x: subs += _b_str(x, 0x81)
-        if parts[-1]: subs += _b_str(parts[-1], 0x82)
-        return _tlv(0xa4, _b_str(a) + _tlv(0x30, subs))
+        def item(txt):
+            m = _r.fullmatch(r"([A-Za-z0-9.;-]+)\s*(>=|<=|=)\s*(.*)", txt.strip())
+            if not m: raise ValueError("Bad filter item: (%s)" % txt)
+            a, op, v = m.groups()
+            if op == ">=": return _tlv(0xa5, _b_str(a) + _b_str(v))
+            if op == "<=": return _tlv(0xa6, _b_str(a) + _b_str(v))
+            if v == "*": return _b_str(a, 0x87)
+            if "*" not in v: return _tlv(0xa3, _b_str(a) + _b_str(v))
+            parts, subs = v.split("*"), b""
+            if parts[0]: subs += _b_str(parts[0], 0x80)
+            for x in parts[1:-1]:
+                if x: subs += _b_str(x, 0x81)
+            if parts[-1]: subs += _b_str(parts[-1], 0x82)
+            return _tlv(0xa4, _b_str(a) + _tlv(0x30, subs))
+        def parse(i):
+            if i >= len(f) or f[i] != "(": raise ValueError("Filter must start with ( at position %d" % i)
+            i += 1
+            ch = f[i]
+            if ch in "&|":
+                parts, i = b"", i + 1
+                while i < len(f) and f[i] == "(":
+                    sub, i = parse(i); parts += sub
+                if i >= len(f) or f[i] != ")": raise ValueError("Unbalanced parentheses in filter")
+                return _tlv(0xa0 if ch == "&" else 0xa1, parts), i + 1
+            if ch == "!":
+                sub, i = parse(i + 1)
+                if i >= len(f) or f[i] != ")": raise ValueError("Unbalanced parentheses in filter")
+                return _tlv(0xa2, sub), i + 1
+            j = f.find(")", i)
+            if j < 0: raise ValueError("Unbalanced parentheses in filter")
+            return item(f[i:j]), j + 1
+        out, i = parse(0)
+        if i != len(f): raise ValueError("Unexpected text after filter")
+        return out
 
     def _ber_read(f):
         t = f.read(1)
@@ -19715,16 +19793,23 @@ done
                 return jsonify({"ok": True, "message": "Connected as %s - %d BLOB_ tables (%d ms)" % (owner, cur.fetchone()[0], (_t.time() - t0) * 1000)})
             if act == "info":
                 cur.execute("SELECT banner FROM v$version WHERE ROWNUM = 1")
-                return jsonify({"ok": True, "text": "Schema: %s\\nDatabase: %s" % (owner, cur.fetchone()[0])})
+                return jsonify({"ok": True, "text": "Schema: %s\nDatabase: %s" % (owner, cur.fetchone()[0])})
             if act == "keys":
                 pat = str(b.get("pattern") or "*").strip().upper()
                 like = _r.sub(r"[^A-Z0-9_$%]", "", pat.replace("*", "%").replace("?", "_")) or "%"
+                meta = ["SYSTEM_INFO", "METADATA_ITS_MAPPING_FILES", "METADATA_IOM_TYPE_FILES", "FORWARD_COMPATIBLE"]
+                cur.execute("SELECT table_name, num_rows FROM all_tables WHERE owner = :o AND table_name IN (%s)" % ",".join(":m%d" % i for i in range(len(meta))),
+                            dict({"o": owner}, **{"m%d" % i: m for i, m in enumerate(meta)}))
+                have = {r[0]: r[1] for r in cur.fetchall()}
+                rows = [{"cat": "meta", "key": m, "type": "table" if m in have else "missing", "ttl": (have[m] if have[m] is not None else "-") if m in have else "not found"} for m in meta]
                 cur.execute("SELECT table_name, num_rows FROM all_tables WHERE owner = :o AND table_name LIKE 'BLOB\\_%' ESCAPE '\\' AND table_name LIKE :p ORDER BY table_name",
                             {"o": owner, "p": like})
-                return jsonify({"ok": True, "rows": [{"key": r[0], "type": "table", "ttl": r[1] if r[1] is not None else "-"} for r in cur.fetchall()][:1000]})
+                rows += [{"cat": "cache", "key": r[0], "type": "table", "ttl": r[1] if r[1] is not None else "-"} for r in cur.fetchall()][:1000]
+                return jsonify({"ok": True, "rows": rows})
             if act == "get":
                 tb = str(b.get("key", "")).upper()
-                if not _r.fullmatch(r"BLOB_[A-Z0-9_$]+", tb): return jsonify({"ok": False, "error": "Invalid table name"})
+                if not (_r.fullmatch(r"BLOB_[A-Z0-9_$]+", tb) or tb in ("SYSTEM_INFO", "METADATA_ITS_MAPPING_FILES", "METADATA_IOM_TYPE_FILES", "FORWARD_COMPATIBLE")):
+                    return jsonify({"ok": False, "error": "Invalid table name"})
                 cur.execute("SELECT COUNT(*) FROM all_tables WHERE owner = :o AND table_name = :t", {"o": owner, "t": tb})
                 if not cur.fetchone()[0]: return jsonify({"ok": False, "error": "Table not found"})
                 lim = max(1, min(int(b.get("limit") or 100), 1000))
@@ -19737,6 +19822,200 @@ done
         finally:
             con.close()
 
+    _LDAP_SEED = r"""AUTHENTICATION_PROVIDERS=HeAuthenticator,authprovider-AD,authProviderOpenLDAP
+
+[authprovider-AD]Name=ActiveDirectory1
+[authprovider-AD]AuthenticatorProviderType=ActiveDirectoryAuthenticator
+[authprovider-AD]ControlFlag=SUFFICIENT
+[authprovider-AD]Host=localhost
+[authprovider-AD]Port=1389
+[authprovider-AD]Principal=CN=svc-weblogic,ou=ENG-Users,DC=eng,DC=local
+[authprovider-AD]Credential=Password123!
+[authprovider-AD]SSLEnabled=false
+[authprovider-AD]UserBaseDn=OU=ENG-Users,DC=eng,DC=local
+[authprovider-AD]GroupBaseDn=OU=ENG-Users,DC=eng,DC=local
+[authprovider-AD]UserObjectClass=user
+[authprovider-AD]StaticGroupObjectClass=group
+[authprovider-AD]UserNameAttribute=sAMAccountName
+[authprovider-AD]StaticMemberDNAttribute=member
+[authprovider-AD]StaticGroupNameAttribute=cn
+[authprovider-AD]DistinguishedNameAttribute=distinguishedName
+[authprovider-AD]UserFromNameFilter=(&(sAMAccountName=%u)(objectclass=user))
+[authprovider-AD]GroupFromNameFilter=(&(cn=%g)(objectclass=group))
+[authprovider-AD]StaticGroupDNsfromMemberDNFilter=(&(member=%M)(objectclass=group))
+[authprovider-AD]GroupSearchScope=subtree
+[authprovider-AD]UserSearchScope=subtree
+[authprovider-AD]GroupMembershipSearching=unlimited
+[authprovider-AD]ConnectionTimeout=10000
+[authprovider-AD]ConnectionReadTimeout=30000
+[authprovider-AD]PoolSettings=maxTotal=20,minIdle=2,maxIdle=4,maxWait=10000,testOnBorrow=true,testWhileIdle=true,timeBetweenEvictionRunsMillis=30000,minEvictableIdleTimeMillis=60000,numTestsPerEvictionRun=3
+[authprovider-AD]IgnorePartialResultException=false
+[authprovider-AD]IgnoreNameNotFoundException=false
+[authprovider-AD]IgnoreSizeLimitExceededException=true
+[authprovider-AD]DefaultSearchScope=2
+[authprovider-AD]DefaultTimeLimit=0
+[authprovider-AD]DefaultCountLimit=0
+
+[authproviderOpenLDAP]_Name=CompanyOpenLDAP
+[authproviderOpenLDAP]_ControlFlag=SUFFICIENT
+[authproviderOpenLDAP]_Host=localhost
+[authproviderOpenLDAP]_Port=389
+[authproviderOpenLDAP]_Principal=cn=admin,dc=healthedge,dc=com
+[authproviderOpenLDAP]_Credential=admin
+[authproviderOpenLDAP]_SSLEnabled=false
+[authproviderOpenLDAP]_UserBaseDn=ou=users,dc=healthedge,dc=com
+[authproviderOpenLDAP]_AllUsersFilter=(&(cn=*)(objectclass=inetOrgPerson))
+[authproviderOpenLDAP]_UserFromNameFilter=(&(uid=%u)(objectClass=inetOrgPerson))
+[authproviderOpenLDAP]_UserNameAttribute=uid
+[authproviderOpenLDAP]_UserObjectClass=inetOrgPerson
+[authproviderOpenLDAP]_UseRetrievedUserNameAsPrincipal=
+[authproviderOpenLDAP]_GroupBaseDn=ou=groups,dc=healthedge,dc=com
+[authproviderOpenLDAP]_AllGroupsFilter=(&(cn=*)(objectclass=groupOfNames))
+[authproviderOpenLDAP]_GroupFromNameFilter=(&(cn=%g)(objectclass=groupOfNames))
+[authproviderOpenLDAP]_GroupSearchScope=SUBTREE
+[authproviderOpenLDAP]_GroupMembershipSearching=Limited
+[authproviderOpenLDAP]_MaxGroupMembershipSearchLevel=0
+[authproviderOpenLDAP]_IgnoreDuplicateMembership=
+[authproviderOpenLDAP]_StaticGroupNameAttribute=cn
+[authproviderOpenLDAP]_StaticGroupObjectClass=groupOfNames
+[authproviderOpenLDAP]_StaticMemberDNAttribute=member
+[authproviderOpenLDAP]_StaticGroupDNsfromMemberDNFilter=(&(objectClass=groupOfNames)(member=%M))
+[authproviderOpenLDAP]_ConnectionPoolSize=6
+[authproviderOpenLDAP]_ConnectTimeout=30
+[authproviderOpenLDAP]_ConnectionRetryLimit=2
+[authproviderOpenLDAP]_ResultsTimeLimit=3000
+[authproviderOpenLDAP]_KeepAliveEnabled=FALSE
+[authproviderOpenLDAP]_CacheEnabled=TRUE
+[authproviderOpenLDAP]_CacheSize=1024
+[authproviderOpenLDAP]_CacheTTL=720
+[authproviderOpenLDAP]_ConnectionMinIdle=0
+[authproviderOpenLDAP]_ConnectionMaxIdle=5
+[authproviderOpenLDAP]_ConnectionMaxWait=1000
+[authproviderOpenLDAP]_UserSearchScope=SUBTREE
+"""
+
+    def _ldap_rows_from_text(txt):
+        """Connection rows for the providers listed in AUTHENTICATION_PROVIDERS of a properties text."""
+        import re as _r
+        glob, secs = _ldap_parse_props(txt)
+        sl = {k.lower(): k for k in secs}
+        rows = []
+        for sec in [x.strip() for x in glob.get("AUTHENTICATION_PROVIDERS", "").split(",") if x.strip()]:
+            if sec.lower() not in sl: continue
+            sec = sl[sec.lower()]; kv = secs[sec]
+            ad = "activedirectory" in kv.get("AuthenticatorProviderType", "").lower() or sec.lower().endswith("-ad") or kv.get("UserObjectClass", "").lower() == "user"
+            dn = kv.get("UserBaseDn") or kv.get("GroupBaseDn") or ""
+            dcs = _r.findall(r"(?i)dc=[^,]+", dn)
+            rows.append({"name": kv.get("Name") or sec, "enabled": True, "provider": "activedirectory" if ad else "openldap", "host": kv.get("Host", "localhost"), "port": kv.get("Port", "389"),
+                         "username": kv.get("Principal", ""), "secret": kv.get("Credential", ""), "scope": ",".join(dcs) if dcs else dn,
+                         "options": ("ssl=true;" if kv.get("SSLEnabled", "").lower() == "true" else "") + "section=" + sec,
+                         "settings": "\n".join("%s=%s" % (k, v) for k, v in kv.items() if k != "Credential")})
+        return rows
+
+    def _ldap_parse_props(text):
+        """Parse the authentication provider properties ([section]Key=Value or [section]_Key=Value) into {section: {key: value}}."""
+        import re as _r
+        glob, secs = {}, {}
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if not ln or ln.startswith("#"): continue
+            m = _r.match(r"\[([^\]]+)\]_?([A-Za-z0-9_.]+)\s*=\s*(.*)$", ln)
+            if m: secs.setdefault(m.group(1), {})[m.group(2)] = m.group(3).strip(); continue
+            m = _r.match(r"([A-Za-z0-9_.]+)\s*=\s*(.*)$", ln)
+            if m: glob[m.group(1)] = m.group(2).strip()
+        return glob, secs
+
+    @app.route("/api/local-app/<app_name>/svc/ldap/import", methods=["POST"])
+    def api_ldap_import(app_name):
+        """Read the AD / OpenLDAP authentication providers from the properties file inside the container and save them to ldap_config.xlsx."""
+        import re as _r
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS: return jsonify({"ok": False, "error": "Unknown app"}), 404
+        c = _appmap_container_name(app_name)
+        jb = request.get_json(silent=True) or {}
+        if not c and not str(jb.get("text", "")).strip(): return jsonify({"ok": False, "error": "Container is not configured / running"})
+        path = str(jb.get("path", "")).strip()
+        pasted = str(jb.get("text", "")).strip()
+        if path and not _r.fullmatch(r"/[A-Za-z0-9_./-]+", path): return jsonify({"ok": False, "error": "Invalid file path"})
+        if not path and not pasted:
+            ok, o = _appmap_dk(["exec", "-u", "root", c, "sh", "-c",
+                                "for d in /home/weblogic/domains /home/weblogic; do find $d -maxdepth 5 -type f \\( -name '*.properties' -o -name '*.cfg' -o -name '*.conf' \\) 2>/dev/null "
+                                "| xargs grep -l 'AUTHENTICATION_PROVIDERS' 2>/dev/null | head -5; done"], timeout=90)
+            found = [x for x in (o.splitlines() if ok else []) if x.startswith("/")]
+            if not found: return jsonify({"ok": False, "error": "No file containing AUTHENTICATION_PROVIDERS was found in the container - enter its path"})
+            path = found[0]
+        if pasted:
+            txt, path = pasted, "(pasted text)"
+        else:
+            ok, txt = _appmap_dk(["exec", "-u", "root", c, "cat", path], timeout=30)
+            if not ok: return jsonify({"ok": False, "error": txt})
+        glob, secs = _ldap_parse_props(txt)
+        wanted = [x.strip() for x in glob.get("AUTHENTICATION_PROVIDERS", "").split(",") if x.strip()]
+        rows = _svc_load(app_name, "ldap")
+        byname = {r["name"]: r for r in rows}
+        imported = []
+        for row in _ldap_rows_from_text(txt):
+            if row["name"] in byname: rows[rows.index(byname[row["name"]])] = row
+            else: rows.append(row)
+            imported.append(row["name"])
+        if not imported: return jsonify({"ok": False, "error": "%s has no [section] entries for: %s" % (path, ", ".join(wanted) or "(no providers listed)")})
+        _svc_save(app_name, "ldap", rows)
+        return jsonify({"ok": True, "file": path, "imported": imported})
+
+    def _ldap_do(sk, f, mid, op, resp_tag):
+        sk.sendall(_tlv(0x30, _b_int(mid) + op))
+        while True:
+            _, body = _ber_read(f)
+            for t, v in _ber_items(body):
+                if t == resp_tag:
+                    it = _ber_items(v)
+                    return int.from_bytes(it[0][1], "big"), (it[2][1].decode("utf-8", "replace") if len(it) > 2 else "")
+
+    def _ldap_attr(name, vals):
+        vals = vals if isinstance(vals, list) else [vals]
+        return _tlv(0x30, _b_str(name) + _tlv(0x31, b"".join(_b_str(v) for v in vals)))
+
+    def _ldap_manage(sk, f, c, act, b):
+        ssl = "ssl=true" in c["options"].lower().replace(" ", "")
+        ad = c["provider"].lower() == "activedirectory"
+        base = c["scope"].strip().lower()
+        dn = str(b.get("dn", "")).strip()
+        if not dn: return {"ok": False, "error": "A DN is required"}
+        if base and not dn.lower().endswith(base): return {"ok": False, "error": "DN must be inside the configured base DN (%s)" % c["scope"]}
+        def chk(code, msg):
+            if code != 0:
+                hint = {50: " (insufficient access - the bind account needs write permission)", 68: " (entry already exists)", 32: " (no such object)", 53: " (server unwilling - AD needs LDAPS to set passwords)",
+                        19: " (constraint violation)", 65: " (object class violation - a required attribute is missing)", 66: " (not allowed on non-leaf)"}.get(code, "")
+                raise IOError("LDAP error %d%s: %s" % (code, hint, msg))
+        def modify(changes):
+            ops = b"".join(_tlv(0x30, _tlv(0x0a, bytes([{"add": 0, "delete": 1, "replace": 2}[ch["op"]]])) + _ldap_attr(ch["attr"], ch.get("values", []))) for ch in changes)
+            chk(*_ldap_do(sk, f, 20, _tlv(0x66, _b_str(dn) + _tlv(0x30, ops)), 0x67))
+        if act == "add":
+            attrs = {k: v for k, v in (b.get("attrs") or {}).items() if v not in ("", [], None)}
+            chk(*_ldap_do(sk, f, 21, _tlv(0x68, _b_str(dn) + _tlv(0x30, b"".join(_ldap_attr(k, v if isinstance(v, list) else [str(v)]) for k, v in attrs.items()))), 0x69))
+            return {"ok": True, "message": "Created " + dn}
+        if act == "modify":
+            ch = [{"op": x.get("op", "replace"), "attr": x["attr"], "values": [str(v) for v in (x.get("values") or [])]} for x in (b.get("changes") or [])]
+            if not ch: return {"ok": False, "error": "Nothing to change"}
+            modify(ch)
+            return {"ok": True, "message": "Updated " + dn}
+        if act == "delete":
+            chk(*_ldap_do(sk, f, 22, _tlv(0x4a, dn.encode("utf-8")), 0x6b))
+            return {"ok": True, "message": "Deleted " + dn}
+        if act == "password":
+            pw = str(b.get("password", ""))
+            if not pw: return {"ok": False, "error": "Password is empty"}
+            if ad:
+                if not ssl: return {"ok": False, "error": "Active Directory only accepts password changes over LDAPS - set Options to ssl=true and the port to 636"}
+                modify([{"op": "replace", "attr": "unicodePwd", "values": [('"%s"' % pw).encode("utf-16-le")]}])
+            else:
+                modify([{"op": "replace", "attr": "userPassword", "values": [pw]}])
+            return {"ok": True, "message": "Password changed for " + dn}
+        if act in ("enable", "disable"):
+            if not ad: return {"ok": False, "error": "Enable/disable applies to Active Directory accounts"}
+            modify([{"op": "replace", "attr": "userAccountControl", "values": ["512" if act == "enable" else "514"]}])
+            return {"ok": True, "message": ("Enabled " if act == "enable" else "Disabled ") + dn}
+        return {"ok": False, "error": "Unsupported action"}
+
     @app.route("/api/local-app/<app_name>/svc/<kind>/action", methods=["POST"])
     def api_svc_action(app_name, kind):
         import time as _t, json as _js, re as _r
@@ -19745,6 +20024,7 @@ done
         c = next((x for x in _svc_load(app_name, kind) if x["name"] == b.get("name")), None)
         if not c: return jsonify({"ok": False, "error": "Unknown connection"})
         act = b.get("action", "test")
+        c["_container"] = _appmap_container_name(app_name)
         t0 = _t.time()
         try:
             if kind == "cache":
@@ -19797,6 +20077,8 @@ done
                     if act == "test":
                         ents, code = _ldap_search(sk, f, c["scope"], "(objectClass=*)", 0, 1)
                         return jsonify({"ok": True, "message": "Bind OK as %s, base %s %s (%d ms)" % (c["username"] or "anonymous", c["scope"], "readable" if code == 0 else "result code %d" % code, (_t.time() - t0) * 1000)})
+                    if act in ("add", "modify", "delete", "password", "enable", "disable"):
+                        return jsonify(_ldap_manage(sk, f, c, act, b))
                     base = str(b.get("base") or c["scope"])
                     ents, code = _ldap_search(sk, f, base, str(b.get("filter") or "(objectClass=*)"), {"base": 0, "one": 1, "sub": 2}.get(b.get("scope"), 2), 200)
                     return jsonify({"ok": True, "entries": ents[:200], "code": code})
