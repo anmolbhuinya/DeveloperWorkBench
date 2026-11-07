@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 XLSX = Path(__file__).parent / "AI_Agent.xlsx"
+os.environ.setdefault("DWB_HOME", str(Path(__file__).resolve().parents[3]))      # Tools\AIAgent -> DeveloperWorkBench -> {DWB_HOME}
 
 BOLD   = '\x1b[1m'
 TEAL   = '\x1b[36m'
@@ -42,10 +43,29 @@ def read_config():
     return data
 
 
+def parse_args(argv):
+    """lai [--workspace DIR] [--resume NAME | --name NAME] [--add-dir DIR] [--context TEXT]   (anything else is passed on to the Command)"""
+    opts, rest, i = {}, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--workspace", "--resume", "--name", "--add-dir", "--context") and i + 1 < len(argv):
+            opts[a[2:]] = argv[i + 1]
+            i += 2
+        else:
+            rest.append(a)
+            i += 1
+    return opts, rest
+
+
+def ps_quote(s):
+    return "'" + str(s).replace("'", "''") + "'"
+
+
 def main():
     cfg = read_config()
+    opts, rest = parse_args(sys.argv[1:])
 
-    workspace     = os.path.expanduser(os.path.expandvars(cfg.get("Workspace", "").strip()))   # %USERPROFILE% / ~ allowed
+    workspace     = os.path.expanduser(os.path.expandvars((opts.get("workspace") or cfg.get("Workspace", "")).strip()))   # %USERPROFILE% / ~ allowed
     login_base    = cfg.get("Login", "").strip()
     profile       = cfg.get("Profile", "").strip()
     command       = cfg.get("Command", "").strip()
@@ -54,6 +74,16 @@ def main():
         sys.exit(red("'Workspace' not set in AI_Agent.xlsx"))
     if not command:
         sys.exit(red("'Command' not set in AI_Agent.xlsx"))
+    if opts.get("resume"):                                  # resume the session of that name
+        command += " --resume " + ps_quote(opts["resume"])
+    elif opts.get("name"):                                  # new session, named
+        command += " --name " + ps_quote(opts["name"])
+    if opts.get("add-dir"):                                 # extra folder the agent may work in
+        command += " --add-dir " + ps_quote(opts["add-dir"])
+    if opts.get("context"):                                 # what the agent should know about this session
+        command += " --append-system-prompt " + ps_quote(opts["context"])
+    if rest:
+        command += " " + " ".join(rest)
 
     login_cmd = (login_base + " " + profile).strip() if profile else login_base
 
@@ -69,6 +99,8 @@ def main():
 
     # 1. Verify workspace exists
     ws_path = Path(workspace)
+    if not ws_path.exists() and "AI_Workspace" in ws_path.parts:
+        ws_path.mkdir(parents=True, exist_ok=True)
     if not ws_path.exists():
         sys.exit(red(f"Workspace directory not found: {workspace}"))
     print(green(f"  OK  Workspace: {workspace}"))
@@ -94,8 +126,8 @@ def main():
     # 4. Run command via PowerShell so PS aliases/functions (e.g. claudep) are available.
     #    Set-Location first so the session starts in the workspace directory.
     ws_escaped = workspace.replace("'", "''")
-    cmd_escaped = command.replace("'", "''")
-    ps_cmd = f"Set-Location '{ws_escaped}'; {cmd_escaped}"
+    # the command is NOT inside a quoted string here, so its own quotes (session name, system prompt) must stay as they are
+    ps_cmd = f"Set-Location '{ws_escaped}'; {command}"
     print()
     print(grey(f"  > powershell -NoLogo -Command \"{ps_cmd}\""))
     print()

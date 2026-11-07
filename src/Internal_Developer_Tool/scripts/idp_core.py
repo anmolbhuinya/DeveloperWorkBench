@@ -28460,6 +28460,93 @@ done
         _env_probe_cache[app_name] = (_t.time(), tools)
         return jsonify({"ok": True, "tools": tools})
 
+    # ── AIDev: `lai` in the application's repository, resuming (or naming) the Claude session called like the current branch ──
+    _VM_HELPER = r"""# Runs a command on the application's VM. The session itself lives on this PC; the connection details come from the environment.
+import os, sys
+import paramiko
+ip, user = os.environ["AIDEV_VM_IP"], os.environ.get("AIDEV_VM_USER", "")
+pw, key, init = os.environ.get("AIDEV_VM_PASS", ""), os.environ.get("AIDEV_VM_KEY", ""), os.environ.get("AIDEV_VM_INIT", "")
+c = paramiko.SSHClient()
+c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+kw = dict(hostname=ip, port=22, username=user, timeout=20, allow_agent=False, look_for_keys=not (key and os.path.exists(key)))
+if key and os.path.exists(key): kw["key_filename"] = key
+elif pw: kw["password"] = pw
+c.connect(**kw)
+a = sys.argv[1:]
+if a and a[0] == "--put" and len(a) == 3:
+    s = c.open_sftp(); s.put(a[1], a[2]); print("uploaded", a[2]); sys.exit(0)
+if a and a[0] == "--get" and len(a) == 3:
+    s = c.open_sftp(); s.get(a[1], a[2]); print("downloaded", a[1]); sys.exit(0)
+cmd = "source ~/.bash_profile >/dev/null 2>&1; source ~/.bashrc >/dev/null 2>&1; " + (init + "; " if init else "") + " ".join(a)
+_, out, err = c.exec_command(cmd)
+sys.stdout.write(out.read().decode(errors="replace")); sys.stderr.write(err.read().decode(errors="replace"))
+sys.exit(out.channel.recv_exit_status())
+"""
+
+    def _ai_session_exists(workdir, name):
+        """Is there a Claude Code session called <name> for this working folder?"""
+        import re as _r, json as _js
+        proj = Path.home() / ".claude" / "projects" / _r.sub(r"[^A-Za-z0-9]", "-", str(workdir))
+        if not proj.is_dir(): return False
+        for f in proj.glob("*.jsonl"):
+            try:
+                last = None
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    for ln in fh:
+                        if '"custom-title"' in ln:
+                            try: last = _js.loads(ln).get("customTitle")
+                            except Exception: pass
+                if last == name: return True
+            except Exception:
+                pass
+        return False
+
+    @app.route("/api/<kind>-app/<app_name>/ai-dev", methods=["POST"])
+    def api_ai_dev(kind, app_name):
+        """Every AIDev session runs in {DWB_HOME}\AI_Workspace and is named like the branch. The repository is not a working folder: the agent is told
+        where it is and to make its changes there, on that branch (remote apps: the code is on the VM and is reached through vm.py)."""
+        import shutil as _sh
+        if kind not in ("local", "remote"): return jsonify({"ok": False, "error": "Unknown"}), 404
+        b = request.get_json(silent=True) or {}
+        name = str(b.get("branch", "")).strip()
+        env = dict(os.environ)
+        label = _APP_DIR_NAMES.get(app_name, app_name.capitalize())
+        try:
+            workdir = Path(os.environ["DWB_HOME"]) / "AI_Workspace"
+            workdir.mkdir(parents=True, exist_ok=True)
+            if kind == "local":
+                repo = _payor_srcdir()[1] if app_name == "payor" else (_get_generic_srcdir(app_name) or _find_repo_dir(app_name))
+                if not repo or not Path(repo).is_dir(): return jsonify({"ok": False, "error": "Repository not found: %s" % (repo or "(not configured)")})
+                if not name:
+                    ok, o = _inv_git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], 15)
+                    name = o if ok else ""
+                context = ("This session is for the %s application, branch %s. The current folder is only the session workspace: do not create or change files here. "
+                           "Make every change in the repository %s, on branch %s: before editing run git -C %s branch --show-current, and if it is not %s tell the user instead of editing. "
+                           "Use git -C %s for git commands and absolute paths under %s for files." % (label, name, repo, name, repo, name, repo, repo))
+            else:
+                vm_ip = str(b.get("vm_ip") or _REMOTE_DEV_DEFAULT_VM).strip()
+                if not name: return jsonify({"ok": False, "error": "The remote branch is not known yet - wait for the branch to load"})
+                vm_user, vm_pass, vm_key = _lookup_vm_credentials(vm_ip)
+                init = _read_vm_cmd_deps(app_name).get("terminal_init", "tosrc")
+                helper_dir = workdir / label / vm_ip.replace(":", "_")
+                helper_dir.mkdir(parents=True, exist_ok=True)
+                (helper_dir / "vm.py").write_text(_VM_HELPER, encoding="utf-8")
+                env.update({"AIDEV_VM_IP": vm_ip, "AIDEV_VM_USER": vm_user or "", "AIDEV_VM_PASS": vm_pass or "", "AIDEV_VM_KEY": vm_key or "", "AIDEV_VM_INIT": init})
+                context = ("This session is for the %s application, branch %s. The current folder is only the session workspace: do not create or change files here. "
+                           "The code is on the VM %s, not on this PC: make every change there, on branch %s (check with git branch --show-current first, and if it differs tell the user instead of editing). "
+                           "Run commands on the VM with: python %s <command> (they start in the source folder). Copy files with python %s --put <local> <remote> or --get <remote> <local>. "
+                           "The connection details are in the environment variables AIDEV_VM_*: never print them." % (label, name, vm_ip, name, helper_dir / "vm.py", helper_dir / "vm.py"))
+            if not name: return jsonify({"ok": False, "error": "The current branch is not known"})
+            mode = "resume" if _ai_session_exists(workdir, name) else "new"
+            lai = _sh.which("lai") or str(Path.home() / ".local" / "bin" / "lai.cmd")
+            q = lambda s: "'" + str(s).replace("'", "''") + "'"
+            cmd = "& %s --workspace %s %s %s" % (q(lai), q(workdir), "--resume" if mode == "resume" else "--name", q(name))
+            cmd += " --context " + q(context)                # also on resume, so the repository and branch are always current
+            subprocess.Popen(["cmd.exe", "/c", "start", "powershell.exe", "-NoExit", "-Command", cmd], env=env, creationflags=0x08000000)
+            return jsonify({"ok": True, "mode": mode, "session": name, "workspace": str(workdir)})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
     # ── Danger zone: delete an application's environment (configuration + scripts, projects data, git clones) ──
     def _env_items(kind, app_name):
         """What 'Delete <App> Environment' would remove. Every path is computed here, never taken from the client."""

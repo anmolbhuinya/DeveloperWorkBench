@@ -3,7 +3,7 @@ import { createContext, useContext, useState } from 'react'
 // ── what the page may show, per kind of application page ─────────────────────
 const P = (key, label) => ({ key, label })
 const CODE_PANELS = [P('current_branch', 'Environment'), P('set_branch', 'Set Branch'), P('branch_management', 'Branch Management'), P('build_deploy', 'Build & Deploy'),
-  P('modules', 'Modules'), P('ide', 'Open in IDE'), P('terminal', 'Open in Terminal')]
+  P('modules', 'Modules'), P('ide', 'Open in IDE'), P('aidev', 'AIDev'), P('terminal', 'Open in Terminal')]
 
 export const CATALOG = {
   local: {

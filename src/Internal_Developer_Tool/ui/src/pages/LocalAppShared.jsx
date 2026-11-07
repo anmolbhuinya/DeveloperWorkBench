@@ -359,6 +359,29 @@ export const DEFAULT_BUILD_FLAGS = [
   { key: '-p',    label: 'Parallel Build', enabled: true, order: 8, default: false, value: '1C' },
 ]
 
+// AIDev: starts `lai` in the repository and resumes the session named like the branch (a new session is named after it)
+export function AiDevCard({ kind = 'local', appName, branch, vmIp, style }) {
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState(null)
+  function run() {
+    setBusy(true); setRes(null)
+    fetch(`/api/${kind}-app/${appName}/ai-dev`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: branch || '', vm_ip: vmIp || '' }) })
+      .then(r => r.json()).then(setRes).catch(() => setRes({ ok: false, error: 'Could not reach server' })).finally(() => setBusy(false))
+  }
+  return (
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '8px 10px', textAlign: 'center', ...style }}>
+      <div style={{ fontSize: 18, lineHeight: 1 }}>🤖</div>
+      <button className="btn btn-sm" onClick={run} disabled={busy || !branch} style={{ width: '100%', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}
+        title={branch ? `Runs lai: resumes the session "${branch}" or starts one with that name` : 'Waiting for the branch'}>
+        {busy ? <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> : 'AIDev'}
+      </button>
+      {res && <div style={{ fontSize: 11, color: res.ok ? '#2e7d32' : '#c62828', wordBreak: 'break-word' }}>
+        {res.ok ? (res.mode === 'resume' ? `Resumed session "${res.session}"` : `Started a new session named "${res.session}"`) : res.error}
+      </div>}
+    </div>
+  )
+}
+
 export function ActionCard({ appName, title, icon, desc, srcdir, action, btnLabel, style, compact }) {
   const [busy, setBusy] = useState(false)
   const [err,  setErr]  = useState(null)
@@ -5280,23 +5303,22 @@ export function CodeTab({ appName, displayName, icon, onDeployed, onBranchChange
               : <div />
             }
 
-            {/* Row 2 Col 2 — IDE · Terminal · GP Run */}
-            <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
-              {(panelOn('ide') || panelOn('terminal')) && (
-                <div style={{ flex: '0 0 110px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {panelOn('ide') && (
-                    <ActionCard appName={appName} title={`Open ${displayName} in IDE`} icon="🧠"
-                      action="open-ide" btnLabel="Open in IntelliJ"
-                      style={{ flex: 1, marginBottom: 0 }} compact />
-                  )}
-                  {panelOn('terminal') && (
-                    <ActionCard appName={appName} title={`Open ${displayName} in Terminal`} icon="💻"
-                      action="open-terminal" btnLabel="Open PowerShell"
-                      style={{ flex: 1, marginBottom: 0 }} compact />
-                  )}
-                </div>
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Row 2 Col 2 — IDE | AIDev  /  Terminal | GP Run */}
+            <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gridAutoRows: 'auto', gap: 10, alignItems: 'stretch', alignSelf: 'start' }}>
+              {panelOn('ide')
+                ? <ActionCard appName={appName} title={`Open ${displayName} in IDE`} icon="🧠"
+                    action="open-ide" btnLabel="Open in IntelliJ"
+                    style={{ marginBottom: 0 }} compact />
+                : <div />}
+              {panelOn('aidev')
+                ? <AiDevCard kind="local" appName={appName} branch={localBranch || branch?.branch} style={{ marginBottom: 0 }} />
+                : <div />}
+              {panelOn('terminal')
+                ? <ActionCard appName={appName} title={`Open ${displayName} in Terminal`} icon="💻"
+                    action="open-terminal" btnLabel="Open PowerShell"
+                    style={{ marginBottom: 0 }} compact />
+                : <div />}
+              <div style={{ minWidth: 0 }}>
                 <GpRunPanel appName={appName} branch={localBranch || branch?.branch} releaseBranch={branch?.branch} />
               </div>
             </div>

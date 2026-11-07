@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import SqlQueryPanel from '../components/SqlQueryPanel'
 import ConfirmDialog from '../components/ConfirmDialog'
-import { ConfigureModal, KarafRightPanel, GpRunPanel, ColoredTerminal } from './LocalAppShared'
+import { ConfigureModal, KarafRightPanel, GpRunPanel, ColoredTerminal, AiDevCard } from './LocalAppShared'
 export { KarafRightPanel }
 
 // Shared localStorage TTL cache (same keys as GenericRemoteAppPage / RemoteAppDevPage)
@@ -2038,26 +2038,25 @@ export function RemoteCodeTab({ vmIp, appName, appLabel, appIcon, screenCfg, def
               : <div />
             }
 
-            {/* Row 2 Col 2 — IDE · Terminal · GP Run */}
-            <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
-              {(panelOn('ide') || panelOn('terminal')) && (
-                <div style={{ flex: '0 0 110px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {panelOn('ide') && (
-                    <div className="card" style={{ flex: 1, marginBottom: 0, padding: '8px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, textAlign: 'center' }}>
-                        <div style={{ fontSize: 18, lineHeight: 1 }}>🧠</div>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Remote IDE</div>
-                      </div>
+            {/* Row 2 Col 2 — IDE | AIDev  /  Terminal | GP Run */}
+            <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gridAutoRows: 'auto', gap: 10, alignItems: 'stretch', alignSelf: 'start' }}>
+              {panelOn('ide')
+                ? <div className="card" style={{ marginBottom: 0, padding: '8px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, textAlign: 'center' }}>
+                      <div style={{ fontSize: 18, lineHeight: 1 }}>🧠</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Remote IDE</div>
                     </div>
-                  )}
-                  {panelOn('terminal') && (
-                    <div className="card" style={{ flex: 1, marginBottom: 0, padding: '8px 10px' }}>
-                      <RemoteTerminalCard vmIp={vmIp} appName={appName} appLabel={appLabel} />
-                    </div>
-                  )}
-                </div>
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
+                  </div>
+                : <div />}
+              {panelOn('aidev')
+                ? <AiDevCard kind="remote" appName={appName} vmIp={vmIp} branch={localBranch || branch?.branch} style={{ marginBottom: 0 }} />
+                : <div />}
+              {panelOn('terminal')
+                ? <div className="card" style={{ marginBottom: 0, padding: '8px 10px' }}>
+                    <RemoteTerminalCard vmIp={vmIp} appName={appName} appLabel={appLabel} />
+                  </div>
+                : <div />}
+              <div style={{ minWidth: 0 }}>
                 <GpRunPanel appName={appName} branch={localBranch || branch?.branch} releaseBranch={(branch?.branch === 'master' || branch?.branch === 'main') ? branch.branch : (branch?.release_ver || branch?.branch)} />
               </div>
             </div>
