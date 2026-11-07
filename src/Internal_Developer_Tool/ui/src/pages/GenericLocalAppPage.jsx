@@ -215,7 +215,8 @@ export default function GenericLocalAppPage({
   const _withIt    = _baseTabs.some(t => t.key === 'it') ? _baseTabs : [..._baseTabs, { key: 'it', label: '🧪 IT', enabled: true, order: _codeOrder + 0.5 }]
   const _itOrder   = _withIt.find(t => t.key === 'it')?.order ?? _codeOrder + 0.5
   const _amOrder = _withIt.find(t => t.key === 'appmap')?.order ?? _itOrder + 0.1
-  const visibleTabs = [..._withIt.filter(t => t.key !== 'appmap' && t.key !== 'p6spy' && t.key !== 'observability'), { key: 'observability', label: '\uD83D\uDD2D Observability', enabled: true, order: _amOrder }, { key: 'investigation', label: '\uD83D\uDD0E Investigation', enabled: true, order: _amOrder + 0.05 }]
+  const _pin = { user_interface: 0.01, api: 0.02, database: 0.03 }
+  const visibleTabs = [..._withIt.filter(t => t.key !== 'appmap' && t.key !== 'p6spy' && t.key !== 'observability').map(t => t.key in _pin ? { ...t, order: _itOrder + _pin[t.key] } : t), { key: 'observability', label: '\uD83D\uDD2D Observability', enabled: true, order: _itOrder + 0.1 }, { key: 'investigation', label: '\uD83D\uDD0E Investigation', enabled: true, order: _itOrder + 0.15 }]
     .filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)
   const resolvedTab = visibleTabs.find(t => t.key === activeTab)?.key ?? visibleTabs[0]?.key ?? 'code'
   return (
