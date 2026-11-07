@@ -7,6 +7,7 @@ import AppMapTab from './AppMapTab'
 import P6SpyTab from './P6SpyTab'
 import InvestigationTab from './InvestigationTab'
 import EventsTab from './EventsTab'
+import { CacheTab, LdapTab, VaultTab } from './ServiceTabs'
 import { LogsTab, MetricsTab, ApplicationTraceTab } from './ObservabilityTabs'
 
 let _obsSub = 'metrics'
@@ -237,8 +238,12 @@ export default function GenericLocalAppPage({
   const _withIt    = _baseTabs.some(t => t.key === 'it') ? _baseTabs : [..._baseTabs, { key: 'it', label: '🧪 IT', enabled: true, order: _codeOrder + 0.5 }]
   const _itOrder   = _withIt.find(t => t.key === 'it')?.order ?? _codeOrder + 0.5
   const _amOrder = _withIt.find(t => t.key === 'appmap')?.order ?? _itOrder + 0.1
-  const _pin = { user_interface: 0.01, api: 0.02, database: 0.03 }
-  const visibleTabs = [..._withIt.filter(t => t.key !== 'appmap' && t.key !== 'p6spy' && t.key !== 'observability').map(t => t.key in _pin ? { ...t, order: _itOrder + _pin[t.key] } : t), { key: 'observability', label: '\uD83D\uDD2D Observability', enabled: true, order: _itOrder + 0.1 }, { key: 'investigation', label: '\uD83D\uDD0E Investigation', enabled: true, order: _itOrder + 0.15 }]
+  const _pin = { user_interface: 0.01, api: 0.02 }
+  const _asOrder = _withIt.find(t => t.key === 'app_server')?.order ?? 2
+  const _pin2 = { database: 0.01, queue: 0.02 }
+  const _extra = [{ key: 'cache', label: '\u26A1 Cache', order: 0.03 }, { key: 'ldap', label: '\uD83D\uDCD2 LDAP', order: 0.04 }, { key: 'vault', label: '\uD83D\uDD10 Secrets / Vault', order: 0.05 }]
+    .filter(x => !_withIt.some(t => t.key === x.key)).map(x => ({ key: x.key, label: x.label, enabled: true, order: _asOrder + x.order }))
+  const visibleTabs = [..._withIt.filter(t => t.key !== 'appmap' && t.key !== 'p6spy' && t.key !== 'observability').map(t => t.key in _pin ? { ...t, order: _itOrder + _pin[t.key] } : t.key in _pin2 ? { ...t, order: _asOrder + _pin2[t.key] } : t), ..._extra, { key: 'observability', label: '\uD83D\uDD2D Observability', enabled: true, order: _itOrder + 0.1 }, { key: 'investigation', label: '\uD83D\uDD0E Investigation', enabled: true, order: _itOrder + 0.15 }]
     .filter(t => t.enabled !== false && t.key !== 'app_config').sort((a, b) => a.order - b.order)
   const resolvedTab = visibleTabs.find(t => t.key === activeTab)?.key ?? visibleTabs[0]?.key ?? 'code'
   return (
@@ -288,6 +293,9 @@ export default function GenericLocalAppPage({
       {/* ── AppMap tab ── */}
       {resolvedTab === 'observability' && <ObservabilityTab appName={appName} displayName={displayName} />}
       {resolvedTab === 'investigation' && <InvestigationTab appName={appName} />}
+      {resolvedTab === 'cache' && <CacheTab appName={appName} />}
+      {resolvedTab === 'ldap' && <LdapTab appName={appName} />}
+      {resolvedTab === 'vault' && <VaultTab appName={appName} />}
 
       {/* ── GP Run tab ── */}
       {resolvedTab === 'gp_run' && (
@@ -308,7 +316,7 @@ export default function GenericLocalAppPage({
       )}
 
       {/* ── Other tabs: placeholder ── */}
-      {!['code', 'app_server', 'database', 'queue', 'api', 'user_interface', 'app_config', 'scm', 'gp_run', 'it', 'observability', 'investigation'].includes(resolvedTab) && (
+      {!['code', 'app_server', 'database', 'queue', 'api', 'user_interface', 'app_config', 'scm', 'gp_run', 'it', 'observability', 'investigation', 'cache', 'ldap', 'vault'].includes(resolvedTab) && (
         <div className="card" style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-muted)' }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>🚧</div>
           <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 6 }}>

@@ -19494,6 +19494,344 @@ done
         except Exception: pass
         return jsonify({"ok": True})
 
+    # ── Cache / LDAP / Secrets-Vault: connections kept in <kind>_config.xlsx, test + browse ──
+    _SVC = {"cache": ("Cache", "cache_config.xlsx"), "ldap": ("Ldap", "ldap_config.xlsx"), "vault": ("Vault", "vault_config.xlsx")}
+    _SVC_COLS = ["Name", "Enabled", "Provider", "Host", "Port", "Username", "Secret", "Scope", "Options"]
+    _SVC_DEFAULTS = {
+        "cache": [("he-blob", True, "he-blob", "localhost", "1521", "PAYOR_OLTP", "", "", ""), ("redis-local", False, "redis", "localhost", "6379", "", "", "0", "")],
+        "ldap": [("ldap-local", True, "ldap", "localhost", "389", "cn=admin,dc=example,dc=org", "", "dc=example,dc=org", "")],
+        "vault": [("vault-local", True, "hashicorp", "localhost", "8200", "", "", "secret", "kv=2")],
+    }
+    _SVC_PROVIDERS = {"cache": ["he-blob", "redis", "memcached", "hazelcast", "ehcache", "other"], "ldap": ["ldap", "openldap", "activedirectory"],
+                      "vault": ["hashicorp"]}
+    _SVC_SCOPE = {"cache": "Database number", "ldap": "Base DN", "vault": "KV mount"}
+
+    def _svc_xlsx(app_name, kind):
+        d = WORKFLOWS_ROOT / "Setup" / "Dev_Softwares" / _SVC[kind][0] / app_name.title()
+        d.mkdir(parents=True, exist_ok=True)
+        return d / _SVC[kind][1]
+
+    def _svc_save(app_name, kind, rows):
+        import openpyxl as _xl
+        wb = _xl.Workbook()
+        ws = wb.active
+        ws.title = kind
+        ws.append(_SVC_COLS)
+        for r in rows:
+            ws.append([r["name"], "TRUE" if r["enabled"] else "FALSE", r["provider"], r["host"], r["port"], r["username"], r["secret"], r["scope"], r["options"]])
+        for col, w in zip("ABCDEFGHI", (20, 9, 14, 24, 8, 28, 24, 24, 28)): ws.column_dimensions[col].width = w
+        wb.save(str(_svc_xlsx(app_name, kind)))
+
+    def _svc_load(app_name, kind):
+        f = _svc_xlsx(app_name, kind)
+        if not f.exists():
+            _svc_save(app_name, kind, [dict(zip(("name", "enabled", "provider", "host", "port", "username", "secret", "scope", "options"), d)) for d in _SVC_DEFAULTS[kind]])
+        import openpyxl as _xl
+        wb = _xl.load_workbook(str(f), read_only=True, data_only=True)
+        rows = []
+        for i, r in enumerate(wb.active.iter_rows(values_only=True)):
+            if i == 0 or not r or not r[0]: continue
+            r = [("" if v is None else str(v).strip()) for v in list(r) + [None] * 9]
+            rows.append({"name": r[0], "enabled": r[1].lower() in ("true", "1", "yes", "y"), "provider": r[2], "host": r[3], "port": r[4].replace(".0", ""),
+                         "username": r[5], "secret": r[6], "scope": r[7].replace(".0", "") if kind == "cache" else r[7], "options": r[8]})
+        wb.close()
+        if kind == "cache" and not any(r["provider"].lower() == "he-blob" for r in rows) and not request.args.get("nohe"):
+            d = _SVC_DEFAULTS["cache"][0]
+            rows.insert(0, dict(zip(("name", "enabled", "provider", "host", "port", "username", "secret", "scope", "options"), d)))
+        return rows
+
+    @app.route("/api/local-app/<app_name>/svc/<kind>/config", methods=["GET", "POST"])
+    def api_svc_config(app_name, kind):
+        import re as _r
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS or kind not in _SVC: return jsonify({"ok": False, "error": "Unknown"}), 404
+        old = {x["name"]: x for x in _svc_load(app_name, kind)}
+        if request.method == "POST":
+            rows, seen = [], set()
+            for x in ((request.get_json(silent=True) or {}).get("connections") or []):
+                nm = str(x.get("name", "")).strip()
+                if not nm: return jsonify({"ok": False, "error": "Every connection needs a name"})
+                if nm in seen: return jsonify({"ok": False, "error": "Duplicate name: " + nm})
+                seen.add(nm)
+                port = str(x.get("port", "")).strip()
+                if port and not port.isdigit(): return jsonify({"ok": False, "error": "Port must be a number (%s)" % nm})
+                sec = str(x.get("secret", ""))
+                if sec == "********": sec = old.get(nm, {}).get("secret", "")
+                rows.append({"name": nm, "enabled": bool(x.get("enabled")), "provider": str(x.get("provider", "")).strip(), "host": str(x.get("host", "")).strip(),
+                             "port": port, "username": str(x.get("username", "")).strip(), "secret": sec, "scope": str(x.get("scope", "")).strip(), "options": str(x.get("options", "")).strip()})
+            _svc_save(app_name, kind, rows)
+            return jsonify({"ok": True})
+        rows = [{**r, "secret": "********" if r["secret"] else ""} for r in old.values()]
+        return jsonify({"ok": True, "connections": rows, "providers": _SVC_PROVIDERS[kind], "scope_label": _SVC_SCOPE[kind], "file": str(_svc_xlsx(app_name, kind))})
+
+    # --- Redis / memcached (plain sockets) ---
+    def _svc_sock(c, timeout=6):
+        import socket as _s, ssl as _ssl
+        sk = _s.create_connection((c["host"] or "localhost", int(c["port"] or 0)), timeout=timeout)
+        if "ssl=true" in c["options"].lower().replace(" ", ""):
+            ctx = _ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = _ssl.CERT_NONE
+            sk = ctx.wrap_socket(sk, server_hostname=c["host"])
+        return sk
+
+    def _resp_cmd(sk, *args):
+        out = b"*%d\r\n" % len(args)
+        for a in args:
+            a = a if isinstance(a, bytes) else str(a).encode()
+            out += b"$%d\r\n%s\r\n" % (len(a), a)
+        sk.sendall(out)
+        return _resp_read(sk.makefile("rb"))
+
+    def _resp_read(f):
+        ln = f.readline()
+        if not ln: raise IOError("connection closed")
+        t, rest = ln[:1], ln[1:].rstrip(b"\r\n")
+        if t == b"+": return rest.decode("utf-8", "replace")
+        if t == b"-": raise IOError(rest.decode("utf-8", "replace"))
+        if t == b":": return int(rest)
+        if t == b"$":
+            n = int(rest)
+            if n < 0: return None
+            d = f.read(n + 2)[:-2]
+            return d.decode("utf-8", "replace")
+        if t == b"*":
+            n = int(rest)
+            return None if n < 0 else [_resp_read(f) for _ in range(n)]
+        return rest.decode("utf-8", "replace")
+
+    def _redis_open(c):
+        sk = _svc_sock(c)
+        if c["secret"]:
+            _resp_cmd(sk, "AUTH", *([c["username"]] if c["username"] else []), c["secret"])
+        if c["scope"].isdigit() and c["scope"] != "0": _resp_cmd(sk, "SELECT", c["scope"])
+        return sk
+
+    # --- LDAP (minimal BER client: bind + search) ---
+    def _ber_len(n):
+        return bytes([n]) if n < 128 else (bytes([0x81, n]) if n < 256 else (bytes([0x82, n >> 8, n & 255]) if n < 65536 else bytes([0x83, n >> 16, (n >> 8) & 255, n & 255])))
+
+    def _tlv(tag, body): return bytes([tag]) + _ber_len(len(body)) + body
+    def _b_int(n): return _tlv(0x02, n.to_bytes(max(1, (n.bit_length() + 8) // 8), "big", signed=True))
+    def _b_str(s, tag=0x04): return _tlv(tag, s if isinstance(s, bytes) else str(s).encode("utf-8"))
+
+    def _ldap_filter(f):
+        import re as _r
+        f = (f or "(objectClass=*)").strip()
+        if not f.startswith("("): f = "(" + f + ")"
+        m = _r.fullmatch(r"\(\s*([A-Za-z0-9.;-]+)\s*=\s*(.*?)\s*\)", f)
+        if not m: raise ValueError("Filter must look like (attribute=value), * wildcards allowed")
+        a, v = m.group(1), m.group(2)
+        if v == "*": return _b_str(a, 0x87)
+        if "*" not in v: return _tlv(0xa3, _b_str(a) + _b_str(v))
+        parts, subs = v.split("*"), b""
+        if parts[0]: subs += _b_str(parts[0], 0x80)
+        for x in parts[1:-1]:
+            if x: subs += _b_str(x, 0x81)
+        if parts[-1]: subs += _b_str(parts[-1], 0x82)
+        return _tlv(0xa4, _b_str(a) + _tlv(0x30, subs))
+
+    def _ber_read(f):
+        t = f.read(1)
+        if not t: raise IOError("connection closed")
+        n = f.read(1)[0]
+        if n & 0x80: n = int.from_bytes(f.read(n & 0x7f), "big")
+        return t[0], f.read(n)
+
+    def _ber_items(b):
+        i, out = 0, []
+        while i < len(b):
+            t = b[i]; n = b[i + 1]; i += 2
+            if n & 0x80:
+                k = n & 0x7f; n = int.from_bytes(b[i:i + k], "big"); i += k
+            out.append((t, b[i:i + n])); i += n
+        return out
+
+    def _ldap_open(c):
+        sk = _svc_sock(c)
+        f = sk.makefile("rb")
+        bind = _tlv(0x60, _b_int(3) + _b_str(c["username"]) + _b_str(c["secret"], 0x80))
+        sk.sendall(_tlv(0x30, _b_int(1) + bind))
+        while True:
+            _, body = _ber_read(f)
+            for t, v in _ber_items(body):
+                if t == 0x61:
+                    rc = _ber_items(v)[0][1]
+                    code = int.from_bytes(rc, "big")
+                    if code != 0:
+                        msg = _ber_items(v)[2][1].decode("utf-8", "replace") if len(_ber_items(v)) > 2 else ""
+                        raise IOError("LDAP bind failed (result code %d) %s" % (code, msg))
+                    return sk, f
+
+    def _ldap_search(sk, f, base, filt, scope, limit):
+        req = _tlv(0x63, _b_str(base) + _tlv(0x0a, bytes([scope])) + _tlv(0x0a, b"\x00") + _b_int(limit) + _b_int(10) + _tlv(0x01, b"\x00") + _ldap_filter(filt) + _tlv(0x30, b""))
+        sk.sendall(_tlv(0x30, _b_int(2) + req))
+        out = []
+        while True:
+            _, body = _ber_read(f)
+            for t, v in _ber_items(body):
+                if t == 0x64:
+                    it = _ber_items(v)
+                    dn = it[0][1].decode("utf-8", "replace")
+                    attrs = {}
+                    for _, a in _ber_items(it[1][1]):
+                        ai = _ber_items(a)
+                        attrs[ai[0][1].decode("utf-8", "replace")] = [x.decode("utf-8", "replace") if all(32 <= b < 127 or b > 127 for b in x) else "<binary %d bytes>" % len(x) for _, x in _ber_items(ai[1][1])]
+                    out.append({"dn": dn, "attrs": attrs})
+                elif t == 0x65:
+                    code = int.from_bytes(_ber_items(v)[0][1], "big")
+                    return out, code
+
+    def _blob_cell(v):
+        """JSON-safe preview of a cell; BLOB/RAW content is shown as text when it is text, else as hex."""
+        if v is None or isinstance(v, (int, float, bool)): return v
+        if hasattr(v, "read") and not isinstance(v, (bytes, bytearray)):
+            try: v = v.read()
+            except Exception as e: return "<LOB unreadable: %s>" % e
+        if isinstance(v, (bytes, bytearray, memoryview)):
+            bt = bytes(v)
+            try:
+                tx = bt[:20000].decode("utf-8")
+                if tx and sum(ch.isprintable() or ch in "\r\n\t" for ch in tx) / len(tx) > 0.95:
+                    return tx[:4000] + ("... (%d bytes)" % len(bt) if len(bt) > 4000 else "")
+            except Exception:
+                pass
+            return "<BLOB %d bytes> 0x%s%s" % (len(bt), bt[:48].hex().upper(), "..." if len(bt) > 48 else "")
+        v = str(v)
+        return v if len(v) <= 4000 else v[:4000] + "... (%d chars)" % len(v)
+
+    def _heblob_action(c, act, b, t0):
+        """he-blob cache: the BLOB_* tables of the Payor OLTP schema."""
+        import re as _r, time as _t
+        ov = {}
+        if c["host"]: ov["host"] = c["host"]
+        if c["port"].isdigit(): ov["port"] = int(c["port"])
+        if c["username"]: ov["user"] = c["username"]
+        if c["secret"]: ov["password"] = c["secret"]
+        if c["scope"]: ov["service"] = c["scope"]
+        con = _get_db_connection(ov)
+        try:
+            cur = con.cursor()
+            owner = (ov.get("user") or _payor_db_config.get("user") or "PAYOR_OLTP").upper()
+            if act == "test":
+                cur.execute("SELECT COUNT(*) FROM all_tables WHERE owner = :o AND table_name LIKE 'BLOB\\_%' ESCAPE '\\'", {"o": owner})
+                return jsonify({"ok": True, "message": "Connected as %s - %d BLOB_ tables (%d ms)" % (owner, cur.fetchone()[0], (_t.time() - t0) * 1000)})
+            if act == "info":
+                cur.execute("SELECT banner FROM v$version WHERE ROWNUM = 1")
+                return jsonify({"ok": True, "text": "Schema: %s\\nDatabase: %s" % (owner, cur.fetchone()[0])})
+            if act == "keys":
+                pat = str(b.get("pattern") or "*").strip().upper()
+                like = _r.sub(r"[^A-Z0-9_$%]", "", pat.replace("*", "%").replace("?", "_")) or "%"
+                cur.execute("SELECT table_name, num_rows FROM all_tables WHERE owner = :o AND table_name LIKE 'BLOB\\_%' ESCAPE '\\' AND table_name LIKE :p ORDER BY table_name",
+                            {"o": owner, "p": like})
+                return jsonify({"ok": True, "rows": [{"key": r[0], "type": "table", "ttl": r[1] if r[1] is not None else "-"} for r in cur.fetchall()][:1000]})
+            if act == "get":
+                tb = str(b.get("key", "")).upper()
+                if not _r.fullmatch(r"BLOB_[A-Z0-9_$]+", tb): return jsonify({"ok": False, "error": "Invalid table name"})
+                cur.execute("SELECT COUNT(*) FROM all_tables WHERE owner = :o AND table_name = :t", {"o": owner, "t": tb})
+                if not cur.fetchone()[0]: return jsonify({"ok": False, "error": "Table not found"})
+                lim = max(1, min(int(b.get("limit") or 100), 1000))
+                cur.execute('SELECT * FROM "%s"."%s" FETCH FIRST %d ROWS ONLY' % (owner, tb, lim))
+                cols = [d[0] for d in cur.description]
+                rows = [[_blob_cell(x) for x in r] for r in cur.fetchall()]
+                cur.execute('SELECT COUNT(*) FROM "%s"."%s"' % (owner, tb))
+                return jsonify({"ok": True, "type": "table", "table": {"columns": cols, "rows": rows, "total": cur.fetchone()[0]}})
+            return jsonify({"ok": False, "error": "Unsupported action"})
+        finally:
+            con.close()
+
+    @app.route("/api/local-app/<app_name>/svc/<kind>/action", methods=["POST"])
+    def api_svc_action(app_name, kind):
+        import time as _t, json as _js, re as _r
+        if app_name not in _KNOWN_GENERIC_LOCAL_APPS or kind not in _SVC: return jsonify({"ok": False, "error": "Unknown"}), 404
+        b = request.get_json(silent=True) or {}
+        c = next((x for x in _svc_load(app_name, kind) if x["name"] == b.get("name")), None)
+        if not c: return jsonify({"ok": False, "error": "Unknown connection"})
+        act = b.get("action", "test")
+        t0 = _t.time()
+        try:
+            if kind == "cache":
+                prov = c["provider"].lower()
+                if prov == "he-blob":
+                    return _heblob_action(c, act, b, t0)
+                if prov == "redis":
+                    sk = _redis_open(c)
+                    try:
+                        if act == "test":
+                            _resp_cmd(sk, "PING")
+                            ver = _r.search(r"redis_version:(\S+)", _resp_cmd(sk, "INFO", "server") or "")
+                            return jsonify({"ok": True, "message": "Connected - Redis %s, %d keys, %d ms" % (ver.group(1) if ver else "?", _resp_cmd(sk, "DBSIZE"), (_t.time() - t0) * 1000)})
+                        if act == "info":
+                            return jsonify({"ok": True, "text": (_resp_cmd(sk, "INFO") or "")[:20000]})
+                        if act == "keys":
+                            cur, keys, pat = "0", [], str(b.get("pattern") or "*")
+                            for _ in range(200):
+                                r = _resp_cmd(sk, "SCAN", cur, "MATCH", pat, "COUNT", 500)
+                                cur = str(r[0]); keys += r[1]
+                                if cur == "0" or len(keys) >= 300: break
+                            keys = keys[:300]
+                            rows = [{"key": k, "type": _resp_cmd(sk, "TYPE", k), "ttl": _resp_cmd(sk, "TTL", k)} for k in keys]
+                            return jsonify({"ok": True, "rows": rows})
+                        if act == "get":
+                            k = str(b.get("key", "")); ty = _resp_cmd(sk, "TYPE", k)
+                            v = {"string": lambda: _resp_cmd(sk, "GET", k), "hash": lambda: _resp_cmd(sk, "HGETALL", k), "list": lambda: _resp_cmd(sk, "LRANGE", k, 0, 99),
+                                 "set": lambda: _resp_cmd(sk, "SMEMBERS", k), "zset": lambda: _resp_cmd(sk, "ZRANGE", k, 0, 99, "WITHSCORES")}.get(ty, lambda: None)()
+                            return jsonify({"ok": True, "type": ty, "value": v if isinstance(v, str) else _js.dumps(v, indent=1)[:50000]})
+                    finally:
+                        sk.close()
+                elif prov == "memcached":
+                    sk = _svc_sock(c); sk.sendall(b"stats\r\n"); buf = b""
+                    while not buf.endswith(b"END\r\n"):
+                        d = sk.recv(4096)
+                        if not d: break
+                        buf += d
+                    sk.close()
+                    txt = buf.decode("utf-8", "replace")
+                    if act == "info": return jsonify({"ok": True, "text": txt})
+                    if act == "test": return jsonify({"ok": True, "message": "Connected - memcached, %d ms" % ((_t.time() - t0) * 1000)})
+                    return jsonify({"ok": False, "error": "memcached cannot list keys"})
+                else:
+                    sk = _svc_sock(c); sk.close()
+                    if act == "test": return jsonify({"ok": True, "message": "TCP port is open (%d ms). Only a connection check is available for provider '%s'." % ((_t.time() - t0) * 1000, prov)})
+                    return jsonify({"ok": False, "error": "Browsing is not available for provider '%s'" % prov})
+            if kind == "ldap":
+                sk, f = _ldap_open(c)
+                try:
+                    if act == "test":
+                        ents, code = _ldap_search(sk, f, c["scope"], "(objectClass=*)", 0, 1)
+                        return jsonify({"ok": True, "message": "Bind OK as %s, base %s %s (%d ms)" % (c["username"] or "anonymous", c["scope"], "readable" if code == 0 else "result code %d" % code, (_t.time() - t0) * 1000)})
+                    base = str(b.get("base") or c["scope"])
+                    ents, code = _ldap_search(sk, f, base, str(b.get("filter") or "(objectClass=*)"), {"base": 0, "one": 1, "sub": 2}.get(b.get("scope"), 2), 200)
+                    return jsonify({"ok": True, "entries": ents[:200], "code": code})
+                finally:
+                    sk.close()
+            if kind == "vault":
+                import requests as _rq
+                opt = dict(x.split("=", 1) for x in c["options"].replace(" ", "").split(";") if "=" in x)
+                scheme = "https" if (opt.get("https") == "true" or c["port"] == "443") else "http"
+                url = "%s://%s:%s" % (scheme, c["host"], c["port"])
+                hd = {"X-Vault-Token": c["secret"]}
+                if opt.get("namespace"): hd["X-Vault-Namespace"] = opt["namespace"]
+                kv2 = opt.get("kv", "2") != "1"
+                mount, path = c["scope"].strip("/"), str(b.get("path", "")).strip("/")
+                if act == "test":
+                    r = _rq.get(url + "/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200", headers=hd, timeout=6, verify=False).json()
+                    ta = _rq.get(url + "/v1/auth/token/lookup-self", headers=hd, timeout=6, verify=False)
+                    return jsonify({"ok": True, "message": "Vault %s - %s, %s (%d ms)" % (r.get("version", "?"), "SEALED" if r.get("sealed") else "unsealed",
+                                    "token valid" if ta.status_code == 200 else "token rejected (HTTP %d)" % ta.status_code, (_t.time() - t0) * 1000)})
+                if act == "list":
+                    u = "%s/v1/%s/%s/%s" % (url, mount, "metadata" if kv2 else "", path) if kv2 else "%s/v1/%s/%s" % (url, mount, path)
+                    r = _rq.request("LIST", u.rstrip("/"), headers=hd, timeout=8, verify=False)
+                    if r.status_code == 404: return jsonify({"ok": True, "keys": []})
+                    if r.status_code != 200: return jsonify({"ok": False, "error": "HTTP %d: %s" % (r.status_code, r.text[:300])})
+                    return jsonify({"ok": True, "keys": r.json().get("data", {}).get("keys", [])})
+                if act == "read":
+                    u = "%s/v1/%s/%s/%s" % (url, mount, "data", path) if kv2 else "%s/v1/%s/%s" % (url, mount, path)
+                    r = _rq.get(u, headers=hd, timeout=8, verify=False)
+                    if r.status_code != 200: return jsonify({"ok": False, "error": "HTTP %d: %s" % (r.status_code, r.text[:300])})
+                    d = r.json().get("data", {})
+                    return jsonify({"ok": True, "data": d.get("data", d) if kv2 else d, "meta": d.get("metadata") if kv2 else None})
+            return jsonify({"ok": False, "error": "Unsupported action"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
+
     @app.route("/api/local-app/<app_name>/appmap/settings", methods=["GET", "POST"])
     def api_appmap_settings(app_name):
         import json as _js_as
