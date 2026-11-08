@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import SqlQueryPanel from '../components/SqlQueryPanel'
 import ConfirmDialog from '../components/ConfirmDialog'
+import { useGridView, SortableTh, FilterRow, RowMenu, RelationsModal, TableRelationsModal, SchemaRelationsModal } from './ResultTools'
 import { ConfigureModal, KarafRightPanel, GpRunPanel, ColoredTerminal, AiDevCard } from './LocalAppShared'
 export { KarafRightPanel }
 
@@ -1403,6 +1404,7 @@ export function RemoteDeployedBanner({ vmIp, appName = 'payor', noMargin, server
 function RemoteTableStructureModal({ vmIp, schema, table, onClose, onInsert, appName = 'payor' }) {
   const [navStack, setNavStack] = useState([{ schema, table }])
   const current = navStack[navStack.length - 1]
+  const [relOpen, setRelOpen] = useState(false)
   const [data, setData]       = useState(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr]         = useState(null)
@@ -1449,6 +1451,7 @@ function RemoteTableStructureModal({ vmIp, schema, table, onClose, onInsert, app
               </span>
             ))}
           </div>
+          <button onClick={() => setRelOpen(true)} style={{ fontSize: 11, padding: '2px 10px', flexShrink: 0 }} className="btn btn-sm">🕸 View Relations</button>
           <button onClick={() => onInsert(`SELECT * FROM ${current.schema}.${current.table} WHERE ROWNUM <= 100`)}
             style={{ fontSize: 11, padding: '2px 10px', flexShrink: 0 }} className="btn btn-sm">SELECT 100</button>
           <button onClick={() => onInsert(`SELECT COUNT(*) FROM ${current.schema}.${current.table}`)}
@@ -1457,6 +1460,7 @@ function RemoteTableStructureModal({ vmIp, schema, table, onClose, onInsert, app
             style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
               color: 'var(--text-muted)', padding: '0 4px', lineHeight: 1, flexShrink: 0 }}>✕</button>
         </div>
+        {relOpen && <TableRelationsModal url={`/api/remote-app/${appName}/db/table-relations`} schema={current.schema} table={current.table} onClose={() => setRelOpen(false)} exportUrl={'/api/local-app/payor/db/export'} extra={`&vm_ip=${encodeURIComponent(vmIp)}`} />}
         <div style={{ overflowY: 'auto', flex: 1 }}>
           {loading && <div style={{ padding: 24, textAlign: 'center' }}><span className="spinner" /></div>}
           {err     && <div style={{ padding: 16, color: '#c62828', fontSize: 12 }}>{err}</div>}
@@ -1492,6 +1496,18 @@ function RemoteTableStructureModal({ vmIp, schema, table, onClose, onInsert, app
                   })}
                 </tbody>
               </table>
+              {data.referenced_by?.length > 0 && (
+                <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6 }}>REFERENCED BY (foreign keys in other tables)</div>
+                  {data.referenced_by.map((r, i) => (
+                    <div key={i} style={{ fontSize: 11, fontFamily: 'monospace', marginBottom: 2 }}>
+                      <span onClick={() => setNavStack(p => [...p, { schema: r.schema, table: r.table }])} style={{ color: '#1d4ed8', cursor: 'pointer', textDecoration: 'underline' }}
+                        title={`View structure of ${r.schema}.${r.table}`}>{r.schema}.{r.table}.{r.column}</span>
+                      <span style={{ color: 'var(--text-muted)' }}> → {r.ref_col}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {data.indexes?.length > 0 && (
                 <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6 }}>INDEXES</div>
@@ -1523,6 +1539,7 @@ function RemoteSchemaNode({ vmIp, schema, onInsert, appName = 'payor' }) {
   const [tableFilter, setTableFilter] = useState('')
   const [ctxMenu,     setCtxMenu]     = useState(null)
   const [structModal, setStructModal] = useState(null)
+  const [schRel, setSchRel] = useState(false)
 
   useEffect(() => {
     if (!ctxMenu) return
@@ -1567,9 +1584,11 @@ function RemoteSchemaNode({ vmIp, schema, onInsert, appName = 'payor' }) {
       }}>
         <span>{open ? '▼' : '▶'}</span>
         <span style={{ fontFamily: 'monospace' }}>{schema}</span>
+        <span onClick={e => { e.stopPropagation(); setSchRel(true) }} title="View relations of the whole schema" style={{ marginLeft: 'auto', cursor: 'pointer', fontSize: 13 }}>🕸</span>
         {loading && <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />}
       </div>
       {err && <div style={{ fontSize: 11, color: '#f44336', padding: '4px 16px' }}>{err}</div>}
+      {schRel && <SchemaRelationsModal schema={schema} onClose={() => setSchRel(false)} schemaUrl={`/api/remote-app/${appName}/db/schema-relations`} colsUrl={`/api/remote-app/${appName}/db/tables-columns`} exportUrl="/api/local-app/payor/db/export" extra={`&vm_ip=${encodeURIComponent(vmIp)}`} />}
       {open && tables && (
         <div style={{ padding: '5px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
           <input type="text" value={tableFilter} onChange={e => setTableFilter(e.target.value)}
@@ -1832,6 +1851,7 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
   const tabPrefix  = `${activeTab}:`
   const tabNewRows = newRows[activeTab] || []
   const hasEdits   = Object.keys(editedCells).some(k => k.startsWith(tabPrefix)) || tabNewRows.length > 0
+  const gv = useGridView(result)
 
   return (
     <div>
@@ -1868,6 +1888,8 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
           {eErr && <div style={{ padding: '8px 14px', fontSize: 12, color: '#f44336',
             background: 'rgba(244,67,54,0.08)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>{eErr}</div>}
 
+          <RowMenu gv={gv} result={result} exportUrl={'/api/local-app/payor/db/export'} table={commitTable[activeTab]} />
+          {gv.rel && result && <RelationsModal gv={gv} result={result} table={commitTable[activeTab]} schemaFallback={connInfo?.schema_user} relationsUrl={`/api/remote-app/${appName}/db/relations`} exportUrl={'/api/local-app/payor/db/export'} extra={{ vm_ip: vmIp }} />}
           {/* Results */}
           {result && (
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1879,6 +1901,7 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
                     ? `${result.row_count} row(s) affected`
                     : `${result.row_count} row(s)${result.row_count === 1000 ? ' (limit 1000)' : ''}`}
                 </span>
+                {(gv.filterActive || gv.sort) && <span>{gv.filterActive ? `${gv.order.length} of ${result.rows.length} shown` : 'sorted'} <button className="btn btn-sm" style={{ padding: '0 6px', fontSize: 10 }} onClick={gv.clear}>Clear</button></span>}
                 {commitMsg && <span style={{ color: '#2e7d32', fontWeight: 600 }}>{commitMsg}</span>}
                 {commitErr && <span style={{ color: '#c62828' }}>{commitErr}</span>}
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1925,16 +1948,17 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
                     <thead>
                       <tr>
                         <th style={{ width: 24, padding: 0, position: 'sticky', top: 0, background: 'var(--surface)', borderBottom: '2px solid var(--border)' }} />
-                        {result.columns.map(c => (
-                          <th key={c} style={{ padding: '5px 10px', textAlign: 'left', position: 'sticky', top: 0,
+                        {result.columns.map((c, ci) => (
+                          <SortableTh key={ci} gv={gv} ci={ci} label={c} style={{ padding: '5px 10px', textAlign: 'left', position: 'sticky', top: 0,
                             background: 'var(--surface)', borderBottom: '2px solid var(--border)',
-                            fontFamily: 'monospace', fontWeight: 700, whiteSpace: 'nowrap', color: 'var(--text)' }}>{c}</th>
+                            fontFamily: 'monospace', fontWeight: 700, whiteSpace: 'nowrap', color: 'var(--text)' }} />
                         ))}
                       </tr>
+                      <FilterRow gv={gv} columns={result.columns} />
                     </thead>
                     <tbody>
-                      {result.rows.map((row, ri) => (
-                        <tr key={ri} style={{ background: ri % 2 === 0 ? 'transparent' : 'rgba(128,128,128,0.04)' }}>
+                      {gv.order.map(ri => { const row = result.rows[ri]; return (
+                        <tr key={ri} onContextMenu={e => { e.preventDefault(); gv.setMenu({ x: Math.min(e.clientX, window.innerWidth - 190), y: Math.min(e.clientY, window.innerHeight - 130), ri }) }} style={{ background: ri % 2 === 0 ? 'transparent' : 'rgba(128,128,128,0.04)' }}>
                           <td style={{ width: 24, padding: 0, borderBottom: '1px solid var(--border)' }} />
                           {row.map((cell, ci) => {
                             const cellKey   = `${activeTab}:${ri}:${ci}`
@@ -1967,7 +1991,7 @@ export function RemoteDatabaseTab({ vmIp, appName = 'payor' }) {
                             )
                           })}
                         </tr>
-                      ))}
+                      )})}
                       {tabNewRows.map((newRow, ni) => (
                         <tr key={`new-${ni}`} style={{ background: 'rgba(76,175,80,0.08)', outline: '1px solid rgba(76,175,80,0.3)' }}>
                           <td style={{ width: 24, padding: '0 2px', borderBottom: '1px solid rgba(76,175,80,0.2)', textAlign: 'center' }}>

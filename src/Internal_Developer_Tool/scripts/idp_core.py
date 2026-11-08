@@ -18158,6 +18158,8 @@ def create_flask_app():
         _tab_cfg_migrated.add("*")
         try:
             for f in (Path(os.environ["DWB_HOME"]) / "SQL_Queries" / "Local").glob("*/*/*_Queries.xlsx"):      # <App>_<Ver>_Queries.xlsx -> <app>_oltp_<ver>_queries.xlsx
+                # Windows globbing ignores case, so "payor_oltp_27.1_queries.xlsx" also matched and was renamed again at every start: only the old exact spelling is migrated
+                if not (f.name.startswith(f.parent.parent.name + "_") and f.name.endswith("_Queries.xlsx")): continue
                 ver = f.name[len(f.parent.parent.name) + 1:-len("_Queries.xlsx")]
                 tgt = f.with_name("%s_oltp_%s_queries.xlsx" % (f.parent.parent.name.lower(), ver))
                 if not tgt.exists(): os.replace(str(f), str(tgt))
@@ -20709,6 +20711,314 @@ done
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
+    def _db_relations_walk(conn, schema, table, values, depth=2, per_fk=15, node_cap=150):
+        """Starting from one result row, follows foreign keys up (parents) and down (children) and returns the related rows as a graph."""
+        cur = conn.cursor()
+        if not schema:
+            cur.execute("SELECT USER FROM dual")
+            schema = cur.fetchone()[0]
+        schema, table = schema.upper(), table.upper()
+        fk_cache = {}
+
+        def sval(v):
+            if v is None: return None
+            if hasattr(v, "read"):
+                try: v = v.read()
+                except Exception: return "[LOB]"
+            if isinstance(v, (bytes, bytearray)): return "[%d bytes]" % len(v)
+            if isinstance(v, (int, float)): return v
+            v = str(v)
+            return v if len(v) <= 160 else v[:157] + "..."
+
+        def fks(owner, tbl):
+            k = (owner, tbl)
+            if k in fk_cache: return fk_cache[k]
+            out, inc = {}, {}
+            cur.execute("""
+                SELECT c.constraint_name, cc.column_name, rc.owner, rc.table_name, rcc.column_name
+                FROM all_constraints c
+                JOIN all_cons_columns cc  ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                JOIN all_constraints rc   ON rc.constraint_name = c.r_constraint_name AND rc.owner = c.r_owner
+                JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name AND rcc.owner = rc.owner AND rcc.position = cc.position
+                WHERE c.owner = :o AND c.table_name = :t AND c.constraint_type = 'R'
+                ORDER BY c.constraint_name, cc.position""", {"o": owner, "t": tbl})
+            for cn, col, ro, rt, rcol in cur.fetchall():
+                d = out.setdefault(cn, {"name": cn, "cols": [], "o": ro, "t": rt, "rcols": []})
+                d["cols"].append(col); d["rcols"].append(rcol)
+            cur.execute("""
+                SELECT c.constraint_name, c.owner, c.table_name, cc.column_name, rcc.column_name
+                FROM all_constraints rc
+                JOIN all_constraints c    ON c.r_constraint_name = rc.constraint_name AND c.r_owner = rc.owner AND c.constraint_type = 'R'
+                JOIN all_cons_columns cc  ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name AND rcc.owner = rc.owner AND rcc.position = cc.position
+                WHERE rc.owner = :o AND rc.table_name = :t AND rc.constraint_type IN ('P', 'U')
+                ORDER BY c.constraint_name, cc.position""", {"o": owner, "t": tbl})
+            for cn, co, ct, col, rcol in cur.fetchall():
+                d = inc.setdefault(cn, {"name": cn, "o": co, "t": ct, "cols": [], "rcols": []})
+                d["cols"].append(col); d["rcols"].append(rcol)
+            fk_cache[k] = (list(out.values()), list(inc.values()))
+            return fk_cache[k]
+
+        def fetch(owner, tbl, conds, limit):
+            """conds: [(col, value)]; returns [(rowid, {col: value})]"""
+            where = " AND ".join('t."%s" = :v%d' % (c, i) for i, (c, _) in enumerate(conds))
+            binds = {"v%d" % i: v for i, (_, v) in enumerate(conds)}
+            cur.execute('SELECT * FROM (SELECT t.ROWID AS "__RID", t.* FROM "%s"."%s" t WHERE %s) WHERE ROWNUM <= %d' % (owner, tbl, where, limit + 1), binds)
+            names = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            return [(str(r[0]), {names[i]: sval(r[i]) for i in range(1, len(names))}) for r in rows[:limit]], len(rows) > limit
+
+        # the clicked row: identify it by its primary key when the result has it, else by all its simple values
+        cur.execute("""SELECT cc.column_name FROM all_constraints c JOIN all_cons_columns cc ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                       WHERE c.owner = :o AND c.table_name = :t AND c.constraint_type = 'P' ORDER BY cc.position""", {"o": schema, "t": table})
+        pk = [r[0] for r in cur.fetchall()]
+        vals = {str(k).upper(): v for k, v in (values or {}).items()}
+        if pk and all(vals.get(c) not in (None, "") for c in pk): conds = [(c, vals[c]) for c in pk]
+        else:
+            cur.execute("SELECT column_name, data_type FROM all_tab_columns WHERE owner = :o AND table_name = :t", {"o": schema, "t": table})
+            ok = {c for c, dt in cur.fetchall() if dt in ("NUMBER", "VARCHAR2", "CHAR", "NVARCHAR2", "FLOAT", "INTEGER")}
+            conds = [(c, v) for c, v in vals.items() if c in ok and v not in (None, "") and len(str(v)) <= 200]
+        if not conds: raise ValueError("The row has no values that can identify it in %s.%s" % (schema, table))
+        root, _ = fetch(schema, table, conds, 1)
+        if not root: raise ValueError("The row was not found in %s.%s (the Table field must name the table the row came from)" % (schema, table))
+
+        nodes, edges, seen, truncated = {}, [], set(), False
+        def add(owner, tbl, rid, row, level):
+            nid = "%s.%s/%s" % (owner, tbl, rid)
+            if nid not in nodes:
+                nodes[nid] = {"id": nid, "schema": owner, "table": tbl, "level": level, "row": row}
+            return nid
+        rid0, row0 = root[0]
+        rootid = add(schema, table, rid0, row0, 0)
+        frontier = [(rootid, schema, table, row0, 0)]
+        for _ in range(max(1, min(depth, 4))):
+            nxt = []
+            for nid, o, t, row, lvl in frontier:
+                if len(nodes) >= node_cap: truncated = True; break
+                out, inc = fks(o, t)
+                for fk in out:                                         # parents
+                    cv = [(rc, row.get(c)) for c, rc in zip(fk["cols"], fk["rcols"])]
+                    if any(v is None for _, v in cv): continue
+                    found, more = fetch(fk["o"], fk["t"], cv, per_fk)
+                    for rid, prow in found:
+                        pid = add(fk["o"], fk["t"], rid, prow, lvl - 1)
+                        key = (nid, pid, fk["name"])
+                        if key not in seen:
+                            seen.add(key); edges.append({"from": nid, "to": pid, "label": ", ".join(fk["cols"]) + " → " + ", ".join(fk["rcols"]), "kind": "parent"})
+                            nxt.append((pid, fk["o"], fk["t"], prow, lvl - 1))
+                for fk in inc:                                         # children
+                    cv = [(c, row.get(rc)) for c, rc in zip(fk["cols"], fk["rcols"])]
+                    if any(v is None for _, v in cv): continue
+                    found, more = fetch(fk["o"], fk["t"], cv, per_fk)
+                    truncated = truncated or more
+                    for rid, crow in found:
+                        cid = add(fk["o"], fk["t"], rid, crow, lvl + 1)
+                        key = (cid, nid, fk["name"])
+                        if key not in seen:
+                            seen.add(key); edges.append({"from": cid, "to": nid, "label": ", ".join(fk["cols"]) + " → " + ", ".join(fk["rcols"]), "kind": "child"})
+                            nxt.append((cid, fk["o"], fk["t"], crow, lvl + 1))
+            frontier = nxt
+        cur.close()
+        return {"root": rootid, "nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
+
+    @app.route("/api/local-app/payor/db/relations", methods=["POST"])
+    def api_local_payor_db_relations():
+        b = request.get_json(silent=True) or {}
+        try:
+            conn = _get_db_connection()
+            try:
+                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2))))
+            finally:
+                conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    def _db_table_relations(conn, schema, table, depth=1, node_cap=60):
+        """Tables related to one table through foreign keys (parents it points to, children that point at it) as a graph."""
+        cur = conn.cursor()
+        if not schema:
+            cur.execute("SELECT USER FROM dual"); schema = cur.fetchone()[0]
+        schema, table = schema.upper(), table.upper()
+        cache = {}
+
+        def cols(o, t):
+            if (o, t) in cache: return cache[(o, t)]
+            cur.execute("SELECT column_name, data_type FROM all_tab_columns WHERE owner = :o AND table_name = :t ORDER BY column_id", {"o": o, "t": t})
+            c = cur.fetchall()
+            cur.execute("""SELECT cc.column_name FROM all_constraints k JOIN all_cons_columns cc ON cc.constraint_name = k.constraint_name AND cc.owner = k.owner
+                           WHERE k.owner = :o AND k.table_name = :t AND k.constraint_type = 'P'""", {"o": o, "t": t})
+            pk = {r[0] for r in cur.fetchall()}
+            cur.execute("""SELECT DISTINCT cc.column_name FROM all_constraints k JOIN all_cons_columns cc ON cc.constraint_name = k.constraint_name AND cc.owner = k.owner
+                           WHERE k.owner = :o AND k.table_name = :t AND k.constraint_type = 'R'""", {"o": o, "t": t})
+            fk = {r[0] for r in cur.fetchall()}
+            c.sort(key=lambda x: (x[0] not in pk, x[0] not in fk))
+            cache[(o, t)] = {n: dt + (" PK" if n in pk else "") + (" FK" if n in fk else "") for n, dt in c}
+            return cache[(o, t)]
+
+        def links(o, t):
+            cur.execute("""SELECT c.constraint_name, rc.owner, rc.table_name, cc.column_name, rcc.column_name
+                FROM all_constraints c
+                JOIN all_cons_columns cc  ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                JOIN all_constraints rc   ON rc.constraint_name = c.r_constraint_name AND rc.owner = c.r_owner
+                JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name AND rcc.owner = rc.owner AND rcc.position = cc.position
+                WHERE c.owner = :o AND c.table_name = :t AND c.constraint_type = 'R' ORDER BY c.constraint_name, cc.position""", {"o": o, "t": t})
+            par = {}
+            for cn, ro, rt, c1, c2 in cur.fetchall():
+                d = par.setdefault(cn, [ro, rt, [], []]); d[2].append(c1); d[3].append(c2)
+            cur.execute("""SELECT c.constraint_name, c.owner, c.table_name, cc.column_name, rcc.column_name
+                FROM all_constraints rc
+                JOIN all_constraints c    ON c.r_constraint_name = rc.constraint_name AND c.r_owner = rc.owner AND c.constraint_type = 'R'
+                JOIN all_cons_columns cc  ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name AND rcc.owner = rc.owner AND rcc.position = cc.position
+                WHERE rc.owner = :o AND rc.table_name = :t AND rc.constraint_type IN ('P', 'U') ORDER BY c.constraint_name, cc.position""", {"o": o, "t": t})
+            chi = {}
+            for cn, co, ct, c1, c2 in cur.fetchall():
+                d = chi.setdefault(cn, [co, ct, [], []]); d[2].append(c1); d[3].append(c2)
+            return par, chi
+
+        nodes, edges, seen = {}, [], set()
+        def add(o, t, lvl):
+            nid = "%s.%s" % (o, t)
+            if nid not in nodes: nodes[nid] = {"id": nid, "schema": o, "table": t, "level": lvl, "row": cols(o, t)}
+            return nid
+        root = add(schema, table, 0)
+        frontier = [(schema, table, 0)]
+        for _ in range(max(1, min(depth, 3))):
+            nxt = []
+            for o, t, lvl in frontier:
+                if len(nodes) >= node_cap: break
+                par, chi = links(o, t)
+                me = "%s.%s" % (o, t)
+                for cn, (ro, rt, c1, c2) in par.items():
+                    new = "%s.%s" % (ro, rt) not in nodes
+                    pid = add(ro, rt, lvl - 1)
+                    if (me, pid, cn) not in seen:
+                        seen.add((me, pid, cn)); edges.append({"from": me, "to": pid, "label": ", ".join(c1) + " → " + ", ".join(c2), "kind": "parent"})
+                        if new: nxt.append((ro, rt, lvl - 1))
+                for cn, (co, ct, c1, c2) in chi.items():
+                    new = "%s.%s" % (co, ct) not in nodes
+                    cid = add(co, ct, lvl + 1)
+                    if (cid, me, cn) not in seen:
+                        seen.add((cid, me, cn)); edges.append({"from": cid, "to": me, "label": ", ".join(c1) + " → " + ", ".join(c2), "kind": "child"})
+                        if new: nxt.append((co, ct, lvl + 1))
+            frontier = nxt
+        cur.close()
+        return {"root": root, "nodes": list(nodes.values()), "edges": edges, "truncated": len(nodes) >= node_cap}
+
+    @app.route("/api/local-app/payor/db/table-relations", methods=["GET"])
+    def api_local_payor_db_table_relations():
+        try:
+            conn = _get_db_connection()
+            try:
+                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1))))
+            finally:
+                conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    def _db_schema_relations(conn, schema, cap=250, isolated=False, focus=""):
+        """Every foreign key between tables of one schema: the connected tables as nodes, one edge per constraint (child -> parent)."""
+        cur = conn.cursor()
+        schema = (schema or "").upper()
+        cur.execute("SELECT COUNT(*) FROM all_tables WHERE owner = :o", {"o": schema})
+        total = cur.fetchone()[0]
+        cur.execute("""SELECT c.constraint_name, c.table_name, rc.owner, rc.table_name, cc.column_name, rcc.column_name
+            FROM all_constraints c
+            JOIN all_cons_columns cc  ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+            JOIN all_constraints rc   ON rc.constraint_name = c.r_constraint_name AND rc.owner = c.r_owner
+            JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name AND rcc.owner = rc.owner AND rcc.position = cc.position
+            WHERE c.owner = :o AND c.constraint_type = 'R' ORDER BY c.constraint_name, cc.position""", {"o": schema})
+        cons = {}
+        for cn, ct, ro, rt, c1, c2 in cur.fetchall():
+            d = cons.setdefault(cn, [ct, ro, rt, [], []]); d[3].append(c1); d[4].append(c2)
+        deg = {}
+        for ct, ro, rt, _, _ in cons.values():
+            a, b = "%s.%s" % (schema, ct), "%s.%s" % (ro, rt)
+            if a == b: continue
+            deg.setdefault(a, set()).add(b); deg.setdefault(b, set()).add(a)
+        keep = set(sorted(deg, key=lambda k: -len(deg[k]))[:cap])
+        focus_id = ""
+        if focus:                                              # a table asked for by name is brought in with its neighbours even if it is not among the most connected
+            q = focus.strip().upper().replace("%", "")
+            cur.execute("SELECT table_name FROM (SELECT table_name FROM all_tables WHERE owner = :o AND table_name LIKE :q ORDER BY CASE WHEN table_name = :e THEN 0 ELSE 1 END, table_name) WHERE ROWNUM = 1",
+                        {"o": schema, "q": "%" + q + "%", "e": q})
+            r = cur.fetchone()
+            if r:
+                focus_id = "%s.%s" % (schema, r[0])
+                keep.add(focus_id); keep |= deg.get(focus_id, set())
+        edges, ids = [], set()
+        for ct, ro, rt, c1, c2 in cons.values():
+            a, b = "%s.%s" % (schema, ct), "%s.%s" % (ro, rt)
+            if a in keep and b in keep and a != b:
+                edges.append({"from": a, "to": b, "label": ", ".join(c1) + " → " + ", ".join(c2)}); ids.add(a); ids.add(b)
+        if isolated:                                           # tables that take part in no foreign key
+            cur.execute("SELECT table_name FROM all_tables WHERE owner = :o AND table_name NOT LIKE 'BIN$%' ORDER BY table_name", {"o": schema})
+            for (tn,) in cur.fetchall():
+                ids.add("%s.%s" % (schema, tn)) if "%s.%s" % (schema, tn) not in deg else None
+        if focus_id: ids.add(focus_id)
+        nodes = [{"id": i, "schema": i.split(".")[0], "table": i.split(".", 1)[1], "level": 0, "row": {}} for i in sorted(ids)]
+        cur.close()
+        return {"nodes": nodes, "edges": edges, "total": total, "connected": len(deg), "truncated": len(deg) > cap, "root": "", "focus": focus_id}
+
+    def _db_search_tables(conn, schema, q, limit=60):
+        cur = conn.cursor()
+        q = (q or "").strip().upper().replace("%", "")
+        cur.execute("SELECT table_name FROM (SELECT table_name FROM all_tables WHERE owner = :o AND table_name LIKE :q ORDER BY CASE WHEN table_name = :e THEN 0 WHEN table_name LIKE :p THEN 1 ELSE 2 END, table_name) WHERE ROWNUM <= %d" % limit,
+                    {"o": (schema or "").upper(), "q": "%" + q + "%", "e": q, "p": q + "%"})
+        names = [r[0] for r in cur.fetchall()]
+        cur.close()
+        return names
+
+    def _db_tables_columns(conn, tables):
+        """Columns (with type and PK/FK marks) for a list of {schema, table}."""
+        cur = conn.cursor()
+        out = {}
+        by_owner = {}
+        for t in tables:
+            by_owner.setdefault(str(t.get("schema", "")).upper(), []).append(str(t.get("table", "")).upper())
+        for o, names in by_owner.items():
+            ph = ",".join(":t%d" % i for i in range(len(names)))
+            b = dict({"t%d" % i: n for i, n in enumerate(names)}, o=o)
+            cur.execute("SELECT table_name, column_name, data_type FROM all_tab_columns WHERE owner = :o AND table_name IN (%s) ORDER BY table_name, column_id" % ph, b)
+            cols = {}
+            for tn, cn, dt in cur.fetchall(): cols.setdefault(tn, []).append((cn, dt))
+            cur.execute("""SELECT k.table_name, k.constraint_type, cc.column_name FROM all_constraints k JOIN all_cons_columns cc ON cc.constraint_name = k.constraint_name AND cc.owner = k.owner
+                           WHERE k.owner = :o AND k.table_name IN (%s) AND k.constraint_type IN ('P', 'R')""" % ph, b)
+            pk, fk = set(), set()
+            for tn, ty, cn in cur.fetchall(): (pk if ty == "P" else fk).add((tn, cn))
+            for tn, lst in cols.items():
+                lst.sort(key=lambda x: ((tn, x[0]) not in pk, (tn, x[0]) not in fk))
+                out["%s.%s" % (o, tn)] = {cn: dt + (" PK" if (tn, cn) in pk else "") + (" FK" if (tn, cn) in fk else "") for cn, dt in lst}
+        cur.close()
+        return out
+
+    @app.route("/api/local-app/payor/db/schema-relations", methods=["GET"])
+    def api_local_payor_db_schema_relations():
+        try:
+            conn = _get_db_connection()
+            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""))))
+            finally: conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/local-app/payor/db/search-tables", methods=["GET"])
+    def api_local_payor_db_search_tables():
+        try:
+            conn = _get_db_connection()
+            try: return jsonify({"ok": True, "tables": _db_search_tables(conn, request.args.get("schema", ""), request.args.get("q", ""))})
+            finally: conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/local-app/payor/db/tables-columns", methods=["POST"])
+    def api_local_payor_db_tables_columns():
+        try:
+            conn = _get_db_connection()
+            try: return jsonify({"ok": True, "cols": _db_tables_columns(conn, (request.get_json(silent=True) or {}).get("tables", []))})
+            finally: conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
     @app.route("/api/local-app/payor/db/export", methods=["POST"])
     def api_db_export():
         import io as _io
@@ -20886,6 +21196,17 @@ done
                 WHERE c.owner = :o AND c.table_name = :t AND c.constraint_type = 'R'
             """, {"o": schema, "t": table})
             fk_map = {r[0]: {"ref_schema": r[1], "ref_table": r[2], "ref_col": r[3]} for r in cur.fetchall()}
+            # Referenced by: columns of other tables whose foreign key points at this table
+            cur.execute("""
+                SELECT c.owner, c.table_name, cc.column_name, rcc.column_name
+                FROM all_constraints rc
+                JOIN all_constraints c    ON c.r_constraint_name = rc.constraint_name AND c.r_owner = rc.owner AND c.constraint_type = 'R'
+                JOIN all_cons_columns cc  ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name AND rcc.owner = rc.owner AND rcc.position = cc.position
+                WHERE rc.owner = :o AND rc.table_name = :t AND rc.constraint_type IN ('P', 'U')
+                ORDER BY c.owner, c.table_name, cc.column_name
+            """, {"o": schema, "t": table})
+            referenced_by = [{"schema": r[0], "table": r[1], "column": r[2], "ref_col": r[3]} for r in cur.fetchall()]
             # Indexes
             cur.execute("""
                 SELECT i.index_name, i.uniqueness, ic.column_name
@@ -20901,7 +21222,7 @@ done
                 idx_map[r[0]]["columns"].append(r[2])
             conn.close()
             return jsonify({"ok": True, "columns": columns, "pk_cols": pk_cols,
-                            "fk_map": fk_map, "indexes": list(idx_map.values())})
+                            "fk_map": fk_map, "referenced_by": referenced_by, "indexes": list(idx_map.values())})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
@@ -30105,6 +30426,17 @@ sys.exit(out.channel.recv_exit_status())
                 WHERE c.owner = :o AND c.table_name = :t AND c.constraint_type = 'R'
             """, {"o": schema, "t": table})
             fk_map = {r[0]: {"ref_schema": r[1], "ref_table": r[2], "ref_col": r[3]} for r in cur.fetchall()}
+            # Referenced by: columns of other tables whose foreign key points at this table
+            cur.execute("""
+                SELECT c.owner, c.table_name, cc.column_name, rcc.column_name
+                FROM all_constraints rc
+                JOIN all_constraints c    ON c.r_constraint_name = rc.constraint_name AND c.r_owner = rc.owner AND c.constraint_type = 'R'
+                JOIN all_cons_columns cc  ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name AND rcc.owner = rc.owner AND rcc.position = cc.position
+                WHERE rc.owner = :o AND rc.table_name = :t AND rc.constraint_type IN ('P', 'U')
+                ORDER BY c.owner, c.table_name, cc.column_name
+            """, {"o": schema, "t": table})
+            referenced_by = [{"schema": r[0], "table": r[1], "column": r[2], "ref_col": r[3]} for r in cur.fetchall()]
             cur.execute("""
                 SELECT i.index_name, i.uniqueness, ic.column_name
                 FROM all_indexes i
@@ -30119,7 +30451,58 @@ sys.exit(out.channel.recv_exit_status())
                 idx_map[r[0]]["columns"].append(r[2])
             conn.close()
             return jsonify({"ok": True, "columns": columns, "pk_cols": pk_cols,
-                            "fk_map": fk_map, "indexes": list(idx_map.values())})
+                            "fk_map": fk_map, "referenced_by": referenced_by, "indexes": list(idx_map.values())})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/remote-app/payor/db/relations", methods=["POST"])
+    def api_remote_payor_db_relations():
+        b = request.get_json(silent=True) or {}
+        try:
+            conn = _remote_db_connect(b.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
+            try:
+                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2))))
+            finally:
+                conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/remote-app/payor/db/table-relations", methods=["GET"])
+    def api_remote_payor_db_table_relations():
+        try:
+            conn = _remote_db_connect(request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
+            try:
+                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1))))
+            finally:
+                conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/remote-app/payor/db/schema-relations", methods=["GET"])
+    def api_remote_payor_db_schema_relations():
+        try:
+            conn = _remote_db_connect(request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
+            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""))))
+            finally: conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/remote-app/payor/db/search-tables", methods=["GET"])
+    def api_remote_payor_db_search_tables():
+        try:
+            conn = _remote_db_connect(request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
+            try: return jsonify({"ok": True, "tables": _db_search_tables(conn, request.args.get("schema", ""), request.args.get("q", ""))})
+            finally: conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/remote-app/payor/db/tables-columns", methods=["POST"])
+    def api_remote_payor_db_tables_columns():
+        b = request.get_json(silent=True) or {}
+        try:
+            conn = _remote_db_connect(b.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
+            try: return jsonify({"ok": True, "cols": _db_tables_columns(conn, b.get("tables", []))})
+            finally: conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
