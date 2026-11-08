@@ -6,7 +6,7 @@ export function renderRelations(root, g, opts) {
   opts = opts || {}
   const mode = opts.mode || 'row'
   const NS = 'http://www.w3.org/2000/svg'
-  const AMBER = ['rgba(245,158,11,0.18)', '#f59e0b'], BLUE = ['rgba(21,101,192,0.12)', '#1565c0'], GREEN = ['rgba(46,125,50,0.12)', '#2e7d32'], GREY = ['rgba(128,128,128,0.08)', '#90a4ae']
+  const AMBER = ['rgba(245,158,11,0.18)', '#f59e0b'], BLUE = ['rgba(21,101,192,0.12)', '#1565c0'], GREEN = ['rgba(46,125,50,0.12)', '#2e7d32'], GREY = ['rgba(128,128,128,0.08)', '#90a4ae'], PURPLE = ['rgba(142,36,170,0.14)', '#8e24aa']
   const noun = mode === 'row' ? 'row' : 'table'
   const h = (tag, css, parent, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text !== undefined) e.textContent = text; if (parent) parent.appendChild(e); return e }
   const s = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e }
@@ -19,24 +19,30 @@ export function renderRelations(root, g, opts) {
   const cols = Object.assign({}, g.cols || {})
   g.nodes.forEach(n => { if (n.row && Object.keys(n.row).length) cols[n.id] = n.row })
 
-  let sel = null, zoom = 1, destroyed = false, emph = 0          // emph: -3 reduced .. 10 most enlarged (left click on the selected table enlarges, right click reduces)
+  let sel = null, zoom = 1, destroyed = false, emph = opts.keepEmph ? (renderRelations.emph || 0) : 0          // emph: -3 reduced .. 10 most enlarged (left click on the selected table enlarges, right click reduces)
   let pinned = null, lastOff = null
   const drift = {}                       // row / table views: how far each box was dragged from the layered layout
+  const picked = {}, checks = []          // row view: columns ticked in the diagram (table -> Set of columns) for the query builder
+  Object.keys(opts.picked || {}).forEach(t => { picked[t] = new Set(opts.picked[t]) })
+  const syncChecks = () => checks.forEach(c => { c.cb.checked = !!(picked[c.tkey] && picked[c.tkey].has(c.k)) })
   const pos = {}                         // schema mode: remembered positions so a selection does not shake the whole diagram
 
   root.innerHTML = ''
-  root.style.cssText = 'display:flex;flex-direction:column;height:100%;min-height:320px;font:12px system-ui,sans-serif;color:var(--text,#222)'
+  root.style.cssText = 'display:flex;flex-direction:column;height:100%;min-height:150px;font:12px system-ui,sans-serif;color:var(--text,#222)'
   const bar = h('div', 'display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:0 0 8px;font-size:11px;color:var(--text-muted,#666)', root)
   const legend = h('span', 'display:inline-flex;gap:12px;flex-wrap:wrap;align-items:center', bar)
   const sw = (c, t) => { const w = h('span', 'display:inline-flex;align-items:center;gap:4px', legend); h('span', `width:12px;height:12px;border-radius:3px;display:inline-block;background:${c[0]};border:1px solid ${c[1]}`, w); w.appendChild(document.createTextNode(t)) }
+  let hintText = ''
   if (mode === 'schema') {
     sw(AMBER, 'Selected ' + noun); sw(BLUE, 'Parent (the selected table points to it)'); sw(GREEN, 'Child (points to the selected table)'); sw(GREY, 'Other tables')
-    h('span', '', legend, '· box size = number of relations · click a table for details; click it again to enlarge it and its neighbours (up to 10 steps), right-click to reduce, drag it to move it with its neighbours')
+    hintText = '· box size = number of relations · click a table for details; click it again to enlarge it and its neighbours (up to 10 steps), right-click to reduce · Ctrl+click enlarges any single table, Ctrl+right-click reduces it · drag to move'
   } else {
     sw(AMBER, 'Selected ' + noun + ' (★)'); sw(BLUE, 'Parent ' + noun + ' (foreign key points to it)'); sw(GREEN, 'Child ' + noun + ' (points to the selected one)')
-    h('span', '', legend, '· arrow = foreign key, child → parent · click a box to highlight it and its neighbours · drag a box to move it (with its neighbours when selected)')
+    hintText = '· arrow = foreign key, child → parent · click a box to highlight it and its neighbours; click the selected box again to enlarge it (more columns), right-click to reduce · Ctrl+click enlarges any single box, Ctrl+right-click reduces it · drag a box to move it (with its neighbours when selected)'
   }
+  if (g.edges.some(e => e.kind === 'inferred')) { sw(PURPLE, noun === 'row' ? 'Row of a table linked only by column name' : 'Table linked only by column name'); const w = h('span', 'display:inline-flex;align-items:center;gap:4px', legend); const sv = s('svg', { width: 26, height: 8 }, w); s('line', { x1: 0, y1: 4, x2: 26, y2: 4, stroke: '#8e24aa', 'stroke-width': 2, 'stroke-dasharray': '6 4' }, sv); w.appendChild(document.createTextNode('same column name, no foreign key')) }
   const tools = h('span', 'margin-left:auto;position:relative;display:inline-flex;gap:4px;align-items:center', bar)
+  if (hintText) h('span', 'flex-basis:100%;order:3;margin-top:-4px', bar, hintText)       // the explanation sits on its own line, so the colour key stays on one row
   let search = null, searchBtn = null
   if (mode === 'schema') {
     search = h('input', 'font-size:11px;padding:2px 6px;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--surface2,#fff);color:inherit;width:150px', tools)
@@ -97,6 +103,22 @@ export function renderRelations(root, g, opts) {
   function setZoom(z) { zoom = Math.max(0.1, Math.min(3, z)); stage.style.transform = `scale(${zoom})`; spacer.style.width = dims.W * zoom + 'px'; spacer.style.height = dims.H * zoom + 'px'; zl.textContent = Math.round(zoom * 100) + '%' }
   function fit() { setZoom(Math.min(vp.clientWidth / dims.W, vp.clientHeight / dims.H, 1.2)) }
 
+  const nemph = {}                                             // Ctrl+click / Ctrl+right-click: the step of one box on its own
+  function nodeStep(n, d) {
+    const ne = Math.max(-3, Math.min(10, (nemph[n.id] || 0) + d)); if (ne === (nemph[n.id] || 0)) return
+    const a = P[n.id], cx0 = a ? (a.x + a.w / 2) * zoom - vp.scrollLeft : 0, cy0 = a ? (a.y + a.h / 2) * zoom - vp.scrollTop : 0
+    nemph[n.id] = ne
+    if (mode === 'schema') { pinned = new Set([...(pinned || []), n.id]); if (ne > 0 && opts.loadCols && !cols[n.id] && !loading[n.id]) { loading[n.id] = true; opts.loadCols([n.id]).then(r => { Object.assign(cols, r || {}); delete loading[n.id]; draw() }).catch(() => { delete loading[n.id]; draw() }) } }
+    draw()
+    const b = P[n.id]; if (b && a) { vp.scrollLeft = (b.x + b.w / 2) * zoom - cx0; vp.scrollTop = (b.y + b.h / 2) * zoom - cy0 }
+  }
+  const focusId = () => sel || (mode !== 'schema' ? g.root : null)
+  function bump(d) {                                           // row / table views: enlarge or reduce, the focused box staying where it is on screen
+    const ne = Math.max(-3, Math.min(10, emph + d)); if (ne === emph) return
+    const fid = focusId(), a = P[fid], cx0 = a ? (a.x + a.w / 2) * zoom - vp.scrollLeft : 0, cy0 = a ? (a.y + a.h / 2) * zoom - vp.scrollTop : 0
+    emph = ne; renderRelations.emph = ne; draw()
+    const b = P[fid]; if (b && a) { vp.scrollLeft = (b.x + b.w / 2) * zoom - cx0; vp.scrollTop = (b.y + b.h / 2) * zoom - cy0 }
+  }
   const fOf = e => e > 0 ? 1 + 0.4 * e : 1 + 0.12 * e
   // moves everything away from (or towards) the selected table when the detail boxes grow (or shrink), so they neither overlap nor leave big gaps
   function stepEmph(d) {
@@ -104,17 +126,30 @@ export function renderRelations(root, g, opts) {
     const r = Math.pow(fOf(ne) / fOf(emph), 0.95), c = pos[sel]
     if (c) { const cx = c.x, cy = c.y; Object.keys(pos).forEach(k => { pos[k] = { x: cx + (pos[k].x - cx) * r, y: cy + (pos[k].y - cy) * r } }) }
     const a = P[sel], cx0 = a ? (a.x + a.w / 2) * zoom - vp.scrollLeft : 0, cy0 = a ? (a.y + a.h / 2) * zoom - vp.scrollTop : 0   // where the selected table is on screen now
-    emph = ne; draw()
+    emph = ne; renderRelations.emph = ne; draw()
     const b = P[sel]; if (b && a) { vp.scrollLeft = (b.x + b.w / 2) * zoom - cx0; vp.scrollTop = (b.y + b.h / 2) * zoom - cy0 }       // keep it at the same place on screen
   }
   // ---- sizes -------------------------------------------------------------------------------------------------
   const MAXL = 10, LH = 13
-  const lines = id => { const c = cols[id] || {}; return Object.entries(c).filter(([, v]) => v !== null && v !== '' && v !== undefined) }
+  const lines = id => {
+    const e = Object.entries(cols[id] || {}).filter(([, v]) => mode === 'row' || (v !== null && v !== '' && v !== undefined)), ord = byId[id] && byId[id].cols       // row view lists every column so any can be ticked
+    if (ord) { const ix = {}; ord.forEach((k, i) => { ix[k] = i }); e.sort((a, b) => (ix[a[0]] === undefined ? 1e9 : ix[a[0]]) - (ix[b[0]] === undefined ? 1e9 : ix[b[0]])) }      // primary key columns first, then the rest in table order
+    else { const pk = x => / PK/.test(String(x[1])) ? 0 : 1; e.sort((a, b) => pk(a) - pk(b)) }                                                                            // schema view: primary key first
+    return e
+  }
   const isNb = id => sel && (id === sel || nbr[sel].has(id))
   function sizeOf(n) {
-    if (mode !== 'schema') { const l = Math.min(lines(n.id).length, 9); return { w: 270, h: 26 + l * 14 + (lines(n.id).length > l ? 14 : 0) + 8, detail: true, nl: l } }
-    if (sel && isNb(n.id)) {
-      const F = fOf(emph), ML = emph > 0 ? MAXL + 8 * emph : Math.max(3, MAXL + 2 * emph)
+    if (mode !== 'schema' && n.empty) return { w: 270, h: 46, detail: true, nl: 0, f: 1, ml: 9 }     // a referencing table without a row pointing at this one
+    if (mode !== 'schema') {                                    // row / table views: the selected (or clicked-on) box and its neighbours can be enlarged to show more columns
+      const fid = focusId(), near = fid && (n.id === fid || nbr[fid].has(n.id))
+      const E = Math.max(-3, Math.min(10, (near ? emph : 0) + (nemph[n.id] || 0)))             // the group step plus this box's own (Ctrl+click) step
+      const F = fOf(E), ML = E > 0 ? 9 + 8 * E : Math.max(3, 9 + 2 * E)
+      const all = lines(n.id), l = Math.min(all.length, ML)
+      return { w: Math.round(270 * F), h: Math.round((26 + l * 14 + (all.length > l ? 14 : 0) + 8) * F), detail: true, nl: l, f: F, ml: ML }
+    }
+    if ((sel && isNb(n.id)) || nemph[n.id] > 0) {
+      const E = Math.max(-3, Math.min(10, (sel && isNb(n.id) ? emph : 0) + (nemph[n.id] || 0)))
+      const F = fOf(E), ML = E > 0 ? MAXL + 8 * E : Math.max(3, MAXL + 2 * E)
       const all = lines(n.id), l = Math.min(all.length, ML)
       return { w: Math.round((n.id === sel ? 270 : 220) * F), h: Math.round((24 + (all.length ? l * LH + (all.length > l ? LH : 0) + 6 : 16)) * F), detail: true, nl: l, f: F, ml: ML }
     }
@@ -127,16 +162,19 @@ export function renderRelations(root, g, opts) {
   // ---- layout ------------------------------------------------------------------------------------------------
   function layered(sz) {
     const levels = [...new Set(g.nodes.map(n => n.level))].sort((a, b) => a - b), P = {}
-    levels.forEach((lv, li) => { let y = 12; g.nodes.filter(n => n.level === lv).forEach(n => { P[n.id] = { x: 12 + li * 370, y, w: sz[n.id].w, h: sz[n.id].h }; y += sz[n.id].h + 16 }) })
+    let cx = 12
+    levels.forEach((lv, li) => { let y = 12; const col = g.nodes.filter(n => n.level === lv), x0 = cx; cx += Math.max(...col.map(n => sz[n.id].w)) + 100; col.forEach(n => { P[n.id] = { x: x0, y, w: sz[n.id].w, h: sz[n.id].h }; y += sz[n.id].h + 16 }) })
     Object.keys(P).forEach(k => { const d = drift[k]; if (d) { P[k].x += d.x; P[k].y += d.y } })
     return P
   }
   function force(sz) {
     const ns = g.nodes.filter(n => deg[n.id] > 0), iso = g.nodes.filter(n => deg[n.id] === 0).sort((a, b) => a.table < b.table ? -1 : 1), N = ns.length, idx = {}; ns.forEach((n, i) => { idx[n.id] = i })
     const x = new Array(N), y = new Array(N)
-    ns.forEach((n, i) => { const p = pos[n.id]; if (p) { x[i] = p.x; y[i] = p.y } else { const a = i * 2.399963, r = 70 * Math.sqrt(i + 1) * (1 + (sel ? 0.3 : 0)); x[i] = Math.cos(a) * r; y[i] = Math.sin(a) * r } })
+    const big = N > 600                                                            // a very large diagram: start from a grid and relax only a little, so the page stays responsive
+    const cw = big ? Math.max(...ns.map(n => sz[n.id].w)) + 24 : 0, chh = big ? Math.max(...ns.map(n => sz[n.id].h)) + 18 : 0, cols = big ? Math.ceil(Math.sqrt(N * 1.6)) : 1
+    ns.forEach((n, i) => { const p = pos[n.id]; if (p) { x[i] = p.x; y[i] = p.y } else if (big) { x[i] = (i % cols) * cw; y[i] = Math.floor(i / cols) * chh } else { const a = i * 2.399963, r = 70 * Math.sqrt(i + 1) * (1 + (sel ? 0.3 : 0)); x[i] = Math.cos(a) * r; y[i] = Math.sin(a) * r } })
     const E = g.edges.filter(e => idx[e.from] !== undefined && idx[e.to] !== undefined).map(e => [idx[e.from], idx[e.to]])
-    const iters = Object.keys(pos).length ? 140 : 320
+    const iters = big ? 12 : Object.keys(pos).length ? 140 : 320
     for (let it = 0; it < iters; it++) {
       const t = 1 - it / iters, fx = new Array(N).fill(0), fy = new Array(N).fill(0)
       for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
@@ -154,7 +192,7 @@ export function renderRelations(root, g, opts) {
       })
       for (let i = 0; i < N; i++) { if (pinned && pinned.has(ns[i].id)) continue; fx[i] -= x[i] * 0.004; fy[i] -= y[i] * 0.004; const m = 40 * t + 2, l = Math.hypot(fx[i], fy[i]) || 1; const c = Math.min(l, m) / l; x[i] += fx[i] * c; y[i] += fy[i] * c }
     }
-    for (let pass = 0; pass < 400; pass++) {                    // separate boxes that still overlap
+    for (let pass = 0; pass < (big ? 4 : 400); pass++) {                    // separate boxes that still overlap
       let moved = false
       for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
         const si = sz[ns[i].id], sj = sz[ns[j].id], dx = x[i] - x[j], dy = y[i] - y[j]
@@ -186,8 +224,12 @@ export function renderRelations(root, g, opts) {
   }
 
   // ---- drawing -----------------------------------------------------------------------------------------------
+  // tables that are linked only by a column name (no foreign key) get their own colour
+  const incident = {}; g.edges.forEach(e => { (incident[e.from] = incident[e.from] || []).push(e); (incident[e.to] = incident[e.to] || []).push(e) })
+  const nameOnly = (a, b) => { const es = (incident[a] || []).filter(e => e.from === b || e.to === b); return es.length > 0 && es.every(e => e.kind === 'inferred') }
   const tone = n => {
-    if (sel) { if (n.id === sel) return AMBER; if (parentsOf[sel].includes(n.id)) return BLUE; if (childrenOf[sel].includes(n.id)) return GREEN }
+    if (sel) { if (n.id === sel) return AMBER; if (parentsOf[sel].includes(n.id) || childrenOf[sel].includes(n.id)) { if (nameOnly(sel, n.id)) return PURPLE; return parentsOf[sel].includes(n.id) ? BLUE : GREEN } }
+    if (n.id !== g.root && (incident[n.id] || []).length && incident[n.id].every(e => e.kind === 'inferred')) return PURPLE
     if (mode === 'schema') return GREY
     if (n.id === g.root && !sel) return AMBER
     return n.level < 0 ? BLUE : n.level > 0 ? GREEN : AMBER
@@ -211,9 +253,11 @@ export function renderRelations(root, g, opts) {
       const geo = edgeGeo(e); if (!geo) return
       const touch = sel && (e.from === sel || e.to === sel)
       const dim = sel && !touch
-      const p = s('path', { d: geo.d, fill: 'none', stroke: touch ? '#f59e0b' : '#78909c', 'stroke-width': touch ? 2 : 1, 'stroke-opacity': dim ? 0.18 : 0.85, 'marker-end': touch ? 'url(#rh)' : 'url(#ra)' }, eg)
+      const inf = e.kind === 'inferred'                                       // same column name, no foreign key: dashed
+      const p = s('path', { d: geo.d, fill: 'none', stroke: touch ? '#f59e0b' : inf ? '#8e24aa' : '#78909c', 'stroke-width': touch ? 2 : 1, 'stroke-opacity': dim ? 0.18 : 0.85, 'marker-end': touch ? 'url(#rh)' : 'url(#ra)' }, eg)
+      if (inf) p.setAttribute('stroke-dasharray', '6 4')
       s('title', {}, p).textContent = e.label
-      if (mode !== 'schema' || touch) { const t = s('text', { x: geo.lx, y: geo.ly - 3, 'font-size': 9, 'text-anchor': 'middle', fill: dim ? '#b0bec5' : '#78909c' }, eg); t.textContent = e.label.length > 38 ? e.label.slice(0, 37) + '…' : e.label }
+      if (mode !== 'schema' || touch) { const t = s('text', { x: geo.lx, y: geo.ly - 3, 'font-size': 9, 'text-anchor': 'middle', fill: dim ? '#b0bec5' : inf ? '#8e24aa' : '#78909c' }, eg); t.textContent = (inf ? '≈ ' : '') + (e.label.length > 38 ? e.label.slice(0, 37) + '…' : e.label) }
     })
   }
   const els = {}
@@ -223,36 +267,53 @@ export function renderRelations(root, g, opts) {
     P = mode === 'schema' ? force(sz) : layered(sz)
     let W = 0, H = 0; Object.values(P).forEach(p => { W = Math.max(W, p.x + p.w); H = Math.max(H, p.y + p.h) }); dims = { W: W + 20, H: H + 20 }
     svg.setAttribute('width', dims.W); svg.setAttribute('height', dims.H); stage.style.width = dims.W + 'px'; stage.style.height = dims.H + 'px'
-    layer.innerHTML = ''
+    layer.innerHTML = ''; checks.length = 0
     drawEdges()
     if (isoTop !== null) h('div', `position:absolute;left:16px;top:${isoTop}px;font-size:12px;font-weight:600;color:var(--text-muted,#666)`, layer, `Tables without relations (${isoCount})`)
     g.nodes.forEach(n => {
       const p = P[n.id], z = sz[n.id], [bg, bd] = tone(n)
       const dim = sel && mode === 'schema' ? !isNb(n.id) : sel ? !(n.id === sel || nbr[sel].has(n.id)) : false
-      const box = h('div', `position:absolute;left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;box-sizing:border-box;border:${n.id === sel ? 2 : 1}px solid ${bd};border-radius:6px;background:${bg};overflow:hidden;cursor:pointer;opacity:${dim ? 0.4 : 1};font:${10 * (z.f || 1)}px monospace;color:var(--text,#222)`, layer)
+      const box = h('div', `position:absolute;left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;box-sizing:border-box;border:${n.id === sel ? 2 : 1}px ${n.empty ? 'dashed' : 'solid'} ${bd};border-radius:6px;background:${bg};overflow:hidden;cursor:pointer;opacity:${dim ? 0.4 : 1};font:${10 * (z.f || 1)}px monospace;color:var(--text,#222)`, layer)
       box.title = n.schema + '.' + n.table + (mode === 'schema' ? ` - ${deg[n.id]} relation(s)` : '')
       els[n.id] = box
-      box.onclick = ev => { ev.stopPropagation(); if (dragMoved) { dragMoved = false; return } onClickNode(n) }
+      box.onclick = ev => { ev.stopPropagation(); if (ev.ctrlKey) { nodeStep(n, 1); return } if (dragMoved) { dragMoved = false; return } onClickNode(n) }
       if (mode !== 'schema' || (sel && isNb(n.id))) {                     // the selected one and its neighbours are dragged together (a box on its own when nothing is selected)
         box.onmousedown = ev => {
-          if (ev.button !== 0) return
+          if (ev.button !== 0 || ev.ctrlKey) return
           ev.stopPropagation(); ev.preventDefault()
           const ids = (sel && isNb(n.id) ? [sel, ...nbr[sel]] : [n.id]).filter(i => P[i])
           gdrag = { x: ev.clientX, y: ev.clientY, prim: n.id, ids, o: Object.fromEntries(ids.map(i => [i, { x: P[i].x, y: P[i].y }])) }
           dragMoved = false
         }
       }
-      box.oncontextmenu = ev => { if (mode === 'schema' && n.id === sel) { ev.preventDefault(); ev.stopPropagation(); stepEmph(-1) } }
+      box.oncontextmenu = ev => {
+        if (ev.ctrlKey) { ev.preventDefault(); ev.stopPropagation(); nodeStep(n, -1); return }
+        if (mode === 'schema' && n.id === sel) { ev.preventDefault(); ev.stopPropagation(); stepEmph(-1) }
+        else if (mode !== 'schema' && n.id === focusId()) { ev.preventDefault(); ev.stopPropagation(); bump(-1) }
+      }
       const fs = z.k ? Math.round(10 * z.k) : Math.round(11 * (z.f || 1))
       const head = h('div', `padding:${z.detail ? 4 : 2}px 8px;font-weight:700;font-size:${fs}px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${z.detail ? `border-bottom:1px solid ${bd};background:rgba(128,128,128,0.08)` : ''}`, box, n.table + (n.id === g.root && mode !== 'schema' ? '  ★' : '') + (!z.detail && mode === 'schema' && !sel && z.h >= 34 ? '' : ''))
       if (z.detail) {
         const body = h('div', 'padding:3px 8px', box), all = lines(n.id)
-        if (!all.length && mode === 'schema') h('div', 'color:var(--text-muted,#777)', body, loading[n.id] ? 'loading…' : 'no column details')
-        all.slice(0, mode === 'schema' ? z.ml : 9).forEach(([k, v]) => {
+        if (n.empty) h('div', 'color:var(--text-muted,#777);font-style:italic', body, 'no row refers to this one')
+        else if (!all.length && mode === 'schema') h('div', 'color:var(--text-muted,#777)', body, loading[n.id] ? 'loading…' : 'no column details')
+        all.slice(0, z.ml || 9).forEach(([k, v]) => {
           const r = h('div', `height:${Math.round(13 * (z.f || 1))}px;line-height:${Math.round(13 * (z.f || 1))}px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`, body)
-          h('span', 'color:var(--text-muted,#777)', r, k); r.appendChild(document.createTextNode(mode === 'row' ? ' = ' + String(v) : '  ' + String(v)))
+          const isPk = (n.pk && n.pk.indexOf(k) >= 0) || (mode !== 'row' && / PK\b/.test(String(v)))
+          if (mode === 'row' && opts.onToggle) {                       // tick the columns to put into a query
+            const tkey = opts.keyOf ? opts.keyOf(n) : n.schema + '.' + n.table          // one key per join instance, so the same column of another table instance is not ticked with it
+            const cb = h('input', 'margin:0 4px 0 0;width:11px;height:11px;vertical-align:middle;cursor:pointer', r); cb.type = 'checkbox'
+            cb.checked = !!(picked[tkey] && picked[tkey].has(k)); checks.push({ cb, tkey, k })
+            cb.onmousedown = ev => ev.stopPropagation()
+            cb.onclick = ev => {
+              ev.stopPropagation()
+              const st = picked[tkey] || (picked[tkey] = new Set()); cb.checked ? st.add(k) : st.delete(k)
+              syncChecks(); opts.onToggle(tkey, k, cb.checked)
+            }
+          }
+          h('span', 'color:var(--text-muted,#777)', r, (isPk ? '🔑 ' : '') + k); r.appendChild(document.createTextNode(mode === 'row' ? ' = ' + (v === null || v === undefined ? 'NULL' : String(v)) : '  ' + String(v)))
         })
-        const lim = mode === 'schema' ? z.ml : 9
+        const lim = z.ml || 9
         if (all.length > lim) h('div', 'color:var(--text-muted,#777)', body, `+ ${all.length - lim} more column(s)`)
       } else if (mode === 'schema' && !sel && z.h >= 30) {
         h('div', 'padding:0 8px;font-size:9px;color:var(--text-muted,#777)', box, deg[n.id] + ' relation(s)')
@@ -283,6 +344,7 @@ export function renderRelations(root, g, opts) {
         } else { emph = 0; select(n.id, false) }
       } else stepEmph(1)
     }          // clicking the selected table keeps it selected; empty space clears
+    else if (n.id === focusId()) bump(1)
     else { sel = n.id; draw() }
     if (opts.onPick) opts.onPick(n)
   }
@@ -322,5 +384,5 @@ export function renderRelations(root, g, opts) {
   draw()
   if (mode === 'schema') setTimeout(fit, 0)
   if (g.focus && byId[g.focus]) setTimeout(() => select(g.focus), 30)
-  return { destroy() { destroyed = true; document.removeEventListener('click', closeList); window.removeEventListener('mousemove', mm); window.removeEventListener('mouseup', mu) }, select }
+  return { setPicked(m) { Object.keys(picked).forEach(t => delete picked[t]); Object.keys(m || {}).forEach(t => { picked[t] = new Set(m[t]) }); syncChecks() }, destroy() { destroyed = true; document.removeEventListener('click', closeList); window.removeEventListener('mousemove', mm); window.removeEventListener('mouseup', mu) }, select }
 }

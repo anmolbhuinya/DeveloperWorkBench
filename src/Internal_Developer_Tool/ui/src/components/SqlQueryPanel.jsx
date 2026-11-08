@@ -16,6 +16,8 @@ const SqlQueryPanel = forwardRef(function SqlQueryPanel({ scope, appName, versio
   const [msg,      setMsg]      = useState(null)        // {ok, text}
   const [saving,   setSaving]   = useState(false)
   const taRef = useRef(null)
+  const [dragQ, setDragQ] = useState(null), [overQ, setOverQ] = useState(null)             // drag a saved query to put it at another position
+  const [dragTab, setDragTab] = useState(null), [overTab, setOverTab] = useState(null)      // drag a tab to put it at another position
   const base = `/api/sqlq/${scope}/${appName}`
   const vq = `version=${encodeURIComponent(version || '')}`
 
@@ -79,7 +81,24 @@ const SqlQueryPanel = forwardRef(function SqlQueryPanel({ scope, appName, versio
       {/* Tabs */}
       <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)', background: 'var(--surface)', overflowX: 'auto' }}>
         {tabs.map(t => (
-          <div key={t.name} onClick={() => setActive(t.name)} style={{
+          <div key={t.name} onClick={() => setActive(t.name)}
+            draggable={renaming?.name !== t.name}
+            onDragStart={e => { setDragTab(t.name); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', t.name) } catch (x) { /* ignore */ } }}
+            onDragOver={e => { if (dragTab && dragTab !== t.name) { e.preventDefault(); setOverTab(t.name) } }}
+            onDragLeave={() => setOverTab(o => (o === t.name ? null : o))}
+            onDragEnd={() => { setDragTab(null); setOverTab(null) }}
+            onDrop={e => {
+              e.preventDefault()
+              const from = dragTab; setDragTab(null); setOverTab(null)
+              if (!from || from === t.name) return
+              const names = tabs.map(x => x.name), fi = names.indexOf(from), ti = names.indexOf(t.name)
+              const before = fi < ti ? (names[ti + 1] || '') : t.name            // dropped on a tab: it takes that tab's place
+              setTabs(ts => { const m = ts.find(x => x.name === from); const rest = ts.filter(x => x.name !== from); const at = rest.findIndex(x => x.name === t.name); rest.splice(fi < ti ? at + 1 : at, 0, m); return rest })
+              post('tabs/move', { name: from, before }, from)
+            }}
+            title="Drag to change the position of the tab"
+            style={{
+            opacity: dragTab === t.name ? 0.4 : 1, boxShadow: overTab === t.name ? 'inset 3px 0 0 var(--primary, #3b82f6)' : undefined,
             display: 'flex', alignItems: 'center', gap: 4, padding: '7px 14px', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
             borderRight: '1px solid var(--border)', background: active === t.name ? 'var(--bg, #fff)' : 'transparent',
             borderBottom: active === t.name ? '2px solid var(--primary, #3b82f6)' : '2px solid transparent',
@@ -141,8 +160,25 @@ const SqlQueryPanel = forwardRef(function SqlQueryPanel({ scope, appName, versio
         {queries.length === 0 ? (
           <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-muted)' }}>No queries in this tab yet — a query is added here once it executes successfully.</div>
         ) : queries.map((q, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderBottom: '1px solid var(--border)',
-            background: editIdx === i ? 'rgba(255,193,7,0.12)' : 'transparent' }}>
+          <div key={i} draggable
+            onDragStart={e => { setDragQ(i); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)) } catch (x) { /* ignore */ } }}
+            onDragOver={e => { if (dragQ !== null && dragQ !== i) { e.preventDefault(); setOverQ(i) } }}
+            onDragLeave={() => setOverQ(o => (o === i ? null : o))}
+            onDragEnd={() => { setDragQ(null); setOverQ(null) }}
+            onDrop={e => {
+              e.preventDefault()
+              const from = dragQ; setDragQ(null); setOverQ(null)
+              if (from === null || from === i) return
+              const remap = k => (k === from ? i : from < i && k > from && k <= i ? k - 1 : from > i && k >= i && k < from ? k + 1 : k)
+              setTabs(ts => ts.map(t => { if (t.name !== active) return t; const qs = [...t.queries]; qs.splice(i, 0, qs.splice(from, 1)[0]); return { ...t, queries: qs } }))
+              if (editIdx != null) setEditIdx(remap(editIdx))
+              post('queries/move', { tab: active, index: from, to: i }, active)
+            }}
+            title="Drag to change the position of the query"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderBottom: '1px solid var(--border)', opacity: dragQ === i ? 0.4 : 1,
+              boxShadow: overQ === i ? (dragQ < i ? 'inset 0 -3px 0 var(--primary, #3b82f6)' : 'inset 0 3px 0 var(--primary, #3b82f6)') : undefined,
+              background: editIdx === i ? 'rgba(255,193,7,0.12)' : 'transparent' }}>
+            <span style={{ cursor: 'grab', color: 'var(--text-muted)', fontSize: 12, userSelect: 'none' }}>⋮⋮</span>
             <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 18, textAlign: 'right' }}>{i + 1}</span>
             <code title={q} style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{q.replace(/\s+/g, ' ')}</code>
             <button className="btn btn-sm" style={btn} disabled={busy || !connected} onClick={() => runSql(q, active)}>▶ Execute</button>

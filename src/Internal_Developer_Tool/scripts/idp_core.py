@@ -20711,8 +20711,72 @@ done
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
-    def _db_relations_walk(conn, schema, table, values, depth=2, per_fk=15, node_cap=150):
+    # ── relations inferred from column names: tables that share a key column (USER_ACCOUNT / USER_ACCOUNT_PASSWORD share USER_ACCT_ID) without a foreign key between them ──
+    _infer_cache = {}
+    _INFER_IGNORE = {"VER_ID", "TENANT_ID", "ENDOR_EFF_DT", "ENDOR_EXPIRE_DT", "VER_EFF_DT", "VER_EXPIRE_DT"}
+    _INFER_MAXTABLES = 40                     # a column found in more tables than this is generic (audit columns ...), not a link
+
+    def _infer_meta(cur, owner):
+        import time as _t
+        hit = _infer_cache.get(owner)
+        if hit and _t.time() - hit[0] < 300: return hit[1]
+        by_col, by_tab = {}, {}
+        cur.execute("SELECT table_name, column_name FROM all_tab_columns WHERE owner = :o", {"o": owner})
+        for tn, cn in cur.fetchall():
+            by_col.setdefault(cn, []).append(tn); by_tab.setdefault(tn, []).append(cn)
+        pk = {}
+        cur.execute("""SELECT k.table_name, cc.column_name FROM all_constraints k JOIN all_cons_columns cc ON cc.constraint_name = k.constraint_name AND cc.owner = k.owner
+                       WHERE k.owner = :o AND k.constraint_type = 'P'""", {"o": owner})
+        for tn, cn in cur.fetchall(): pk.setdefault(tn, set()).add(cn)
+        fkp = set()
+        cur.execute("""SELECT c.table_name, rc.table_name FROM all_constraints c JOIN all_constraints rc ON rc.constraint_name = c.r_constraint_name AND rc.owner = c.r_owner
+                       WHERE c.owner = :o AND c.constraint_type = 'R' AND rc.owner = :o""", {"o": owner})
+        for a, b in cur.fetchall(): fkp.add(frozenset((a, b)))
+        meta = {"by_col": by_col, "by_tab": by_tab, "pk": pk, "fk": fkp}
+        _infer_cache[owner] = (_t.time(), meta)
+        return meta
+
+    def _infer_pair(meta, c, a, b):
+        """(child, parent) of a pair of tables that share column c, or None when neither side has c as a key."""
+        pk = meta["pk"]; ap, bp = c in pk.get(a, ()), c in pk.get(b, ())
+        if ap and not bp: return (b, a)
+        if bp and not ap: return (a, b)
+        if ap and bp:
+            if b.startswith(a): return (b, a)
+            if a.startswith(b): return (a, b)
+            return (b, a) if a < b else (a, b)
+        return None
+
+    def _capval(v):
+        v = str(v if v is not None else "").strip().lower()
+        if v == "all": return 0
+        try: return max(10, int(v))
+        except Exception: return 250
+
+    def _infmax(v):
+        """The 'ignore columns found in more than N tables' choice: a number, or 'all' (0) = nothing is ignored."""
+        v = str(v if v is not None else "").strip().lower()
+        if v == "all": return 0
+        try: return max(2, int(v))
+        except Exception: return _INFER_MAXTABLES
+
+    def _infer_neighbours(meta, t, limit=40, maxt=40):
+        """[(other table, shared column, 'parent' | 'child' = what the other one is for t)]"""
+        out = []
+        if not maxt: limit = max(limit, 100)
+        for c in meta["by_tab"].get(t, []):
+            tabs = meta["by_col"].get(c, [])
+            if len(tabs) < 2 or (maxt and (c in _INFER_IGNORE or len(tabs) > maxt)): continue
+            for o in tabs:
+                if o == t or frozenset((t, o)) in meta["fk"]: continue
+                pr = _infer_pair(meta, c, t, o)
+                if pr: out.append((o, c, "parent" if pr[1] == o else "child"))
+        return out[:limit]
+
+    def _db_relations_walk(conn, schema, table, values, depth=2, per_fk=15, node_cap=150, refby=False, inferred=False, inferred_max=40):
         """Starting from one result row, follows foreign keys up (parents) and down (children) and returns the related rows as a graph."""
+        empty_n = [0]                                              # the empty referencing tables ("Show referenced-by tables") are counted apart, so they never use up the room of the real related rows
+        real_n = lambda: len(nodes) - empty_n[0]
         cur = conn.cursor()
         if not schema:
             cur.execute("SELECT USER FROM dual")
@@ -20783,18 +20847,29 @@ done
         if not root: raise ValueError("The row was not found in %s.%s (the Table field must name the table the row came from)" % (schema, table))
 
         nodes, edges, seen, truncated = {}, [], set(), False
+        pk_cache = {}
+        def pkcols(owner, tbl):
+            if (owner, tbl) not in pk_cache:
+                cur.execute("""SELECT cc.column_name FROM all_constraints c JOIN all_cons_columns cc ON cc.constraint_name = c.constraint_name AND cc.owner = c.owner
+                               WHERE c.owner = :o AND c.table_name = :t AND c.constraint_type = 'P' ORDER BY cc.position""", {"o": owner, "t": tbl})
+                pk_cache[(owner, tbl)] = [r[0] for r in cur.fetchall()]
+            return pk_cache[(owner, tbl)]
+
         def add(owner, tbl, rid, row, level):
             nid = "%s.%s/%s" % (owner, tbl, rid)
             if nid not in nodes:
-                nodes[nid] = {"id": nid, "schema": owner, "table": tbl, "level": level, "row": row}
+                pk = pkcols(owner, tbl)
+                ordered = {k: row[k] for k in pk if k in row}              # primary key columns first
+                ordered.update({k: v for k, v in row.items() if k not in ordered})
+                nodes[nid] = {"id": nid, "schema": owner, "table": tbl, "level": level, "row": ordered, "pk": pk, "cols": list(ordered.keys())}   # "cols": the order to show (JSON objects get sorted by Flask)
             return nid
         rid0, row0 = root[0]
         rootid = add(schema, table, rid0, row0, 0)
         frontier = [(rootid, schema, table, row0, 0)]
-        for _ in range(max(1, min(depth, 4))):
+        for _ in range(max(1, min(depth, 10))):
             nxt = []
             for nid, o, t, row, lvl in frontier:
-                if len(nodes) >= node_cap: truncated = True; break
+                if real_n() >= node_cap: truncated = True; break
                 out, inc = fks(o, t)
                 for fk in out:                                         # parents
                     cv = [(rc, row.get(c)) for c, rc in zip(fk["cols"], fk["rcols"])]
@@ -20811,12 +20886,38 @@ done
                     if any(v is None for _, v in cv): continue
                     found, more = fetch(fk["o"], fk["t"], cv, per_fk)
                     truncated = truncated or more
+                    if refby and not found and empty_n[0] < 300:     # "Show referenced-by tables": a table with a foreign key to this one is shown even when no row of it points at this row
+                        cid = "%s.%s/(none:%s:%s)" % (fk["o"], fk["t"], fk["name"], nid)
+                        if cid not in nodes:
+                            empty_n[0] += 1
+                            pk2 = pkcols(fk["o"], fk["t"])
+                            cur.execute("SELECT column_name FROM all_tab_columns WHERE owner = :o AND table_name = :t ORDER BY column_id", {"o": fk["o"], "t": fk["t"]})
+                            names = [r[0] for r in cur.fetchall()]
+                            names = [c for c in pk2 if c in names] + [c for c in names if c not in pk2]
+                            nodes[cid] = {"id": cid, "schema": fk["o"], "table": fk["t"], "level": lvl + 1, "row": {}, "pk": pk2, "cols": names, "empty": True}
+                        key = (cid, nid, fk["name"])
+                        if key not in seen:
+                            seen.add(key); edges.append({"from": cid, "to": nid, "label": ", ".join(fk["cols"]) + " → " + ", ".join(fk["rcols"]), "kind": "child"})
                     for rid, crow in found:
                         cid = add(fk["o"], fk["t"], rid, crow, lvl + 1)
                         key = (cid, nid, fk["name"])
                         if key not in seen:
                             seen.add(key); edges.append({"from": cid, "to": nid, "label": ", ".join(fk["cols"]) + " → " + ", ".join(fk["rcols"]), "kind": "child"})
                             nxt.append((cid, fk["o"], fk["t"], crow, lvl + 1))
+                if inferred:                                           # tables sharing a key column with this one: the rows with the same value
+                    meta = _infer_meta(cur, o)
+                    for other, c, role in _infer_neighbours(meta, t, maxt=inferred_max):
+                        v = row.get(c)
+                        if v is None or real_n() >= node_cap: continue
+                        found, more = fetch(o, other, [(c, v)], per_fk)
+                        truncated = truncated or more
+                        for rid, orow in found:
+                            oid = add(o, other, rid, orow, lvl - 1 if role == "parent" else lvl + 1)
+                            a2, b2 = (nid, oid) if role == "parent" else (oid, nid)
+                            key = (a2, b2, "inf:" + c)
+                            if key not in seen:
+                                seen.add(key); edges.append({"from": a2, "to": b2, "label": c + " → " + c, "kind": "inferred"})
+                                nxt.append((oid, o, other, orow, lvl - 1 if role == "parent" else lvl + 1))
             frontier = nxt
         cur.close()
         return {"root": rootid, "nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
@@ -20827,13 +20928,13 @@ done
         try:
             conn = _get_db_connection()
             try:
-                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2))))
+                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2), refby=bool(b.get("refby")), inferred=bool(b.get("inferred")), inferred_max=_infmax(b.get("inferred_max")))))
             finally:
                 conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
-    def _db_table_relations(conn, schema, table, depth=1, node_cap=60):
+    def _db_table_relations(conn, schema, table, depth=1, node_cap=150, inferred=False, inferred_max=40):
         """Tables related to one table through foreign keys (parents it points to, children that point at it) as a graph."""
         cur = conn.cursor()
         if not schema:
@@ -20879,11 +20980,11 @@ done
         nodes, edges, seen = {}, [], set()
         def add(o, t, lvl):
             nid = "%s.%s" % (o, t)
-            if nid not in nodes: nodes[nid] = {"id": nid, "schema": o, "table": t, "level": lvl, "row": cols(o, t)}
+            if nid not in nodes: nodes[nid] = {"id": nid, "schema": o, "table": t, "level": lvl, "row": cols(o, t), "cols": list(cols(o, t).keys())}
             return nid
         root = add(schema, table, 0)
         frontier = [(schema, table, 0)]
-        for _ in range(max(1, min(depth, 3))):
+        for _ in range(max(1, min(depth, 10))):
             nxt = []
             for o, t, lvl in frontier:
                 if len(nodes) >= node_cap: break
@@ -20901,6 +21002,17 @@ done
                     if (cid, me, cn) not in seen:
                         seen.add((cid, me, cn)); edges.append({"from": cid, "to": me, "label": ", ".join(c1) + " → " + ", ".join(c2), "kind": "child"})
                         if new: nxt.append((co, ct, lvl + 1))
+                if inferred:                                           # tables sharing a key column with this one, without a foreign key
+                    meta = _infer_meta(cur, o)
+                    for other, c, role in _infer_neighbours(meta, t, maxt=inferred_max):
+                        if len(nodes) >= node_cap: break
+                        new = "%s.%s" % (o, other) not in nodes
+                        oid = add(o, other, lvl - 1 if role == "parent" else lvl + 1)
+                        a2, b2 = (me, oid) if role == "parent" else (oid, me)
+                        key = (a2, b2, "inf:" + c)
+                        if key not in seen:
+                            seen.add(key); edges.append({"from": a2, "to": b2, "label": c + " → " + c, "kind": "inferred"})
+                            if new: nxt.append((o, other, lvl - 1 if role == "parent" else lvl + 1))
             frontier = nxt
         cur.close()
         return {"root": root, "nodes": list(nodes.values()), "edges": edges, "truncated": len(nodes) >= node_cap}
@@ -20910,13 +21022,14 @@ done
         try:
             conn = _get_db_connection()
             try:
-                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1))))
+                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1), inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")))))
             finally:
                 conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
-    def _db_schema_relations(conn, schema, cap=250, isolated=False, focus=""):
+    def _db_schema_relations(conn, schema, cap=250, isolated=False, focus="", refby=False, inferred=False, inferred_max=40):
+        cap = cap if cap else 10 ** 9                            # 0 = all tables
         """Every foreign key between tables of one schema: the connected tables as nodes, one edge per constraint (child -> parent)."""
         cur = conn.cursor()
         schema = (schema or "").upper()
@@ -20931,12 +21044,33 @@ done
         cons = {}
         for cn, ct, ro, rt, c1, c2 in cur.fetchall():
             d = cons.setdefault(cn, [ct, ro, rt, [], []]); d[3].append(c1); d[4].append(c2)
-        deg = {}
+        deg, referrers = {}, {}
         for ct, ro, rt, _, _ in cons.values():
             a, b = "%s.%s" % (schema, ct), "%s.%s" % (ro, rt)
             if a == b: continue
             deg.setdefault(a, set()).add(b); deg.setdefault(b, set()).add(a)
+            referrers.setdefault(b, set()).add(a)                      # b is referenced by a
+        inf_edges = []
+        if inferred:                                           # same-named key columns between tables without a foreign key
+            meta = _infer_meta(cur, schema)
+            for c, tabs in meta["by_col"].items():
+                if len(tabs) < 2 or (inferred_max and (c in _INFER_IGNORE or len(tabs) > inferred_max)): continue
+                if len(inf_edges) > 30000: break                          # with 'all' a very common column would make millions of pairs
+                for i in range(len(tabs)):
+                    if len(inf_edges) > 30000: break
+                    for j in range(i + 1, len(tabs)):
+                        if frozenset((tabs[i], tabs[j])) in meta["fk"]: continue
+                        pr = _infer_pair(meta, c, tabs[i], tabs[j])
+                        if not pr: continue
+                        a, b = "%s.%s" % (schema, pr[0]), "%s.%s" % (schema, pr[1])
+                        inf_edges.append((a, b, c))
+                        deg.setdefault(a, set()).add(b); deg.setdefault(b, set()).add(a); referrers.setdefault(b, set()).add(a)
         keep = set(sorted(deg, key=lambda k: -len(deg[k]))[:cap])
+        if refby:                                                      # "Show referenced-by tables": every table that references a shown table is shown too (beyond the usual limit)
+            for t in list(keep): keep |= referrers.get(t, set())
+            if inferred:                                               # ... and the tables that share a key column name with a shown table, so that both options together lose nothing
+                for a, b, c in inf_edges:
+                    if a in keep or b in keep: keep.add(a); keep.add(b)
         focus_id = ""
         if focus:                                              # a table asked for by name is brought in with its neighbours even if it is not among the most connected
             q = focus.strip().upper().replace("%", "")
@@ -20951,6 +21085,10 @@ done
             a, b = "%s.%s" % (schema, ct), "%s.%s" % (ro, rt)
             if a in keep and b in keep and a != b:
                 edges.append({"from": a, "to": b, "label": ", ".join(c1) + " → " + ", ".join(c2)}); ids.add(a); ids.add(b)
+        seen_inf = set()
+        for a, b, c in inf_edges:
+            if a in keep and b in keep and (a, b, c) not in seen_inf:
+                seen_inf.add((a, b, c)); edges.append({"from": a, "to": b, "label": c + " → " + c, "kind": "inferred"}); ids.add(a); ids.add(b)
         if isolated:                                           # tables that take part in no foreign key
             cur.execute("SELECT table_name FROM all_tables WHERE owner = :o AND table_name NOT LIKE 'BIN$%' ORDER BY table_name", {"o": schema})
             for (tn,) in cur.fetchall():
@@ -20996,7 +21134,7 @@ done
     def api_local_payor_db_schema_relations():
         try:
             conn = _get_db_connection()
-            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""))))
+            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""), refby=request.args.get("refby") == "1", inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), cap=_capval(request.args.get("cap")))))
             finally: conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
@@ -21753,6 +21891,19 @@ done
             for r in rows:
                 if r[0] == b.get("name"):
                     r[1] = False
+        return jsonify(_sqlq_apply(scope, app_name, ver, fn))
+
+    @app.route("/api/sqlq/<scope>/<app_name>/tabs/move", methods=["POST"])
+    def api_sqlq_tab_move(scope, app_name):
+        """Puts tab `name` in front of tab `before` (at the end when `before` is empty); the order is kept in the workbook."""
+        b, ver = _sqlq_req()
+        def fn(wb, rows):
+            mv = next((r for r in rows if r[0] == b.get("name")), None)
+            if not mv: return "Tab not found"
+            rows.remove(mv)
+            tgt = next((i for i, r in enumerate(rows) if r[0] == b.get("before")), None)
+            if tgt is None: rows.append(mv)
+            else: rows.insert(tgt, mv)
         return jsonify(_sqlq_apply(scope, app_name, ver, fn))
 
     @app.route("/api/sqlq/<scope>/<app_name>/tabs/rename", methods=["POST"])
@@ -30461,7 +30612,7 @@ sys.exit(out.channel.recv_exit_status())
         try:
             conn = _remote_db_connect(b.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
             try:
-                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2))))
+                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2), refby=bool(b.get("refby")), inferred=bool(b.get("inferred")), inferred_max=_infmax(b.get("inferred_max")))))
             finally:
                 conn.close()
         except Exception as e:
@@ -30472,7 +30623,7 @@ sys.exit(out.channel.recv_exit_status())
         try:
             conn = _remote_db_connect(request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
             try:
-                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1))))
+                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1), inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")))))
             finally:
                 conn.close()
         except Exception as e:
@@ -30482,7 +30633,7 @@ sys.exit(out.channel.recv_exit_status())
     def api_remote_payor_db_schema_relations():
         try:
             conn = _remote_db_connect(request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
-            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""))))
+            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""), refby=request.args.get("refby") == "1", inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), cap=_capval(request.args.get("cap")))))
             finally: conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
