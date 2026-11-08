@@ -20747,6 +20747,11 @@ done
             return (b, a) if a < b else (a, b)
         return None
 
+    def _hid(v):
+        """Tables the user hid in the relation view: a comma separated string or a list -> set of table names."""
+        if isinstance(v, str): v = v.split(",")
+        return {str(x).strip().upper() for x in (v or []) if str(x).strip()}
+
     def _capval(v):
         v = str(v if v is not None else "").strip().lower()
         if v == "all": return 0
@@ -20773,8 +20778,9 @@ done
                 if pr: out.append((o, c, "parent" if pr[1] == o else "child"))
         return out[:limit]
 
-    def _db_relations_walk(conn, schema, table, values, depth=2, per_fk=15, node_cap=150, refby=False, inferred=False, inferred_max=40):
+    def _db_relations_walk(conn, schema, table, values, depth=2, per_fk=15, node_cap=150, refby=False, inferred=False, inferred_max=40, hidden=None):
         """Starting from one result row, follows foreign keys up (parents) and down (children) and returns the related rows as a graph."""
+        hid = _hid(hidden)
         empty_n = [0]                                              # the empty referencing tables ("Show referenced-by tables") are counted apart, so they never use up the room of the real related rows
         real_n = lambda: len(nodes) - empty_n[0]
         cur = conn.cursor()
@@ -20872,6 +20878,7 @@ done
                 if real_n() >= node_cap: truncated = True; break
                 out, inc = fks(o, t)
                 for fk in out:                                         # parents
+                    if fk["t"] in hid: continue
                     cv = [(rc, row.get(c)) for c, rc in zip(fk["cols"], fk["rcols"])]
                     if any(v is None for _, v in cv): continue
                     found, more = fetch(fk["o"], fk["t"], cv, per_fk)
@@ -20882,6 +20889,7 @@ done
                             seen.add(key); edges.append({"from": nid, "to": pid, "label": ", ".join(fk["cols"]) + " → " + ", ".join(fk["rcols"]), "kind": "parent"})
                             nxt.append((pid, fk["o"], fk["t"], prow, lvl - 1))
                 for fk in inc:                                         # children
+                    if fk["t"] in hid: continue
                     cv = [(c, row.get(rc)) for c, rc in zip(fk["cols"], fk["rcols"])]
                     if any(v is None for _, v in cv): continue
                     found, more = fetch(fk["o"], fk["t"], cv, per_fk)
@@ -20907,6 +20915,7 @@ done
                 if inferred:                                           # tables sharing a key column with this one: the rows with the same value
                     meta = _infer_meta(cur, o)
                     for other, c, role in _infer_neighbours(meta, t, maxt=inferred_max):
+                        if other in hid: continue
                         v = row.get(c)
                         if v is None or real_n() >= node_cap: continue
                         found, more = fetch(o, other, [(c, v)], per_fk)
@@ -20928,13 +20937,14 @@ done
         try:
             conn = _get_db_connection()
             try:
-                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2), refby=bool(b.get("refby")), inferred=bool(b.get("inferred")), inferred_max=_infmax(b.get("inferred_max")))))
+                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2), refby=bool(b.get("refby")), inferred=bool(b.get("inferred")), inferred_max=_infmax(b.get("inferred_max")), hidden=b.get("hidden"))))
             finally:
                 conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
-    def _db_table_relations(conn, schema, table, depth=1, node_cap=150, inferred=False, inferred_max=40):
+    def _db_table_relations(conn, schema, table, depth=1, node_cap=150, inferred=False, inferred_max=40, hidden=None):
+        hid = _hid(hidden)
         """Tables related to one table through foreign keys (parents it points to, children that point at it) as a graph."""
         cur = conn.cursor()
         if not schema:
@@ -20991,12 +21001,14 @@ done
                 par, chi = links(o, t)
                 me = "%s.%s" % (o, t)
                 for cn, (ro, rt, c1, c2) in par.items():
+                    if rt in hid: continue
                     new = "%s.%s" % (ro, rt) not in nodes
                     pid = add(ro, rt, lvl - 1)
                     if (me, pid, cn) not in seen:
                         seen.add((me, pid, cn)); edges.append({"from": me, "to": pid, "label": ", ".join(c1) + " → " + ", ".join(c2), "kind": "parent"})
                         if new: nxt.append((ro, rt, lvl - 1))
                 for cn, (co, ct, c1, c2) in chi.items():
+                    if ct in hid: continue
                     new = "%s.%s" % (co, ct) not in nodes
                     cid = add(co, ct, lvl + 1)
                     if (cid, me, cn) not in seen:
@@ -21005,7 +21017,7 @@ done
                 if inferred:                                           # tables sharing a key column with this one, without a foreign key
                     meta = _infer_meta(cur, o)
                     for other, c, role in _infer_neighbours(meta, t, maxt=inferred_max):
-                        if len(nodes) >= node_cap: break
+                        if len(nodes) >= node_cap or other in hid: continue
                         new = "%s.%s" % (o, other) not in nodes
                         oid = add(o, other, lvl - 1 if role == "parent" else lvl + 1)
                         a2, b2 = (me, oid) if role == "parent" else (oid, me)
@@ -21022,13 +21034,14 @@ done
         try:
             conn = _get_db_connection()
             try:
-                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1), inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")))))
+                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1), inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), hidden=request.args.get("hidden", ""))))
             finally:
                 conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
-    def _db_schema_relations(conn, schema, cap=250, isolated=False, focus="", refby=False, inferred=False, inferred_max=40):
+    def _db_schema_relations(conn, schema, cap=250, isolated=False, focus="", refby=False, inferred=False, inferred_max=40, hidden=None):
+        hid = _hid(hidden)
         cap = cap if cap else 10 ** 9                            # 0 = all tables
         """Every foreign key between tables of one schema: the connected tables as nodes, one edge per constraint (child -> parent)."""
         cur = conn.cursor()
@@ -21043,6 +21056,7 @@ done
             WHERE c.owner = :o AND c.constraint_type = 'R' ORDER BY c.constraint_name, cc.position""", {"o": schema})
         cons = {}
         for cn, ct, ro, rt, c1, c2 in cur.fetchall():
+            if ct in hid or rt in hid: continue
             d = cons.setdefault(cn, [ct, ro, rt, [], []]); d[3].append(c1); d[4].append(c2)
         deg, referrers = {}, {}
         for ct, ro, rt, _, _ in cons.values():
@@ -21058,7 +21072,9 @@ done
                 if len(inf_edges) > 30000: break                          # with 'all' a very common column would make millions of pairs
                 for i in range(len(tabs)):
                     if len(inf_edges) > 30000: break
+                    if tabs[i] in hid: continue
                     for j in range(i + 1, len(tabs)):
+                        if tabs[j] in hid: continue
                         if frozenset((tabs[i], tabs[j])) in meta["fk"]: continue
                         pr = _infer_pair(meta, c, tabs[i], tabs[j])
                         if not pr: continue
@@ -21092,6 +21108,7 @@ done
         if isolated:                                           # tables that take part in no foreign key
             cur.execute("SELECT table_name FROM all_tables WHERE owner = :o AND table_name NOT LIKE 'BIN$%' ORDER BY table_name", {"o": schema})
             for (tn,) in cur.fetchall():
+                if tn in hid: continue
                 ids.add("%s.%s" % (schema, tn)) if "%s.%s" % (schema, tn) not in deg else None
         if focus_id: ids.add(focus_id)
         nodes = [{"id": i, "schema": i.split(".")[0], "table": i.split(".", 1)[1], "level": 0, "row": {}} for i in sorted(ids)]
@@ -21134,7 +21151,7 @@ done
     def api_local_payor_db_schema_relations():
         try:
             conn = _get_db_connection()
-            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""), refby=request.args.get("refby") == "1", inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), cap=_capval(request.args.get("cap")))))
+            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""), refby=request.args.get("refby") == "1", inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), cap=_capval(request.args.get("cap")), hidden=request.args.get("hidden", ""))))
             finally: conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
@@ -30612,7 +30629,7 @@ sys.exit(out.channel.recv_exit_status())
         try:
             conn = _remote_db_connect(b.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
             try:
-                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2), refby=bool(b.get("refby")), inferred=bool(b.get("inferred")), inferred_max=_infmax(b.get("inferred_max")))))
+                return jsonify(dict(ok=True, **_db_relations_walk(conn, b.get("schema", ""), b.get("table", ""), b.get("values"), int(b.get("depth") or 2), refby=bool(b.get("refby")), inferred=bool(b.get("inferred")), inferred_max=_infmax(b.get("inferred_max")), hidden=b.get("hidden"))))
             finally:
                 conn.close()
         except Exception as e:
@@ -30623,7 +30640,7 @@ sys.exit(out.channel.recv_exit_status())
         try:
             conn = _remote_db_connect(request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
             try:
-                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1), inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")))))
+                return jsonify(dict(ok=True, **_db_table_relations(conn, request.args.get("schema", ""), request.args.get("table", ""), int(request.args.get("depth") or 1), inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), hidden=request.args.get("hidden", ""))))
             finally:
                 conn.close()
         except Exception as e:
@@ -30633,7 +30650,7 @@ sys.exit(out.channel.recv_exit_status())
     def api_remote_payor_db_schema_relations():
         try:
             conn = _remote_db_connect(request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
-            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""), refby=request.args.get("refby") == "1", inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), cap=_capval(request.args.get("cap")))))
+            try: return jsonify(dict(ok=True, **_db_schema_relations(conn, request.args.get("schema", ""), isolated=request.args.get("isolated") == "1", focus=request.args.get("focus", ""), refby=request.args.get("refby") == "1", inferred=request.args.get("inferred") == "1", inferred_max=_infmax(request.args.get("inferred_max")), cap=_capval(request.args.get("cap")), hidden=request.args.get("hidden", ""))))
             finally: conn.close()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})

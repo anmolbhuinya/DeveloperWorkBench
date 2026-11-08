@@ -154,12 +154,12 @@ function graphRows(g, mode) {
   return { cols, rows }
 }
 
-function RelView({ g, mode, onPick, loadCols, onSearchMiss, searchTables, picked, onToggle, keyOf }) {   // row / table views keep the enlargement step when another row or table is picked
-  const ref = useRef(null), hndRef = useRef(null), pickRef = useRef(picked), keyRef = useRef(keyOf)
-  pickRef.current = picked; keyRef.current = keyOf
+function RelView({ g, mode, onPick, loadCols, onSearchMiss, searchTables, picked, onToggle, keyOf, onHide, relFrom, relState, onRelState }) {   // row / table views keep the enlargement step when another row or table is picked
+  const ref = useRef(null), hndRef = useRef(null), pickRef = useRef(picked), keyRef = useRef(keyOf), hideRef = useRef(onHide), relStateRef = useRef(relState), relCbRef = useRef(onRelState)
+  pickRef.current = picked; keyRef.current = keyOf; hideRef.current = onHide; relStateRef.current = relState; relCbRef.current = onRelState
   useEffect(() => {
     if (!ref.current || !g) return
-    const hnd = renderRelations(ref.current, g, { mode, onPick, loadCols, onSearchMiss, searchTables, keepEmph: mode !== 'schema', picked: pickRef.current, onToggle, keyOf: n => (keyRef.current ? keyRef.current(n) : `${n.schema}.${n.table}`) })
+    const hnd = renderRelations(ref.current, g, { mode, onPick, loadCols, onSearchMiss, searchTables, relFrom, relState: relStateRef.current, onRelState: st => relCbRef.current && relCbRef.current(st), keepEmph: mode !== 'schema', picked: pickRef.current, onToggle, onHide: n => hideRef.current && hideRef.current(n), keyOf: n => (keyRef.current ? keyRef.current(n) : `${n.schema}.${n.table}`) })
     hndRef.current = hnd
     return () => { hnd.destroy(); hndRef.current = null }
   }, [g])
@@ -204,6 +204,29 @@ function useGraph(fetcher, deps) {
   }, deps)
   return { g, err, loading }
 }
+// tables the user is not interested in: hidden from the diagram (and from the server's walk, so they no longer use up its room); Undo / Unhide all bring them back.
+// Kept only while the viewer is open - the next viewer starts with nothing hidden.
+function useHidden() {
+  const [hidden, setHidden] = useState([])
+  useEffect(() => { try { localStorage.removeItem('relHidden') } catch (e) { /* ignore */ } }, [])      // an earlier version remembered them
+  return {
+    hidden,
+    hide: t => setHidden(h => (h.includes(t) ? h : [...h, t])),
+    undo: () => setHidden(h => h.slice(0, -1)),
+    clear: () => setHidden([]),
+  }
+}
+function HideControls({ hv }) {
+  const n = hv.hidden.length
+  return (
+    <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+      <button className="btn btn-sm" disabled={!n} onClick={hv.undo} title={n ? `Bring back ${hv.hidden[n - 1]}` : 'Nothing hidden'}>↶ Undo hide</button>
+      <button className="btn btn-sm" disabled={!n} onClick={hv.clear} title="Show all hidden tables again">Unhide all</button>
+      {n > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }} title={hv.hidden.join(', ')}>🚫 {n} hidden</span>}
+    </span>
+  )
+}
+
 const Body = ({ loading, err, g, note, children, shrink }) => <>
   {loading && <div style={{ textAlign: 'center', padding: 30 }}><span className="spinner" /></div>}
   {err && <div style={{ color: '#c62828', fontSize: 12 }}>{err}</div>}
@@ -353,6 +376,7 @@ function QueryBuilder({ model, execUrl, extra, exportUrl, onClose, picked, setPi
 export function RelationsModal({ gv, result, table, schemaFallback, relationsUrl, exportUrl, extra = {} }) {
   const [depth, setDepth] = useState(2)
   const [refby, setRefby] = useState(false), [inf, setInf] = useState(false), [infMax, setInfMax] = useState('40')
+  const hv = useHidden()
   const [qb, setQb] = useState(false), [qbMounted, setQbMounted] = useState(false)       // once opened it stays mounted, so minimizing keeps the query and its result
   const modelRef = useRef(null)
   const [picked, setPicked] = useState({})                     // columns ticked in the diagram / query builder: table -> [columns]
@@ -366,7 +390,7 @@ export function RelationsModal({ gv, result, table, schemaFallback, relationsUrl
     setHist([{ schema, table: tbl, values }]); setHp(0)
   }, [ri])
   const cur = hist[hp]
-  const { g, err, loading } = useGraph(() => cur ? fetch(relationsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schema: cur.schema, table: cur.table, values: cur.values, depth, refby, inferred: inf, inferred_max: infMax, ...extra }) }).then(r => r.json()) : new Promise(() => {}), [hist, hp, depth, refby, inf, infMax])
+  const { g, err, loading } = useGraph(() => cur ? fetch(relationsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schema: cur.schema, table: cur.table, values: cur.values, depth, refby, inferred: inf, inferred_max: infMax, hidden: hv.hidden, ...extra }) }).then(r => r.json()) : new Promise(() => {}), [hist, hp, depth, refby, inf, infMax, hv.hidden.join(',')])
   const model = useMemo(() => (g ? buildModel(g) : null), [g])
   if (model) modelRef.current = model
   if (ri === undefined || !cur) return null
@@ -375,9 +399,9 @@ export function RelationsModal({ gv, result, table, schemaFallback, relationsUrl
     <Shell title={`Relations of ${cur.schema}.${cur.table}`} onClose={() => gv.setRel(null)}
       left={<><button style={{ ...navBtn, opacity: hp > 0 ? 1 : 0.4 }} disabled={hp <= 0} onClick={() => setHp(hp - 1)}>← Back</button>
         <button style={{ ...navBtn, opacity: hp < hist.length - 1 ? 1 : 0.4 }} disabled={hp >= hist.length - 1} onClick={() => setHp(hp + 1)}>Forward →</button></>}
-      right={<><button className="btn btn-sm" onClick={() => { setQb(v => !v); setQbMounted(true) }} disabled={!g && !qbMounted}>🧮 Query builder{qbMounted && !qb ? ' ▴' : ''}</button><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also show the tables that have a foreign key to a shown row's table, even when no row of them points at it"><input type="checkbox" checked={refby} onChange={e => setRefby(e.target.checked)} />Show referenced-by tables</label><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also link tables that share a key column name (e.g. USER_ACCOUNT and USER_ACCOUNT_PASSWORD share USER_ACCT_ID) even without a foreign key"><input type="checkbox" checked={inf} onChange={e => setInf(e.target.checked)} />Show relations between tables with the same column name</label>{inf && <select value={infMax} onChange={e => setInfMax(e.target.value)} title="Ignore columns found in more than this many tables (all = nothing is ignored)" style={{ fontSize: 11 }}>{['40', '50', '75', '100', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'ignore none' : 'ignore > ' + v + ' tables'}</option>)}</select>}<DepthSel depth={depth} setDepth={setDepth} /><ExportBtns g={g} mode="row" title={`Relations of ${cur.schema}.${cur.table} (row)`} base="relations" exportUrl={exportUrl} /></>}>
+      right={<><HideControls hv={hv} /><button className="btn btn-sm" onClick={() => { setQb(v => !v); setQbMounted(true) }} disabled={!g && !qbMounted}>🧮 Query builder{qbMounted && !qb ? ' ▴' : ''}</button><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also show the tables that have a foreign key to a shown row's table, even when no row of them points at it"><input type="checkbox" checked={refby} onChange={e => setRefby(e.target.checked)} />Show referenced-by tables</label><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also link tables that share a key column name (e.g. USER_ACCOUNT and USER_ACCOUNT_PASSWORD share USER_ACCT_ID) even without a foreign key"><input type="checkbox" checked={inf} onChange={e => setInf(e.target.checked)} />Show relations between tables with the same column name</label>{inf && <select value={infMax} onChange={e => setInfMax(e.target.value)} title="Ignore columns found in more than this many tables (all = nothing is ignored)" style={{ fontSize: 11 }}>{['40', '50', '75', '100', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'ignore none' : 'ignore > ' + v + ' tables'}</option>)}</select>}<DepthSel depth={depth} setDepth={setDepth} /><ExportBtns g={g} mode="row" title={`Relations of ${cur.schema}.${cur.table} (row)`} base="relations" exportUrl={exportUrl} /></>}>
       <Body loading={loading} err={err} g={g} shrink={qb} note={g && `${g.nodes.length} row(s) in ${new Set(g.nodes.map(n => n.table)).size} table(s)${g.truncated ? ' - the list was limited, lower the depth to see everything' : ''}${g.nodes.length === 1 ? ' · this row has no related rows through foreign keys' : ''}`}>
-        <RelView g={g} mode="row" onPick={pick} picked={picked} onToggle={onToggle} keyOf={n => model?.nodeInst[n.id] || `${n.schema}.${n.table}`} />
+        <RelView g={g} mode="row" relState={cur?.rel} onRelState={st => { if (cur) cur.rel = st }} onPick={pick} picked={picked} onToggle={onToggle} onHide={n => hv.hide(n.table)} keyOf={n => model?.nodeInst[n.id] || `${n.schema}.${n.table}`} />
       </Body>
       {qbMounted && modelRef.current && <div style={{ display: qb ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}><QueryBuilder model={modelRef.current} execUrl={relationsUrl.replace('/db/relations', '/db/execute')} extra={extra} exportUrl={exportUrl} onClose={() => setQb(false)} picked={picked} setPicked={setPicked} /></div>}
     </Shell>
@@ -387,16 +411,17 @@ export function RelationsModal({ gv, result, table, schemaFallback, relationsUrl
 // the tables related to one table
 export function TableRelationsModal({ url, schema, table, onClose, exportUrl, extra = '' }) {
   const [hist, setHist] = useState([{ schema, table }]), [hp, setHp] = useState(0), [depth, setDepth] = useState(1), [inf, setInf] = useState(false), [infMax, setInfMax] = useState('40')
+  const hv = useHidden()
   const cur = hist[hp]
-  const { g, err, loading } = useGraph(() => fetch(`${url}?schema=${encodeURIComponent(cur.schema)}&table=${encodeURIComponent(cur.table)}&depth=${depth}${inf ? '&inferred=1&inferred_max=' + infMax : ''}${extra}`).then(r => r.json()), [hist, hp, depth, inf, infMax])
+  const { g, err, loading } = useGraph(() => fetch(`${url}?schema=${encodeURIComponent(cur.schema)}&table=${encodeURIComponent(cur.table)}&depth=${depth}${inf ? '&inferred=1&inferred_max=' + infMax : ''}${hv.hidden.length ? '&hidden=' + encodeURIComponent(hv.hidden.join(',')) : ''}${extra}`).then(r => r.json()), [hist, hp, depth, inf, infMax, hv.hidden.join(',')])
   const pick = n => { if (n.id === g?.root) return; setHist(h => [...h.slice(0, hp + 1), { schema: n.schema, table: n.table }]); setHp(hp + 1) }
   return (
     <Shell title={`Relations of ${cur.schema}.${cur.table}`} onClose={onClose}
       left={<><button style={{ ...navBtn, opacity: hp > 0 ? 1 : 0.4 }} disabled={hp <= 0} onClick={() => setHp(hp - 1)}>← Back</button>
         <button style={{ ...navBtn, opacity: hp < hist.length - 1 ? 1 : 0.4 }} disabled={hp >= hist.length - 1} onClick={() => setHp(hp + 1)}>Forward →</button></>}
-      right={<><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also link tables that share a key column name (e.g. USER_ACCOUNT and USER_ACCOUNT_PASSWORD share USER_ACCT_ID) even without a foreign key"><input type="checkbox" checked={inf} onChange={e => setInf(e.target.checked)} />Show relations between tables with the same column name</label>{inf && <select value={infMax} onChange={e => setInfMax(e.target.value)} title="Ignore columns found in more than this many tables (all = nothing is ignored)" style={{ fontSize: 11 }}>{['40', '50', '75', '100', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'ignore none' : 'ignore > ' + v + ' tables'}</option>)}</select>}<DepthSel depth={depth} setDepth={setDepth} /><ExportBtns g={g} mode="table" title={`Relations of ${cur.schema}.${cur.table}`} base="table_relations" exportUrl={exportUrl} /></>}>
+      right={<><HideControls hv={hv} /><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also link tables that share a key column name (e.g. USER_ACCOUNT and USER_ACCOUNT_PASSWORD share USER_ACCT_ID) even without a foreign key"><input type="checkbox" checked={inf} onChange={e => setInf(e.target.checked)} />Show relations between tables with the same column name</label>{inf && <select value={infMax} onChange={e => setInfMax(e.target.value)} title="Ignore columns found in more than this many tables (all = nothing is ignored)" style={{ fontSize: 11 }}>{['40', '50', '75', '100', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'ignore none' : 'ignore > ' + v + ' tables'}</option>)}</select>}<DepthSel depth={depth} setDepth={setDepth} /><ExportBtns g={g} mode="table" title={`Relations of ${cur.schema}.${cur.table}`} base="table_relations" exportUrl={exportUrl} /></>}>
       <Body loading={loading} err={err} g={g} note={g && `${g.nodes.length} table(s)${g.truncated ? ' - limited, lower the depth' : ''}${g.nodes.length === 1 ? ' · this table has no foreign key relations' : ''}`}>
-        <RelView g={g} mode="table" onPick={pick} />
+        <RelView g={g} mode="table" relState={cur?.rel} onRelState={st => { if (cur) cur.rel = st }} onPick={pick} onHide={n => hv.hide(n.table)} />
       </Body>
     </Shell>
   )
@@ -408,8 +433,10 @@ export function SchemaRelationsModal({ schema, onClose, schemaUrl, colsUrl, expo
   const [refby, setRefby] = useState(false)
   const [inf, setInf] = useState(false), [infMax, setInfMax] = useState('40')
   const [capSel, setCapSel] = useState('250')
+  const [relFrom, setRelFrom] = useState('')
+  const hv = useHidden()
   const [focus, setFocus] = useState('')
-  const { g, err, loading } = useGraph(() => fetch(`${schemaUrl}?schema=${encodeURIComponent(schema)}${iso ? '&isolated=1' : ''}${refby ? '&refby=1' : ''}${inf ? '&inferred=1&inferred_max=' + infMax : ''}&cap=${capSel}${focus ? '&focus=' + encodeURIComponent(focus) : ''}${extra}`).then(r => r.json()), [schema, iso, refby, inf, infMax, capSel, focus])
+  const { g, err, loading } = useGraph(() => fetch(`${schemaUrl}?schema=${encodeURIComponent(schema)}${iso ? '&isolated=1' : ''}${refby ? '&refby=1' : ''}${inf ? '&inferred=1&inferred_max=' + infMax : ''}&cap=${capSel}${hv.hidden.length ? '&hidden=' + encodeURIComponent(hv.hidden.join(',')) : ''}${focus ? '&focus=' + encodeURIComponent(focus) : ''}${extra}`).then(r => r.json()), [schema, iso, refby, inf, infMax, capSel, hv.hidden.join(','), focus])
   const loadCols = async ids => {
     const tables = ids.map(id => { const n = g.nodes.find(x => x.id === id); return n && { schema: n.schema, table: n.table } }).filter(Boolean)
     const out = {}
@@ -421,9 +448,9 @@ export function SchemaRelationsModal({ schema, onClose, schemaUrl, colsUrl, expo
   }
   const prep = async gg => ({ ...gg, cols: await loadCols(gg.nodes.map(n => n.id)) })     // the exported page carries the columns of every table
   return (
-    <Shell title={`Relations in schema ${schema}`} onClose={onClose} right={<><select value={capSel} onChange={e => setCapSel(e.target.value)} title="How many of the most connected tables to draw" style={{ fontSize: 11 }}>{['250', '500', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'all tables' : 'up to ' + v + ' tables'}</option>)}</select><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}><input type="checkbox" checked={iso} onChange={e => setIso(e.target.checked)} />Show tables without relations</label><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also show every table that has a foreign key to a shown table"><input type="checkbox" checked={refby} onChange={e => setRefby(e.target.checked)} />Show referenced-by tables</label><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also link tables that share a key column name (e.g. USER_ACCOUNT and USER_ACCOUNT_PASSWORD share USER_ACCT_ID) even without a foreign key"><input type="checkbox" checked={inf} onChange={e => setInf(e.target.checked)} />Show relations between tables with the same column name</label>{inf && <select value={infMax} onChange={e => setInfMax(e.target.value)} title="Ignore columns found in more than this many tables (all = nothing is ignored)" style={{ fontSize: 11 }}>{['40', '50', '75', '100', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'ignore none' : 'ignore > ' + v + ' tables'}</option>)}</select>}<ExportBtns g={g} mode="schema" title={`Relations in schema ${schema}`} base={`${schema}_relations`} exportUrl={exportUrl} prep={prep} /></>}>
+    <Shell title={`Relations in schema ${schema}`} onClose={onClose} right={<><HideControls hv={hv} /><select value={capSel} onChange={e => setCapSel(e.target.value)} title="How many of the most connected tables to draw" style={{ fontSize: 11 }}>{['250', '500', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'all tables' : 'up to ' + v + ' tables'}</option>)}</select><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}><input type="checkbox" checked={iso} onChange={e => setIso(e.target.checked)} />Show tables without relations</label><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also show every table that has a foreign key to a shown table"><input type="checkbox" checked={refby} onChange={e => setRefby(e.target.checked)} />Show referenced-by tables</label><label style={{ fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center', cursor: 'pointer' }} title="Also link tables that share a key column name (e.g. USER_ACCOUNT and USER_ACCOUNT_PASSWORD share USER_ACCT_ID) even without a foreign key"><input type="checkbox" checked={inf} onChange={e => setInf(e.target.checked)} />Show relations between tables with the same column name</label>{inf && <select value={infMax} onChange={e => setInfMax(e.target.value)} title="Ignore columns found in more than this many tables (all = nothing is ignored)" style={{ fontSize: 11 }}>{['40', '50', '75', '100', 'all'].map(v => <option key={v} value={v}>{v === 'all' ? 'ignore none' : 'ignore > ' + v + ' tables'}</option>)}</select>}<ExportBtns g={g} mode="schema" title={`Relations in schema ${schema}`} base={`${schema}_relations`} exportUrl={exportUrl} prep={prep} /></>}>
       <Body loading={loading} err={err} g={g} note={g && `${g.nodes.length} table(s)${iso ? '' : ' with foreign keys'}${g.total ? ' of ' + g.total : ''}, ${g.edges.length} relation(s)${g.truncated ? ` - showing the ${g.nodes.length - (g.focus ? 0 : 0)} most connected of ${g.connected} tables that have relations; type a table name in the find box and click Search to bring any other table in` : ''}`}>
-        <RelView g={g} mode="schema" loadCols={loadCols} onSearchMiss={q => setFocus(q)} searchTables={q => fetch(`${schemaUrl.replace('schema-relations', 'search-tables')}?schema=${encodeURIComponent(schema)}&q=${encodeURIComponent(q)}${extra}`).then(r => r.json()).then(d => d.ok ? d.tables : [])} />
+        <RelView g={g} mode="schema" onHide={n => hv.hide(n.table)} relFrom={relFrom} loadCols={loadCols} onSearchMiss={(q, from) => { setRelFrom(from || ''); setFocus(q) }} searchTables={q => fetch(`${schemaUrl.replace('schema-relations', 'search-tables')}?schema=${encodeURIComponent(schema)}&q=${encodeURIComponent(q)}${extra}`).then(r => r.json()).then(d => d.ok ? d.tables : [])} />
       </Body>
     </Shell>
   )

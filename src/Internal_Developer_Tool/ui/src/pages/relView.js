@@ -6,7 +6,7 @@ export function renderRelations(root, g, opts) {
   opts = opts || {}
   const mode = opts.mode || 'row'
   const NS = 'http://www.w3.org/2000/svg'
-  const AMBER = ['rgba(245,158,11,0.18)', '#f59e0b'], BLUE = ['rgba(21,101,192,0.12)', '#1565c0'], GREEN = ['rgba(46,125,50,0.12)', '#2e7d32'], GREY = ['rgba(128,128,128,0.08)', '#90a4ae'], PURPLE = ['rgba(142,36,170,0.14)', '#8e24aa']
+  const AMBER = ['rgba(245,158,11,0.18)', '#f59e0b'], BLUE = ['rgba(21,101,192,0.12)', '#1565c0'], GREEN = ['rgba(46,125,50,0.12)', '#2e7d32'], GREY = ['rgba(128,128,128,0.08)', '#90a4ae'], PURPLE = ['rgba(142,36,170,0.14)', '#8e24aa'], TEAL = ['rgba(0,150,136,0.20)', '#009688']
   const noun = mode === 'row' ? 'row' : 'table'
   const h = (tag, css, parent, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text !== undefined) e.textContent = text; if (parent) parent.appendChild(e); return e }
   const s = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e }
@@ -19,6 +19,9 @@ export function renderRelations(root, g, opts) {
   const cols = Object.assign({}, g.cols || {})
   g.nodes.forEach(n => { if (n.row && Object.keys(n.row).length) cols[n.id] = n.row })
 
+  let rel = null                                                  // 'Highlight relation': the ids of the boxes between the selected one and the found one (null = show everything)
+  const visN = () => (rel ? g.nodes.filter(n => rel.has(n.id)) : g.nodes), visE = () => (rel ? g.edges.filter(e => rel.has(e.from) && rel.has(e.to)) : g.edges)
+  let relFrom = null, relFound = null
   let sel = null, zoom = 1, destroyed = false, emph = opts.keepEmph ? (renderRelations.emph || 0) : 0          // emph: -3 reduced .. 10 most enlarged (left click on the selected table enlarges, right click reduces)
   let pinned = null, lastOff = null
   const drift = {}                       // row / table views: how far each box was dragged from the layered layout
@@ -31,7 +34,8 @@ export function renderRelations(root, g, opts) {
   root.style.cssText = 'display:flex;flex-direction:column;height:100%;min-height:150px;font:12px system-ui,sans-serif;color:var(--text,#222)'
   const bar = h('div', 'display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:0 0 8px;font-size:11px;color:var(--text-muted,#666)', root)
   const legend = h('span', 'display:inline-flex;gap:12px;flex-wrap:wrap;align-items:center', bar)
-  const sw = (c, t) => { const w = h('span', 'display:inline-flex;align-items:center;gap:4px', legend); h('span', `width:12px;height:12px;border-radius:3px;display:inline-block;background:${c[0]};border:1px solid ${c[1]}`, w); w.appendChild(document.createTextNode(t)) }
+  const sw = (c, t) => { const w = h('span', 'display:inline-flex;align-items:center;gap:4px', legend); h('span', `width:12px;height:12px;border-radius:3px;display:inline-block;background:${c[0]};border:1px solid ${c[1]}`, w); w.appendChild(document.createTextNode(t)); return w }
+  const foundSw = sw(TEAL, 'Found table'); foundSw.style.display = 'none'
   let hintText = ''
   if (mode === 'schema') {
     sw(AMBER, 'Selected ' + noun); sw(BLUE, 'Parent (the selected table points to it)'); sw(GREEN, 'Child (points to the selected table)'); sw(GREY, 'Other tables')
@@ -43,12 +47,15 @@ export function renderRelations(root, g, opts) {
   if (g.edges.some(e => e.kind === 'inferred')) { sw(PURPLE, noun === 'row' ? 'Row of a table linked only by column name' : 'Table linked only by column name'); const w = h('span', 'display:inline-flex;align-items:center;gap:4px', legend); const sv = s('svg', { width: 26, height: 8 }, w); s('line', { x1: 0, y1: 4, x2: 26, y2: 4, stroke: '#8e24aa', 'stroke-width': 2, 'stroke-dasharray': '6 4' }, sv); w.appendChild(document.createTextNode('same column name, no foreign key')) }
   const tools = h('span', 'margin-left:auto;position:relative;display:inline-flex;gap:4px;align-items:center', bar)
   if (hintText) h('span', 'flex-basis:100%;order:3;margin-top:-4px', bar, hintText)       // the explanation sits on its own line, so the colour key stays on one row
-  let search = null, searchBtn = null
-  if (mode === 'schema') {
+  let search = null, searchBtn = null, relBtn = null
+  {                                                           // every view can look a table up by name
     search = h('input', 'font-size:11px;padding:2px 6px;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--surface2,#fff);color:inherit;width:150px', tools)
     search.placeholder = 'find table'
     searchBtn = h('button', 'border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:4px;padding:1px 8px;cursor:pointer;font-size:12px', tools, '🔍 Search')
-    searchBtn.title = 'Find the table (any table of the schema, also ones not drawn yet)'
+    relBtn = h('button', 'display:none;border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:4px;padding:1px 8px;cursor:pointer;font-size:12px', tools, '🔗 Highlight relation')
+    relBtn.title = 'Show only the tables between the selected table and the found table'
+    relBtn.onclick = toggleRel
+    searchBtn.title = mode === 'schema' ? 'Find the table (any table of the schema, also ones not drawn yet)' : 'Find a table in this diagram'
   }
   const btn = (t, tip, fn) => { const b = h('button', 'border:1px solid var(--border,#ccc);background:var(--surface,#fff);color:inherit;border-radius:4px;padding:1px 8px;cursor:pointer;font-size:12px', tools, t); b.title = tip; b.onclick = fn; return b }
   btn('−', 'Zoom out', () => setZoom(zoom / 1.2)); const zl = h('span', 'min-width:38px;text-align:center', tools); btn('+', 'Zoom in', () => setZoom(zoom * 1.2)); btn('Fit', 'Fit to window', fit); btn('100%', 'Actual size', () => setZoom(1))
@@ -161,19 +168,19 @@ export function renderRelations(root, g, opts) {
 
   // ---- layout ------------------------------------------------------------------------------------------------
   function layered(sz) {
-    const levels = [...new Set(g.nodes.map(n => n.level))].sort((a, b) => a - b), P = {}
+    const levels = [...new Set(visN().map(n => n.level))].sort((a, b) => a - b), P = {}
     let cx = 12
-    levels.forEach((lv, li) => { let y = 12; const col = g.nodes.filter(n => n.level === lv), x0 = cx; cx += Math.max(...col.map(n => sz[n.id].w)) + 100; col.forEach(n => { P[n.id] = { x: x0, y, w: sz[n.id].w, h: sz[n.id].h }; y += sz[n.id].h + 16 }) })
+    levels.forEach((lv, li) => { let y = 12; const col = visN().filter(n => n.level === lv), x0 = cx; cx += Math.max(...col.map(n => sz[n.id].w)) + 100; col.forEach(n => { P[n.id] = { x: x0, y, w: sz[n.id].w, h: sz[n.id].h }; y += sz[n.id].h + 16 }) })
     Object.keys(P).forEach(k => { const d = drift[k]; if (d) { P[k].x += d.x; P[k].y += d.y } })
     return P
   }
   function force(sz) {
-    const ns = g.nodes.filter(n => deg[n.id] > 0), iso = g.nodes.filter(n => deg[n.id] === 0).sort((a, b) => a.table < b.table ? -1 : 1), N = ns.length, idx = {}; ns.forEach((n, i) => { idx[n.id] = i })
+    const ns = visN().filter(n => deg[n.id] > 0), iso = visN().filter(n => deg[n.id] === 0).sort((a, b) => a.table < b.table ? -1 : 1), N = ns.length, idx = {}; ns.forEach((n, i) => { idx[n.id] = i })
     const x = new Array(N), y = new Array(N)
     const big = N > 600                                                            // a very large diagram: start from a grid and relax only a little, so the page stays responsive
     const cw = big ? Math.max(...ns.map(n => sz[n.id].w)) + 24 : 0, chh = big ? Math.max(...ns.map(n => sz[n.id].h)) + 18 : 0, cols = big ? Math.ceil(Math.sqrt(N * 1.6)) : 1
     ns.forEach((n, i) => { const p = pos[n.id]; if (p) { x[i] = p.x; y[i] = p.y } else if (big) { x[i] = (i % cols) * cw; y[i] = Math.floor(i / cols) * chh } else { const a = i * 2.399963, r = 70 * Math.sqrt(i + 1) * (1 + (sel ? 0.3 : 0)); x[i] = Math.cos(a) * r; y[i] = Math.sin(a) * r } })
-    const E = g.edges.filter(e => idx[e.from] !== undefined && idx[e.to] !== undefined).map(e => [idx[e.from], idx[e.to]])
+    const E = visE().filter(e => idx[e.from] !== undefined && idx[e.to] !== undefined).map(e => [idx[e.from], idx[e.to]])
     const iters = big ? 12 : Object.keys(pos).length ? 140 : 320
     for (let it = 0; it < iters; it++) {
       const t = 1 - it / iters, fx = new Array(N).fill(0), fy = new Array(N).fill(0)
@@ -228,6 +235,7 @@ export function renderRelations(root, g, opts) {
   const incident = {}; g.edges.forEach(e => { (incident[e.from] = incident[e.from] || []).push(e); (incident[e.to] = incident[e.to] || []).push(e) })
   const nameOnly = (a, b) => { const es = (incident[a] || []).filter(e => e.from === b || e.to === b); return es.length > 0 && es.every(e => e.kind === 'inferred') }
   const tone = n => {
+    if (relFound && n.table === relFound && n.id !== sel && n.id !== g.root) return TEAL                       // the table that was searched for
     if (sel) { if (n.id === sel) return AMBER; if (parentsOf[sel].includes(n.id) || childrenOf[sel].includes(n.id)) { if (nameOnly(sel, n.id)) return PURPLE; return parentsOf[sel].includes(n.id) ? BLUE : GREEN } }
     if (n.id !== g.root && (incident[n.id] || []).length && incident[n.id].every(e => e.kind === 'inferred')) return PURPLE
     if (mode === 'schema') return GREY
@@ -249,7 +257,7 @@ export function renderRelations(root, g, opts) {
   }
   function drawEdges() {
     eg.innerHTML = ''
-    g.edges.forEach(e => {
+    visE().forEach(e => {
       const geo = edgeGeo(e); if (!geo) return
       const touch = sel && (e.from === sel || e.to === sel)
       const dim = sel && !touch
@@ -263,14 +271,14 @@ export function renderRelations(root, g, opts) {
   const els = {}
   function draw() {
     if (destroyed) return
-    const sz = {}; g.nodes.forEach(n => { sz[n.id] = sizeOf(n) })
-    P = mode === 'schema' ? force(sz) : layered(sz)
+    const sz = {}; visN().forEach(n => { sz[n.id] = sizeOf(n) })
+    if (usedP) { P = usedP; isoTop = snap ? snap.isoTop : null; isoCount = snap ? snap.isoCount : 0; usedP = null } else P = mode === 'schema' ? force(sz) : layered(sz)
     let W = 0, H = 0; Object.values(P).forEach(p => { W = Math.max(W, p.x + p.w); H = Math.max(H, p.y + p.h) }); dims = { W: W + 20, H: H + 20 }
     svg.setAttribute('width', dims.W); svg.setAttribute('height', dims.H); stage.style.width = dims.W + 'px'; stage.style.height = dims.H + 'px'
     layer.innerHTML = ''; checks.length = 0
     drawEdges()
     if (isoTop !== null) h('div', `position:absolute;left:16px;top:${isoTop}px;font-size:12px;font-weight:600;color:var(--text-muted,#666)`, layer, `Tables without relations (${isoCount})`)
-    g.nodes.forEach(n => {
+    visN().forEach(n => {
       const p = P[n.id], z = sz[n.id], [bg, bd] = tone(n)
       const dim = sel && mode === 'schema' ? !isNb(n.id) : sel ? !(n.id === sel || nbr[sel].has(n.id)) : false
       const box = h('div', `position:absolute;left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;box-sizing:border-box;border:${n.id === sel ? 2 : 1}px ${n.empty ? 'dashed' : 'solid'} ${bd};border-radius:6px;background:${bg};overflow:hidden;cursor:pointer;opacity:${dim ? 0.4 : 1};font:${10 * (z.f || 1)}px monospace;color:var(--text,#222)`, layer)
@@ -293,6 +301,10 @@ export function renderRelations(root, g, opts) {
       }
       const fs = z.k ? Math.round(10 * z.k) : Math.round(11 * (z.f || 1))
       const head = h('div', `padding:${z.detail ? 4 : 2}px 8px;font-weight:700;font-size:${fs}px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${z.detail ? `border-bottom:1px solid ${bd};background:rgba(128,128,128,0.08)` : ''}`, box, n.table + (n.id === g.root && mode !== 'schema' ? '  ★' : '') + (!z.detail && mode === 'schema' && !sel && z.h >= 34 ? '' : ''))
+      if (opts.onHide && n.id !== g.root && p.w >= 110) {                  // hide this table (so it no longer uses up the room of the diagram)
+        const x = h('span', 'float:right;cursor:pointer;opacity:.55;padding:0 2px;margin-left:6px', head, '✕'); x.title = 'Hide this table'
+        x.onmousedown = ev => ev.stopPropagation(); x.onclick = ev => { ev.stopPropagation(); opts.onHide(n) }
+      }
       if (z.detail) {
         const body = h('div', 'padding:3px 8px', box), all = lines(n.id)
         if (n.empty) h('div', 'color:var(--text-muted,#777);font-style:italic', body, 'no row refers to this one')
@@ -351,12 +363,62 @@ export function renderRelations(root, g, opts) {
   vp.addEventListener('click', e => { if (dragMoved) return                    // letting go outside the table after a drag is not a click
     if (mode === 'schema' && sel && (e.target === vp || e.target === spacer || e.target === stage || e.target === svg || e.target === layer)) select(null) })
   // a search can match several tables: they are listed so one can be picked (any table of the schema, also ones not drawn yet)
-  const list = mode === 'schema' ? h('div', 'display:none;position:absolute;right:0;top:100%;margin-top:4px;z-index:50;min-width:260px;max-height:280px;overflow:auto;background:var(--surface,#fff);color:var(--text,#222);border:1px solid var(--border,#ccc);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);font:11px monospace', tools) : null
+  const list = true ? h('div', 'display:none;position:absolute;right:0;top:100%;margin-top:4px;z-index:50;min-width:260px;max-height:280px;overflow:auto;background:var(--surface,#fff);color:var(--text,#222);border:1px solid var(--border,#ccc);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);font:11px monospace', tools) : null
   const closeList = () => { if (list) list.style.display = 'none' }
+  // the relation between the table that was selected and the table that was found: only the boxes on the shortest paths between the two stay
+  function relSet() {
+    const src = relFrom && byId[relFrom] ? [relFrom] : [], tgt = g.nodes.filter(n => n.table === relFound).map(n => n.id)
+    if (!src.length || !tgt.length) return null
+    const bfs = starts => { const d = {}; const q = [...starts]; starts.forEach(i => { d[i] = 0 }); while (q.length) { const u = q.shift(); nbr[u].forEach(v => { if (d[v] === undefined) { d[v] = d[u] + 1; q.push(v) } }) } return d }
+    const d1 = bfs(src), d2 = bfs(tgt)
+    const D = Math.min(...tgt.map(t => (d1[t] === undefined ? Infinity : d1[t])))
+    if (!isFinite(D)) return false
+    return new Set(g.nodes.filter(n => d1[n.id] !== undefined && d2[n.id] !== undefined && d1[n.id] + d2[n.id] === D).map(n => n.id))
+  }
+  function updateRelBtn() {
+    if (!relBtn) return
+    const ok = relFrom && byId[relFrom] && relFound && g.nodes.some(n => n.table === relFound) && !(byId[relFrom].table === relFound)
+    foundSw.style.display = relFound ? '' : 'none'
+    relBtn.style.display = ok || rel ? '' : 'none'
+    relBtn.textContent = rel ? '← Back' : '🔗 Highlight relation'
+    relBtn.style.background = rel ? 'rgba(142,36,170,0.18)' : 'var(--surface,#fff)'
+  }
+  const emitRel = () => { if (opts.onRelState) opts.onRelState({ from: relFrom, found: relFound, on: !!rel }) }      // so a view that is left (a table was clicked) can be restored with its highlight
+  let snap = null, usedP = null
+  const clone = o => JSON.parse(JSON.stringify(o))
+  function toggleRel() {
+    if (rel) {                                                     // back to exactly what was shown before
+      rel = null
+      if (snap) {
+        Object.keys(pos).forEach(k => { delete pos[k] }); Object.assign(pos, snap.pos)
+        Object.keys(nemph).forEach(k => { delete nemph[k] }); Object.assign(nemph, snap.nemph)
+        Object.keys(drift).forEach(k => { delete drift[k] }); Object.assign(drift, snap.drift)
+        emph = snap.emph; sel = snap.sel; pinned = snap.pinned; lastOff = snap.lastOff; usedP = snap.P
+        updateRelBtn(); draw(); setZoom(snap.zoom); vp.scrollLeft = snap.sx; vp.scrollTop = snap.sy
+        snap = null
+      } else { updateRelBtn(); draw() }
+      emitRel()
+      return
+    }
+    const r = relSet()
+    if (r === false) { relBtn.textContent = 'no relation in this diagram'; setTimeout(updateRelBtn, 1600); return }
+    snap = { pos: clone(pos), P: clone(P), zoom, sx: vp.scrollLeft, sy: vp.scrollTop, emph, nemph: clone(nemph), sel, pinned: pinned ? new Set(pinned) : null,
+      lastOff: lastOff ? { ...lastOff } : null, drift: clone(drift), isoTop, isoCount }
+    rel = r; updateRelBtn(); draw(); setZoom(1); vp.scrollLeft = 0; vp.scrollTop = 0; emitRel()
+  }
   const choose = name => {
     closeList(); search.value = name
+    if (rel) toggleRel()
+    const anchor = mode === 'schema' ? sel : g.root                            // the table that is selected now stays the selected one
     const m = g.nodes.find(n => n.table === name)
-    if (m) select(m.id); else if (opts.onSearchMiss) opts.onSearchMiss(name)
+    relFound = name
+    relFrom = anchor && byId[anchor] && byId[anchor].table !== name ? anchor : (opts.relFrom && byId[opts.relFrom] ? opts.relFrom : null)
+    if (m && anchor) {                                                         // only mark and show the found table
+      draw()
+      if (P[m.id]) { vp.scrollLeft = Math.max(0, (P[m.id].x + P[m.id].w / 2) * zoom - vp.clientWidth / 2); vp.scrollTop = Math.max(0, (P[m.id].y + P[m.id].h / 2) * zoom - vp.clientHeight / 2) }
+    } else if (m) select(m.id)                                                 // nothing was selected before: the found table becomes the selected one
+    else if (opts.onSearchMiss) opts.onSearchMiss(name, relFrom)
+    updateRelBtn(); emitRel()
   }
   const showList = (names, q) => {
     list.innerHTML = ''
@@ -381,8 +443,21 @@ export function renderRelations(root, g, opts) {
   if (search) { search.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch() }); searchBtn.onclick = doSearch }
   if (search) search.addEventListener('input', () => { search.style.outline = '' })
 
+  let startRel = false
+  if (opts.relState && opts.relState.found && g.nodes.some(n => n.table === opts.relState.found)) {            // coming back to a view that was left: its found table and highlight are restored
+    relFrom = byId[opts.relState.from] ? opts.relState.from : null; relFound = opts.relState.found; if (search) search.value = relFound
+    if (opts.relState.on) { const r = relSet(); if (r) { rel = r; startRel = true } }
+  }
+  if (opts.relFrom && g.focus && byId[g.focus] && byId[opts.relFrom]) { relFrom = opts.relFrom; relFound = byId[g.focus].table; if (search) search.value = relFound }
   draw()
+  if (startRel) { setZoom(1); vp.scrollLeft = 0; vp.scrollTop = 0 }
+  updateRelBtn()
   if (mode === 'schema') setTimeout(fit, 0)
-  if (g.focus && byId[g.focus]) setTimeout(() => select(g.focus), 30)
+  if (g.focus && byId[g.focus]) setTimeout(() => {
+    if (relFrom) {                                                // came from a search while a table was selected: that table stays the selected one, the found one is only marked
+      select(relFrom, false); updateRelBtn()
+      if (P[g.focus]) { vp.scrollLeft = Math.max(0, (P[g.focus].x + P[g.focus].w / 2) * zoom - vp.clientWidth / 2); vp.scrollTop = Math.max(0, (P[g.focus].y + P[g.focus].h / 2) * zoom - vp.clientHeight / 2) }
+    } else select(g.focus)
+  }, 30)
   return { setPicked(m) { Object.keys(picked).forEach(t => delete picked[t]); Object.keys(m || {}).forEach(t => { picked[t] = new Set(m[t]) }); syncChecks() }, destroy() { destroyed = true; document.removeEventListener('click', closeList); window.removeEventListener('mousemove', mm); window.removeEventListener('mouseup', mu) }, select }
 }
