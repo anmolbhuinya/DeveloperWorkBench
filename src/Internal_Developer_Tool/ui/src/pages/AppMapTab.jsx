@@ -1,17 +1,17 @@
 import { useState, useEffect, useMemo } from 'react'
 import { usePanels } from './ScreenConfig'
+import { CopyBtn } from './P6SpyTab'
 
 const VIEWS = [
   { key: 'services', label: 'Service Maps' },
-  { key: 'sequence', label: 'Sequence Diagram' },
   { key: 'http',     label: 'Http Flow Visualization' },
   { key: 'deps',     label: 'Dependency Map' },
+  { key: 'sequence', label: 'Sequence Diagram' },
   { key: 'flame',    label: 'Flame Graph' },
   { key: 'trace',    label: 'Trace View' },
   { key: 'calls',    label: 'Call Graphs' },
   { key: 'code',     label: 'Code to Runtime Navigation' },
   { key: 'sql',      label: 'SQL Visualization' },
-  { key: 'sqlx',     label: 'SQL Executions' },
 ]
 const short = (c) => String(c || '').split('.').pop() || String(c || '')
 const th = { textAlign: 'left', padding: '5px 8px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface)' }
@@ -21,6 +21,9 @@ const mono = { fontFamily: 'monospace', fontSize: 11 }
 function Empty({ children }) { return <div style={{ padding: 24, textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>{children}</div> }
 
 const KIND_COLOR = { call: '#1565c0', sql: '#e65100', http: '#2e7d32', httpc: '#6a1b9a' }
+function Legend() {
+  return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Legend: <span style={{ color: KIND_COLOR.call }}>■ code</span> <span style={{ color: KIND_COLOR.sql }}>■ SQL</span> <span style={{ color: KIND_COLOR.http }}>■ HTTP in</span> <span style={{ color: KIND_COLOR.httpc }}>■ HTTP out</span></span>
+}
 
 // Dependency map: classes (or packages) as nodes laid out in columns by call depth, arrows = calls
 function DepMap({ m }) {
@@ -107,6 +110,7 @@ function Trace({ m }) {
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter spans…" style={{ width: 260, fontSize: 12, padding: '5px 8px' }} />
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total {Math.round(total * 100) / 100} ms · {rows.length} spans · offsets are laid out sequentially (AppMap stores durations, not timestamps)</span>
+        <Legend />
       </div>
       <div style={{ maxHeight: 560, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
         {rows.map(s => (
@@ -165,7 +169,7 @@ function Calls({ m }) {
   return (
     <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 460px', maxHeight: 560, overflow: 'auto' }}>
-        <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Call tree <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setOpen(o => !o)}>{open ? 'Collapse to depth 3' : 'Expand all'}</button></div>
+        <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Call tree <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setOpen(o => !o)}>{open ? 'Collapse to depth 3' : 'Expand all'}</button> <span style={{ marginLeft: 8, fontWeight: 400 }}><Legend /></span></div>
         {calls.filter(c => open || c.depth < 3).map(c => (
           <div key={c.id} style={{ paddingLeft: Math.min(c.depth, 30) * 14, ...mono, borderLeft: '1px dotted var(--border)', whiteSpace: 'nowrap' }} title={`${c.path}:${c.line}`}>
             <span style={{ color: '#1565c0' }}>{short(c.cls)}</span>.{c.method}
@@ -281,7 +285,7 @@ function SqlExec({ m }) {
         <div className="card" style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
             <b style={{ fontSize: 12, flex: 1 }}>Query · {r0.db} · {r0.ms ?? '—'} ms</b>
-            <button className="btn btn-sm" onClick={() => copyText(r0.sql)}>Copy query</button>
+            <CopyBtn text={r0.sql} label="Copy query" />
             <button className="btn btn-sm" onClick={() => copyText(r0.params.join('\n'))} disabled={!r0.params.length}>Copy bind values</button>
           </div>
           <pre style={{ ...mono, margin: 0, whiteSpace: 'pre-wrap', maxHeight: 180, overflow: 'auto' }}>{r0.sql}</pre>
@@ -448,7 +452,6 @@ export default function AppMapTab({ appName, displayName }) {
           {view === 'services' && <Services m={m} appName={displayName || appName} />}
           {view === 'code'     && <CodeNav m={m} />}
           {view === 'sql'      && <Sql m={m} />}
-          {view === 'sqlx'     && <SqlExec m={m} />}
           {view === 'http'     && <Http m={m} />}
         </>
       )}

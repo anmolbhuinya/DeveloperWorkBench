@@ -7,6 +7,22 @@ const inp = { ...mono, width: '100%', background: 'var(--surface2)', color: 'var
 const pick = (d) => ({ lib_dir: d.lib_dir || '', targets: JSON.parse(JSON.stringify(d.targets || [])) })
 const copyText = (txt) => { try { navigator.clipboard.writeText(txt) } catch (e) { /* ignore */ } }
 
+// a copy button that says "Copying…" and then "Copied ✓" with the same wording as its label
+export function CopyBtn({ text, label, disabled }) {
+  const [st, setSt] = useState('')
+  const go = async () => {
+    setSt('copying')
+    try { await navigator.clipboard.writeText(typeof text === 'function' ? text() : text); await new Promise(r => setTimeout(r, 350)); setSt('done') } catch (e) { setSt('failed') }
+    setTimeout(() => setSt(''), 1800)
+  }
+  const what = label.replace(/^Copy\s*/i, '')
+  return (
+    <button className="btn btn-sm" onClick={go} disabled={disabled || st === 'copying'} style={st === 'done' ? { color: '#2e7d32', borderColor: '#2e7d32' } : st === 'failed' ? { color: '#c62828' } : undefined}>
+      {st === 'copying' ? `Copying ${what}…` : st === 'done' ? `Copied ${what} ✓` : st === 'failed' ? 'Copy failed' : label}
+    </button>
+  )
+}
+
 // keeps loaded data while navigating to other pages and back
 const CACHE = {}
 
@@ -179,8 +195,8 @@ export default function P6SpyTab({ appName }) {
               <div className="card" style={{ padding: 10 }}>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{cur.time} · {cur.ms} ms · {cur.category} · connection {cur.conn}</div>
                 <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                  <button className="btn btn-sm" onClick={() => copyText(cur.sql)}>Copy query</button>
-                  <button className="btn btn-sm" onClick={() => copyText(cur.result)} disabled={!cur.result}>Copy result</button>
+                  <CopyBtn text={cur.sql} label="Copy query" />
+                  <CopyBtn text={cur.result} label="Copy result" disabled={!cur.result} />
                 </div>
                 <pre style={{ ...mono, whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, maxHeight: 200, overflow: 'auto' }}>{cur.sql}</pre>
                 <div style={{ fontWeight: 600, fontSize: 12, margin: '10px 0 4px' }}>Result</div>

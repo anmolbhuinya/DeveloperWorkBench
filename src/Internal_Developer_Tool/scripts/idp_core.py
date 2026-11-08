@@ -32311,6 +32311,132 @@ sys.exit(out.channel.recv_exit_status())
         return _sf_ex(buf, as_attachment=True, download_name=str(body.get("name") or "sprint") + ".xlsx",
                       mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+    # ── Sprint > PR Reviews: GitHub PRs on which I am (or was) a reviewer, with the days I have been a reviewer ──
+    _pr_rev_cache = {}
+
+    @app.route("/api/project-management/sprint/pr-reviews", methods=["GET"])
+    def api_sprint_pr_reviews():
+        import requests as _rq, re as _r, datetime as _dt, urllib3 as _u3
+        from concurrent.futures import ThreadPoolExecutor
+        _u3.disable_warnings()
+        tok = _scm_github_token()
+        if not tok: return jsonify({"ok": False, "error": "github_token is missing in secrets.xlsx (GitHub sheet)"})
+        H = {"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"}
+        since = request.args.get("since") or (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
+        if not _r.fullmatch(r"\d{4}-\d{2}-\d{2}", since): return jsonify({"ok": False, "error": "since must be YYYY-MM-DD"})
+        def get(url, **kw): return _rq.get(url, headers=H, timeout=30, verify=False, **kw)
+        try:
+            u = get("https://api.github.com/user")
+            if u.status_code != 200: return jsonify({"ok": False, "error": "GitHub rejected the token (HTTP %d)" % u.status_code})
+            me = u.json().get("login", "")
+            def search(q):
+                out = []
+                for page in range(1, 6):
+                    r = get("https://api.github.com/search/issues", params={"q": q, "per_page": 100, "page": page})
+                    if r.status_code != 200: raise RuntimeError("GitHub search failed (HTTP %d): %s" % (r.status_code, r.text[:160]))
+                    items = r.json().get("items", [])
+                    out += items
+                    if len(items) < 100: break
+                return out
+            found = {}
+            for q in ("is:pr is:open review-requested:%s" % me, "is:pr is:open reviewed-by:%s" % me,
+                      "is:pr is:closed review-requested:%s closed:>=%s" % (me, since), "is:pr is:closed reviewed-by:%s closed:>=%s" % (me, since)):
+                for it in search(q): found[it["html_url"]] = it
+            pat = _r.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-\d+)(?!\d)")
+            def build(it):
+                key = it["html_url"]
+                hit = _pr_rev_cache.get(key)
+                if hit and hit[0] == it.get("updated_at"): return hit[1]
+                repo_api = it["repository_url"]
+                num = it["number"]
+                start = None
+                try:
+                    url = "%s/issues/%d/timeline" % (repo_api, num)
+                    reviewed = None
+                    for _ in range(5):
+                        r = get(url, params={"per_page": 100}) if "?" not in url else get(url)
+                        if r.status_code != 200: break
+                        for ev in r.json():
+                            if ev.get("event") == "review_requested" and (ev.get("requested_reviewer") or {}).get("login") == me:
+                                t = ev.get("created_at")
+                                if t and (start is None or t < start): start = t
+                            if ev.get("event") == "reviewed" and (ev.get("user") or {}).get("login") == me:
+                                t = ev.get("submitted_at")
+                                if t and (reviewed is None or t < reviewed): reviewed = t
+                        nxt = r.links.get("next", {}).get("url")
+                        if not nxt: break
+                        url = nxt
+                    start = start or reviewed or it.get("created_at")
+                except Exception:
+                    start = it.get("created_at")
+                m = pat.search(it.get("title", ""))
+                if not m:                                                       # no ticket in the title: look at the branch name
+                    try:
+                        br = (get((it.get("pull_request") or {}).get("url", "")).json().get("head") or {}).get("ref", "")
+                        m = pat.search(br)
+                    except Exception:
+                        m = None
+                pr = it.get("pull_request") or {}
+                merged = pr.get("merged_at")
+                info = {"jira_id": m.group(1) if m else "", "pr": it["html_url"], "pr_label": "%s#%d" % (repo_api.rsplit("/", 1)[-1], num),
+                        "title": it.get("title", ""), "repository": "/".join(repo_api.split("/")[-2:]), "author": (it.get("user") or {}).get("login", ""),
+                        "state": "open" if it.get("state") == "open" else ("merged" if merged else "closed"),
+                        "requested_at": start, "end_at": merged or it.get("closed_at") if it.get("state") != "open" else None}
+                _pr_rev_cache[key] = (it.get("updated_at"), info)
+                return info
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                rows = list(ex.map(build, list(found.values())[:250]))
+        except Exception as e:
+            return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
+        now = _dt.datetime.now(_dt.timezone.utc)
+        def day(t): return _dt.datetime.fromisoformat(t.replace("Z", "+00:00")) if t else None
+        for r in rows:
+            s, e = day(r["requested_at"]), (day(r["end_at"]) if r["end_at"] else now)
+            r["review_days"] = max(0, (e.date() - s.date()).days) if s and e else 0
+        opn = sorted([r for r in rows if r["state"] == "open"], key=lambda r: (-r["review_days"], r["pr"]))
+        cls = sorted([r for r in rows if r["state"] != "open"], key=lambda r: r["end_at"] or "", reverse=True)
+        return jsonify({"ok": True, "me": me, "since": since, "open": opn, "closed": cls})
+
+    @app.route("/api/project-management/sprint/pr-reviews/export", methods=["POST"])
+    def api_sprint_pr_reviews_export():
+        import openpyxl as _xl_ex
+        from openpyxl.styles import Font as _Fnt, PatternFill as _Fill
+        from flask import send_file as _sf_ex
+        body = request.get_json() or {}
+        wb = _xl_ex.Workbook()
+        ws = wb.active
+        ws.title = str(body.get("sheet") or "PR Reviews")[:31]
+        widths = {}
+        row = 1
+        for sec in body.get("sections") or []:
+            ws.cell(row=row, column=1, value="%s (%d)" % (sec.get("title", ""), len(sec.get("rows") or []))).font = _Fnt(bold=True, size=12)
+            row += 1
+            head = sec.get("head") or []
+            for ci, h in enumerate(head, 1):
+                c = ws.cell(row=row, column=ci, value=h)
+                c.font = _Fnt(bold=True, color="FFFFFF")
+                c.fill = _Fill("solid", fgColor="4472C4")
+                widths[ci] = max(widths.get(ci, 8), len(str(h)))
+            row += 1
+            for ri, r in enumerate(sec.get("rows") or []):
+                links = (sec.get("links") or [])[ri] if ri < len(sec.get("links") or []) else {}
+                for ci, v in enumerate(r, 1):
+                    c = ws.cell(row=row, column=ci, value=v)
+                    widths[ci] = max(widths.get(ci, 8), min(len(str(v)), 60))
+                    u = links.get(str(ci - 1)) if isinstance(links, dict) else None
+                    if u:
+                        c.hyperlink = u
+                        c.font = _Fnt(color="0563C1", underline="single")
+                row += 1
+            row += 1
+        for ci, w in widths.items():
+            ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = min(w + 2, 62)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return _sf_ex(buf, as_attachment=True, download_name=str(body.get("name") or "PR_Reviews") + ".xlsx",
+                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     @app.route("/api/project-management/sprint/complete", methods=["POST"])
     def api_tm_sprint_complete():
         import shutil as _shutil_sc

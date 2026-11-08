@@ -334,6 +334,102 @@ function SetupProgress({ setup, onNavigate, onConfirmRevert, onAbort }) {
 }
 
 // ─── SprintDetail ────────────────────────────────────────────────────────────
+// Sprint > PR Reviews: the GitHub pull requests I review (open first, longest waiting on top), with the days since I was added as reviewer
+const PR_HEAD = ['JIRA ID', 'PR', 'Title', 'Repository', 'Author', 'Status', 'Review Requested', 'Closed On', 'Review Days']
+function prCells(r) {
+  const d = t => (t ? t.slice(0, 10) : '')
+  return [r.jira_id, r.pr_label, r.title, r.repository, r.author, r.state === 'open' ? 'Open' : r.state === 'merged' ? 'Merged' : 'Declined', d(r.requested_at), d(r.end_at), String(r.review_days)]
+}
+function prLinks(r) {
+  const l = {}
+  if (r.jira_id && jiraUrl(r.jira_id)) l['0'] = jiraUrl(r.jira_id)
+  if (r.pr) l['1'] = r.pr
+  return l
+}
+function addDaysIso(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
+
+function PrReviewsPanel({ file }) {
+  const [opt, setOpt] = useState('sprint')
+  const [data, setData] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState(false)
+  const end = parseEndDate(file || '')
+  const since = opt === 'sprint' ? (end ? addDaysIso(end, -14) : addDaysIso(new Date().toISOString().slice(0, 10), -14)) : addDaysIso(new Date().toISOString().slice(0, 10), -Number(opt))
+  const load = () => {
+    setBusy(true); setErr('')
+    fetch(`${API}/pr-reviews?since=${since}`).then(r => r.json()).then(d => { if (d.ok) setData(d); else setErr(d.error || 'Failed') })
+      .catch(() => setErr('Could not reach server')).finally(() => setBusy(false))
+  }
+  useEffect(() => { load() }, [since])
+  const sections = data ? [{ title: 'Open PR', rows: data.open }, { title: 'Closed PR', rows: data.closed }] : []
+  const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
+  const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
+  const link = { color: '#0563C1', textDecoration: 'underline' }
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  async function copy() {
+    const text = sections.map(s => [`${s.title} (${s.rows.length})`, PR_HEAD.join('\t'), ...s.rows.map(r => prCells(r).join('\t'))].join('\n')).join('\n\n')
+    const html = sections.map(s => `<p><b>${esc(s.title)} (${s.rows.length})</b></p><table><tr>${PR_HEAD.map(h => `<th>${esc(h)}</th>`).join('')}</tr>${s.rows.map(r => {
+      const l = prLinks(r)
+      return `<tr>${prCells(r).map((v, i) => l[String(i)] ? `<td><a href="${esc(l[String(i)])}" style="color:#0563C1;text-decoration:underline">${esc(v)}</a></td>` : `<td>${esc(v)}</td>`).join('')}</tr>`
+    }).join('')}</table>`).join('')
+    try { await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })]) }
+    catch { try { await navigator.clipboard.writeText(text) } catch { /* blocked */ } }
+    setCopied(true); setTimeout(() => setCopied(false), 2000)
+  }
+  async function exportXlsx() {
+    try {
+      const res = await fetch(`${API}/pr-reviews/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'PR_Reviews', sheet: 'PR Reviews', sections: sections.map(s => ({ title: s.title, head: PR_HEAD, rows: s.rows.map(prCells), links: s.rows.map(prLinks) })) }) })
+      if (!res.ok) throw new Error('export failed')
+      const blob = await res.blob()
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'PR_Reviews.xlsx'
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+    } catch (e) { alert('Export failed: ' + e.message) }
+  }
+  const btn = { padding: '4px 12px', fontSize: 12, borderRadius: 4, cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--surface2)', color: 'var(--text)' }
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <button style={btn} onClick={load} disabled={busy}>{busy ? 'Loading...' : 'Refresh'}</button>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed since</span>
+        <select value={opt} onChange={e => setOpt(e.target.value)} style={{ ...btn, padding: '3px 6px' }}>
+          <option value="sprint">Sprint start ({since})</option><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option>
+        </select>
+        {data && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>PRs where {data.me} is a reviewer</span>}
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button style={btn} onClick={copy} disabled={!data} title="Copy both tables (the JIRA ID and PR cells stay clickable when pasted into Excel or mail)">{copied ? '✓ Copied' : 'Copy'}</button>
+          <button style={btn} onClick={exportXlsx} disabled={!data} title="Download as Excel (.xlsx) with clickable JIRA ID and PR links">Export</button>
+        </span>
+      </div>
+      {err && <div style={{ color: '#c62828', fontSize: 13, marginBottom: 8 }}>{err}</div>}
+      {busy && !data && <div style={{ padding: 32, textAlign: 'center' }}><span className="spinner" /></div>}
+      {sections.map(s => (
+        <div key={s.title} style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, margin: '4px 0 6px' }}>{s.title} <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 12 }}>({s.rows.length})</span></div>
+          <div style={{ overflow: 'auto', maxHeight: 460, border: '1px solid var(--border)', borderRadius: 6 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>{PR_HEAD.map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {s.rows.map(r => {
+                  const c = prCells(r), l = prLinks(r)
+                  return (
+                    <tr key={r.pr}>
+                      {c.map((v, i) => (
+                        <td key={i} style={{ ...td, ...(i === 8 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), ...(i === 2 ? { maxWidth: 420 } : {}) }}>
+                          {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a> : v}
+                        </td>))}
+                    </tr>)
+                })}
+                {s.rows.length === 0 && <tr><td colSpan={PR_HEAD.length} style={{ ...td, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>No {s.title === 'Open PR' ? 'open' : 'closed'} pull requests</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>))}
+    </div>
+  )
+}
+
 function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
   const navigate = useNavigate()
   const [file, setFile]         = useState(sprintProp.file)
@@ -2053,11 +2149,13 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
         )
       })()}
 
+      {activeTab === 'PR Reviews' && <PrReviewsPanel file={file} />}
+
       {loading ? (
         <div style={{ padding: 32, textAlign: 'center' }}><span className="spinner" /></div>
       ) : loadErr ? (
         <div style={{ color: '#c62828', fontSize: 13 }}>{loadErr}</div>
-      ) : activeTab === DEV_BW_TAB || activeTab === SPRINT_LOG_TAB || activeTab === SPRINT_SUMMARY_TAB || activeTab === PROJECT_SUMMARY_TAB || activeTab === TASKS_TAB ? null : (
+      ) : activeTab === DEV_BW_TAB || activeTab === SPRINT_LOG_TAB || activeTab === SPRINT_SUMMARY_TAB || activeTab === PROJECT_SUMMARY_TAB || activeTab === TASKS_TAB || activeTab === 'PR Reviews' ? null : (
         <div>
           {/* Adhoc Task count bar */}
           {activeTab === 'Adhoc Task' && (

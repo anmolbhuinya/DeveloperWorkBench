@@ -18,7 +18,7 @@ const TAB_ICONS = {
   observability: '🔭', investigation: '🔎', sonar: '🛡️', logs: '📜', metrics: '📊',
 }
 let _obsSub = 'metrics'
-const _obsInner = { traces: 'appmap', logs: 'applog' }
+const _obsInner = { traces: 'appmap', logs: 'p6spy' }
 function Pills2({ items, value, onChange, small }) {
   return (
     <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -39,7 +39,7 @@ function ObservabilityTab({ appName, displayName }) {
   const subs = [{ key: 'metrics', label: '📊 Metrics' }, { key: 'events', label: '📅 Events' }, { key: 'traces', label: '🧵 Traces' }, { key: 'logs', label: '📜 Logs' }].filter(x => on('obs_' + x.key))
   const sub = subs.some(x => x.key === sub0) ? sub0 : subs[0]?.key
   const tItems = [{ key: 'appmap', label: '🗺️ AppMap', p: 'tr_appmap' }, { key: 'apptrace', label: 'Application Trace', p: 'tr_apptrace' }].filter(x => on(x.p))
-  const lItems = [{ key: 'applog', label: 'Application Log', p: 'lg_applog' }, { key: 'p6spy', label: '🔬 P6Spy', p: 'lg_p6spy' }].filter(x => on(x.p))
+  const lItems = [{ key: 'p6spy', label: '🔬 P6Spy', p: 'lg_p6spy' }, { key: 'applog', label: 'Application Log', p: 'lg_applog' }].filter(x => on(x.p))
   const tSel = tItems.some(x => x.key === inner.traces) ? inner.traces : tItems[0]?.key
   const lSel = lItems.some(x => x.key === inner.logs) ? inner.logs : lItems[0]?.key
   return (
