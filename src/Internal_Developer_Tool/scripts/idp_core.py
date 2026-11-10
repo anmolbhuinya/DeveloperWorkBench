@@ -36972,6 +36972,52 @@ sys.exit(out.channel.recv_exit_status())
         if r is None or r.status_code != 204: return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d" % r.status_code})
         return jsonify({"ok": True})
 
+    # Security analyzer: pattern scan of the lines a PR adds (secrets, injection, weak crypto, unsafe exec / deserialization, disabled TLS checks)
+    _SEC_RULES = [
+        ("Hard-coded secret", "High", r"""(?i)\b(pass(word|wd)?|secret|token|api[_-]?key|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*["'][^"'\s]{6,}["']"""),
+        ("Cloud / GitHub credential", "Critical", r"AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}"),
+        ("Private key material", "Critical", r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"),
+        ("SQL built by string concatenation", "High", r"""(?i)\b(select|insert\s+into|update|delete\s+from)\b[^;\n]*["']\s*\+|["']\s*\+[^;\n]*\b(where|values)\b"""),
+        ("Weak hash / cipher", "Medium", r"""(?i)\b(MD5|SHA-?1|DES|RC4)\b|MessageDigest\.getInstance\(\s*["'](MD5|SHA-?1)["']"""),
+        ("OS command execution", "High", r"Runtime\.getRuntime\(\)\.exec|new\s+ProcessBuilder|os\.system\(|subprocess\.\w+\([^)]*shell\s*=\s*True"),
+        ("Unsafe deserialization", "High", r"ObjectInputStream|pickle\.loads?\(|yaml\.load\((?!.*SafeLoader)|readObject\("),
+        ("TLS / certificate checks disabled", "High", r"verify\s*=\s*False|TrustAll|ALLOW_ALL_HOSTNAME_VERIFIER|setHostnameVerifier|checkServerTrusted\s*\([^)]*\)\s*\{\s*\}"),
+        ("XML parser without XXE hardening", "Medium", r"DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLInputFactory\.newInstance"),
+        ("Stack trace / debug output", "Low", r"printStackTrace\(\)|System\.(out|err)\.print"),
+    ]
+
+    @app.route("/api/tools/copilot-review/security", methods=["POST"])
+    def api_copilot_review_security():
+        import re as _r
+        a = _gh_pr_args(request.get_json() or {})
+        if not a: return jsonify({"ok": False, "error": "owner, repo and pr are required"})
+        o, rp, n = a
+        rules = [(t, s, _r.compile(p)) for t, s, p in _SEC_RULES]
+        findings, scanned = [], 0
+        for page in range(1, 11):
+            r, err = _gh_pr_call("GET", "/repos/%s/%s/pulls/%s/files" % (o, rp, n), params={"per_page": 100, "page": page})
+            if r is None or r.status_code != 200: return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d" % r.status_code})
+            chunk = r.json()
+            for f in chunk:
+                path, scanned = f.get("filename", ""), scanned + 1
+                if _r.search(r"\.(pem|p12|pfx|jks|keystore)$|(^|/)\.env(\.|$)|id_rsa$", path) and f.get("status") != "removed":
+                    findings.append({"path": path, "line": 0, "rule": "Sensitive file added", "severity": "High", "code": path})
+                line = 0
+                for text in (f.get("patch") or "").split("\n"):
+                    h = _r.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", text)
+                    if h: line = int(h.group(1)); continue
+                    if text.startswith("-") or text.startswith("\\"): continue
+                    if text.startswith("+"):
+                        code = text[1:]
+                        for title, sev, rx in rules:
+                            if rx.search(code):
+                                findings.append({"path": path, "line": line, "rule": title, "severity": sev, "code": code.strip()[:200]})
+                    line += 1
+            if len(chunk) < 100: break
+        order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+        findings.sort(key=lambda x: (order.get(x["severity"], 9), x["path"], x["line"]))
+        return jsonify({"ok": True, "scanned": scanned, "findings": findings})
+
     @app.route("/api/tools/copilot-review/submit", methods=["POST"])
     def api_copilot_review_submit():
         body = request.get_json() or {}

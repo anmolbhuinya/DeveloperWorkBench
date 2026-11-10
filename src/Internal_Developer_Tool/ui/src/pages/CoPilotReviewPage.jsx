@@ -463,6 +463,56 @@ function FilesPanel({ owner, repo, pr, onSubmitted, onBack }) {
   )
 }
 
+// ── Security Analyzer: scans the lines the PR adds for risky patterns ──
+const SEC_COLOR = { Critical: '#6a0000', High: '#c62828', Medium: '#e65100', Low: '#546e7a' }
+function SecurityPanel({ owner, repo, pr }) {
+  const [rep, setRep] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const run = () => {
+    setBusy(true); setRep(null)
+    fetch(`${API}/security`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, repo, pr }) })
+      .then(r => r.json()).then(setRep).catch(e => setRep({ ok: false, error: String(e) })).finally(() => setBusy(false))
+  }
+  useEffect(() => { run() }, [owner, repo, pr])
+  const th = { textAlign: 'left', padding: '4px 8px', fontSize: 11, background: 'var(--surface)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }
+  const td = { padding: '4px 8px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
+  const counts = rep?.ok ? ['Critical', 'High', 'Medium', 'Low'].map(s => [s, rep.findings.filter(f => f.severity === s).length]) : []
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🛡 Security Analyzer</div>
+        <button onClick={run} disabled={busy} style={{ fontSize: 12, padding: '4px 12px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>{busy ? 'Scanning…' : 'Re-scan'}</button>
+      </div>
+      {busy && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}><span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Scanning the lines added by this PR …</div>}
+      {rep && !rep.ok && <div style={{ fontSize: 12, color: '#B71C1C' }}>⚠ {rep.error}</div>}
+      {rep?.ok && (
+        <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{rep.scanned} file(s) scanned · {rep.findings.length} finding(s)</span>
+            {counts.filter(([, n]) => n).map(([s, n]) => <span key={s} style={{ background: SEC_COLOR[s], color: '#fff', borderRadius: 10, padding: '1px 9px', fontSize: 11, fontWeight: 600 }}>{s} {n}</span>)}
+          </div>
+          {rep.findings.length === 0
+            ? <div style={{ fontSize: 13, color: '#2E7D32' }}>✓ No risky patterns found in the added lines. (Pattern scan only — it does not replace a full security review.)</div>
+            : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead><tr><th style={th}>Severity</th><th style={th}>Finding</th><th style={th}>File</th><th style={th}>Line</th><th style={th}>Code</th></tr></thead>
+                  <tbody>{rep.findings.map((f, i) => (
+                    <tr key={i}>
+                      <td style={td}><span style={{ background: SEC_COLOR[f.severity], color: '#fff', borderRadius: 10, padding: '1px 9px', fontSize: 11, fontWeight: 600 }}>{f.severity}</span></td>
+                      <td style={td}>{f.rule}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', wordBreak: 'break-all' }}>{f.path}</td>
+                      <td style={td}>{f.line || ''}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', wordBreak: 'break-all' }}>{f.code}</td>
+                    </tr>))}</tbody>
+                </table>
+              </div>)}
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function CoPilotReviewPage() {
   const [searchParams]            = useSearchParams()
   const [tab, setTab]             = useState('copilot')   // copilot | files
@@ -541,19 +591,19 @@ export default function CoPilotReviewPage() {
     a.download = `testcase-report-${(tests.pr?.repo || 'repo').replace('/', '_')}-pr${tests.pr?.number || ''}.${fmt}`
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   }
-  const loadTests = (o, r, p) => {
+  const loadTests = (o, r, p, force) => {
     setTests(null)
-    if (!prrCfg.test_case_analyzer) return
+    if (!force && !prrCfg.test_case_analyzer) return
     setTestsLoading(true)
     fetch(`${API}/tests`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: o, repo: r, pr: p }) })
       .then(x => x.json()).then(setTests).catch(e => setTests({ ok: false, error: String(e) }))
       .finally(() => setTestsLoading(false))
   }
 
-  const loadDeps = (o, r, p) => {
-    loadTests(o, r, p)
+  const loadDeps = (o, r, p) => { loadTests(o, r, p); loadDepsOnly(o, r, p) }
+  const loadDepsOnly = (o, r, p, force) => {
     setDeps(null)
-    if (!prrCfg.dependency_analyzer) return
+    if (!force && !prrCfg.dependency_analyzer) return
     setDepsLoading(true)
     fetch(`${API}/dependencies`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: o, repo: r, pr: p }) })
       .then(x => x.json()).then(setDeps).catch(e => setDeps({ ok: false, error: String(e) }))
@@ -643,9 +693,11 @@ export default function CoPilotReviewPage() {
         )}
       </div>
 
-    <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
-    <div style={{ flex: '1 1 0', minWidth: 0, maxWidth: 860 }}>
+    <div>
+    <div>
 
+      {/* Paste PR URL and Parameters side by side */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16, alignItems: 'stretch' }}>
       {/* URL shortcut */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>
@@ -715,6 +767,7 @@ export default function CoPilotReviewPage() {
           )}
         </div>
       </div>
+      </div>
 
       {/* Error */}
       {error && (
@@ -758,7 +811,7 @@ export default function CoPilotReviewPage() {
           </div>
 
           <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-            {[['copilot', '🤖 Copilot Review'], ['files', '📄 Manual Review']].map(([k, l]) => (
+            {[['copilot', '🤖 Copilot Review'], ['files', '📄 Manual Review'], ['deps', '📦 Dependency Analyzer'], ['tests', '🧪 Test Case Analyzer'], ['security', '🛡 Security Analyzer']].map(([k, l]) => (
               <button key={k} onClick={() => setTab(k)} style={{ fontSize: 13, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontWeight: 600,
                 border: '1px solid var(--primary,#1976d2)', background: tab === k ? 'var(--primary,#1976d2)' : 'var(--bg)', color: tab === k ? '#fff' : 'var(--primary,#1976d2)' }}>{l}</button>
             ))}
@@ -852,30 +905,36 @@ export default function CoPilotReviewPage() {
           </>}
         </>
       )}
-    </div>
 
-    {/* Right-hand column: dependency analyzer panel (level with Paste PR URL), dependency report below it */}
-    <div style={{ flex: '0 0 560px', minWidth: 0 }}>
-      {/* Dependency analyzer settings (stored in Tools\AI_PR_Review_Tool\config.xlsx) */}
+    {/* Dependency Analyzer tab: checkbox and baseline project at the top right of the header, the report below (settings live in Tools\AI_PR_Review_Tool\config.xlsx) */}
+    {result && tab === 'deps' && (
       <div className="card" style={{ marginBottom: 16, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>📦 Dependency Analyzer</div>
         <label style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-          <input type="checkbox" checked={prrCfg.dependency_analyzer} onChange={e => savePrr({ dependency_analyzer: e.target.checked ? 'on' : 'off' })} />
+          <input type="checkbox" checked={prrCfg.dependency_analyzer} onChange={async e => { const on = e.target.checked; await savePrr({ dependency_analyzer: on ? 'on' : 'off' }); if (on) loadDepsOnly(owner, repo, pr, true); else setDeps(null) }} />
           Dependency analyzer
         </label>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Baseline project</span>
         <input list="prr-apps" value={prrCfg.baseline_project} onChange={e => setPrrCfg(c => ({ ...c, baseline_project: e.target.value }))}
           onBlur={e => savePrr({ baseline_project: e.target.value })} style={{ ...{ fontSize: 13, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }, width: 200 }} />
         <datalist id="prr-apps">{prrCfg.jqassistant_apps.map(a => <option key={a} value={a} />)}</datalist>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>A jQAssistant code base (analyzed). PR dependency versions are compared with it.</span>
-        <label style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flexBasis: '100%' }}>
-          <input type="checkbox" checked={prrCfg.test_case_analyzer} onChange={e => savePrr({ test_case_analyzer: e.target.checked ? 'on' : 'off' })} />
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', flexBasis: '100%', textAlign: 'right' }}>A jQAssistant code base (analyzed). PR dependency versions are compared with it.</span>
+      </div>
+    )}
+    {result && tab === 'tests' && (
+      <div className="card" style={{ marginBottom: 16, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🧪 Test Case Analyzer</div>
+        <label style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+          <input type="checkbox" checked={prrCfg.test_case_analyzer} onChange={async e => { const on = e.target.checked; await savePrr({ test_case_analyzer: on ? 'on' : 'off' }); if (on) loadTests(owner, repo, pr, true); else setTests(null) }} />
           Test case analyzer
         </label>
       </div>
+    )}
+    {result && tab === 'security' && <SecurityPanel owner={owner} repo={repo} pr={pr} />}
 
 
-    {(result || depsLoading) && prrCfg.dependency_analyzer && (
-      <div className="card" style={{ maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
+    {tab === 'deps' && (result || depsLoading) && prrCfg.dependency_analyzer && (
+      <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>📦 Dependency report</div>
           {deps?.ok && ['json', 'html', 'csv', 'xlsx'].map(f => (
@@ -968,8 +1027,8 @@ export default function CoPilotReviewPage() {
       </div>
     )}
 
-    {(result || testsLoading) && prrCfg.test_case_analyzer && (
-      <div className="card" style={{ marginTop: 16, maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
+    {tab === 'tests' && (result || testsLoading) && prrCfg.test_case_analyzer && (
+      <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>🧪 Test case analyzer</div>
           {tests?.ok && ['json', 'html', 'csv', 'xlsx'].map(f => (
