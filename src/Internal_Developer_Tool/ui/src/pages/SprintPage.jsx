@@ -407,7 +407,6 @@ function PrReviewsPanel({ file }) {
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-        <button style={btn} onClick={load} disabled={busy}>{busy ? 'Syncing...' : 'Sync'}</button>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed since</span>
         <select value={opt} onChange={e => setOpt(e.target.value)} style={{ ...btn, padding: '3px 6px' }}>
           <option value="sprint">Sprint start ({since})</option><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option>
@@ -416,6 +415,7 @@ function PrReviewsPanel({ file }) {
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button style={btn} onClick={copy} disabled={!data} title="Copy both tables (the JIRA ID and PR cells stay clickable when pasted into Excel or mail)">{copied ? '✓ Copied' : 'Copy'}</button>
           <button style={btn} onClick={exportXlsx} disabled={!data} title="Download as Excel (.xlsx) with clickable JIRA ID and PR links">Export</button>
+          <button style={btn} onClick={load} disabled={busy} title="Sync with GitHub">{busy ? 'Syncing...' : 'Sync'}</button>
         </span>
       </div>
       {err && <div style={{ color: '#c62828', fontSize: 13, marginBottom: 8 }}>{err}</div>}
