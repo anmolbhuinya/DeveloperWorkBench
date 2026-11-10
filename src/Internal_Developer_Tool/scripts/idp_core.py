@@ -35449,6 +35449,44 @@ sys.exit(out.channel.recv_exit_status())
                     return jsonify({"ok": False, "error": "features_and_bugs.xlsx is open — close it and retry"}), 500
             return jsonify({"ok": True, "session_name": _help_cfg_get(ws, "session_name", _HELP_DEFAULT_SESSION) or _HELP_DEFAULT_SESSION})
 
+    @app.route("/api/help/new-session", methods=["POST"])
+    def api_help_new_session():
+        """Create the next session (…V0 -> …V1) by running the lai command with --name, and make it current."""
+        ai_cfg    = _read_ai_agent_config()
+        workspace = ai_cfg.get("Workspace", "").strip()
+        command   = ai_cfg.get("Command", "").strip()
+        if not workspace or not command:
+            return jsonify({"ok": False, "error": "Workspace or Command not configured in AI_Agent.xlsx"})
+        with _help_lock:
+            wb, path = _help_load()
+            cws = _help_cfg_sheet(wb)
+            cur = (_help_cfg_get(cws, "session_name", _HELP_DEFAULT_SESSION) or _HELP_DEFAULT_SESSION).strip()
+            m = _jre.match(r"^(.*V)(\d+)$", cur, _jre.I)
+            new = f"{m.group(1)}{int(m.group(2)) + 1}" if m else f"{cur}_V1"
+            started = [x for x in _help_cfg_get(cws, "started_sessions", "").split("|") if x]
+            while new in started:   # never reuse a session that already exists
+                m = _jre.match(r"^(.*V)(\d+)$", new, _jre.I)
+                new = f"{m.group(1)}{int(m.group(2)) + 1}"
+            _help_cfg_set(cws, "session_name", new)
+            _help_cfg_set(cws, "started_sessions", "|".join(started + [new]))
+            try:
+                _help_save(wb, path)
+            except PermissionError:
+                return jsonify({"ok": False, "error": "features_and_bugs.xlsx is open — close it and retry"}), 500
+        repo = PROJECTS_HOME.parent / "DWB_Workspace"
+        _AI_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        pf = _AI_JOBS_DIR / f"prompt_{_uuid_mod.uuid4().hex}.txt"
+        prompt = f"New Developer Workbench session '{new}' started. Reply with just: ready."
+        pf.write_text(prompt, encoding="utf-8")
+        is_claude = "claude" in command.lower()
+        sess_arg = f" --name '{new}'" if is_claude else ""
+        add_dir = f" --add-dir '{repo}'" if repo.exists() and is_claude else ""
+        ps_cmd = (f"Set-Location '{workspace}'; "
+                  f"Get-Content -Raw -Encoding UTF8 '{pf}' | {command}{sess_arg}{add_dir} -p --verbose --output-format stream-json")
+        header = f"$ lai  → cd {workspace}\n$ {command}{sess_arg}{add_dir} -p\n(new session: {new})\n\n--- prompt ---\n{prompt}\n--------------\n"
+        jid = _spawn_job("help_session", ps_cmd, header, f"help_session/{new}", "DWB", f"Create session: {new}")
+        return jsonify({"ok": True, "session_name": new, "job_id": jid})
+
     def _help_mark_done(job):
         _, kind, item_id = (job.get("filepath") or "").split("/", 2)
         cfg = _HELP_KINDS[kind]

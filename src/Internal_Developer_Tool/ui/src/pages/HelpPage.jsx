@@ -221,13 +221,15 @@ export default function HelpPage() {
     } catch { setSessMsg('Failed') }
     setTimeout(() => setSessMsg(''), 2000)
   }
-  // New session: bump the trailing version (…_V0 -> …_V1); no version yet -> append _V1
-  const newSession = () => {
-    const cur = session.trim()
-    const m = cur.match(/^(.*V)(\d+)$/i)
-    const next = m ? `${m[1]}${parseInt(m[2], 10) + 1}` : `${cur}_V1`
-    setSession(next)
-    saveSession(next)
+  // Create New Session: server bumps the version (…_V0 -> …_V1) and runs lai --name to create it
+  const newSession = async () => {
+    setSessMsg('Creating…')
+    try {
+      const r = await fetch('/api/help/new-session', { method: 'POST' })
+      const d = await r.json()
+      if (d.ok) { setSession(d.session_name); setSessMsg(`Created ${d.session_name}`) } else setSessMsg(d.error || 'Failed')
+    } catch { setSessMsg('Failed') }
+    setTimeout(() => setSessMsg(''), 3000)
   }
   return (
     <div>
@@ -237,7 +239,7 @@ export default function HelpPage() {
         <input type="text" value={session} onChange={e => setSession(e.target.value)} onBlur={saveSession}
           onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }} style={{ ...fieldStyle, width: 260 }} />
         <button className="btn btn-sm" disabled={!session.trim()} onMouseDown={e => e.preventDefault()} onClick={newSession}
-          title="Start a new session with the version incremented (e.g. Developer_WorkBench_V0 → Developer_WorkBench_V1)">New</button>
+          title="Run lai to create a new session with the version incremented (e.g. Developer_WorkBench_V0 → Developer_WorkBench_V1)">Create New Session</button>
         <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{sessMsg || 'Implement / Fix It run in this session (saved in features_and_bugs.xlsx)'}</span>
       </div>
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
