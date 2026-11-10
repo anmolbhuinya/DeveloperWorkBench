@@ -378,7 +378,8 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
   const [times, setTimes] = useState({})   // PR url -> review time (h:mm), kept in the sprint file's "PR Reviews" sheet
   const [prevTimes, setPrevTimes] = useState({})   // PR url -> time spent in earlier sprints (spill-over)
   const [sprintTotal, setSprintTotal] = useState('0:00')
-  const loadTimes = () => fetch(`${API}/pr-review-time?file=${encodeURIComponent(file)}`).then(r => r.json()).then(d => { if (d.ok) { setTimes(d.times || {}); setPrevTimes(d.previous || {}); setSprintTotal(d.total || '0:00') } }).catch(() => {})
+  const [sprintCount, setSprintCount] = useState(0)   // number of PRs that account for the sprint total
+  const loadTimes = () => fetch(`${API}/pr-review-time?file=${encodeURIComponent(file)}`).then(r => r.json()).then(d => { if (d.ok) { setTimes(d.times || {}); setPrevTimes(d.previous || {}); setSprintTotal(d.total || '0:00'); setSprintCount(d.count || 0) } }).catch(() => {})
   useEffect(() => { loadTimes() }, [file])
   const startReview = r => navigate(`/developer-tools/copilot-review?prUrl=${encodeURIComponent(r.pr)}&track=1&sprint=${encodeURIComponent(file)}&jira=${encodeURIComponent(r.jira_id || '')}`)
   const [adhoc, setAdhoc] = useState(() => { try { return JSON.parse(localStorage.getItem('dwb_adhoc_prs') || '[]') } catch { return [] } })
@@ -436,17 +437,17 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
   const btn = { padding: '4px 12px', fontSize: 12, borderRadius: 4, cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--surface2)', color: 'var(--text)' }
   return (
     <div>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', marginBottom: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 14, fontWeight: 700 }}>Sprint PR Review Time</span>
-        <span style={{ fontSize: 18, fontWeight: 700, color: '#ef6c00' }}>{sprintTotal} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>h:mm spent in this sprint</span></span>
-        {Object.keys(prevTimes).some(u => times[u] || sections.some(s => s.rows.some(r => r.pr === u))) && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Spilled-over PRs show their earlier-sprint time as "Previous sprint" in the Review Time column</span>}
-      </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed since</span>
         <select value={opt} onChange={e => setOpt(e.target.value)} style={{ ...btn, padding: '3px 6px' }}>
           <option value="sprint">Sprint start ({since})</option><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option>
         </select>
         {data && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>PRs where {data.me} is a reviewer</span>}
+        <span title={Object.keys(prevTimes).length ? 'Spilled-over PRs show their earlier-sprint time as "Previous sprint" in the Review Time column' : ''} style={{ marginLeft: 20, paddingLeft: 20, borderLeft: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+          <span style={{ fontSize: 13, fontWeight: 700 }}>Sprint PR Review Time</span>
+          <span style={{ fontSize: 16, fontWeight: 700, color: '#ef6c00' }}>{sprintTotal}</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>h:mm spent in this sprint · {sprintCount} pull request{sprintCount === 1 ? '' : 's'}</span>
+        </span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button style={btn} onClick={copy} disabled={!data} title="Copy both tables (the JIRA ID and PR cells stay clickable when pasted into Excel or mail)">{copied ? '✓ Copied' : 'Copy'}</button>
           <button style={btn} onClick={exportXlsx} disabled={!data} title="Download as Excel (.xlsx) with clickable JIRA ID and PR links">Export</button>
