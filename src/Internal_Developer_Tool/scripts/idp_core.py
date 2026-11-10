@@ -32865,9 +32865,20 @@ sys.exit(out.channel.recv_exit_status())
     # ── Sprint > PR Reviews: GitHub PRs on which I am (or was) a reviewer, with the days I have been a reviewer ──
     _pr_rev_cache = {}
 
-    def _rv_label(s):
-        return {"approved": "Approved", "commented": "Commented", "changes_requested": "Changes Requested",
-                "dismissed": "Dismissed"}.get((s or "").lower(), "Not Reviewed")
+    def _rv_label(reviews, me):
+        """Review status from the PR's reviews. A comment never cancels an approval; approvals are split into mine / others'."""
+        eff = {}
+        for x in sorted([x for x in reviews if isinstance(x, dict)], key=lambda x: x.get("submitted_at") or ""):
+            u, s = (x.get("user") or {}).get("login", ""), (x.get("state") or "").upper()
+            if not u or s == "PENDING": continue
+            if s == "COMMENTED": eff.setdefault(u, s)
+            else: eff[u] = s
+        mine = eff.get(me, "")
+        others = any(s == "APPROVED" for u, s in eff.items() if u != me)
+        if mine == "APPROVED": return "Approved (By me and others)" if others else "Approved (By me)"
+        base = {"CHANGES_REQUESTED": "Changes Requested", "COMMENTED": "Commented", "DISMISSED": "Dismissed"}.get(mine, "")
+        if others: return (base + ", " if base else "") + "Approved (By others)"
+        return base or "Not Reviewed"
 
     @app.route("/api/project-management/sprint/pr-reviews", methods=["GET"])
     def api_sprint_pr_reviews():
@@ -32899,7 +32910,7 @@ sys.exit(out.channel.recv_exit_status())
                 for it in search(q): found[it["html_url"]] = it
             pat = _r.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-\d+)(?!\d)")
             def build(it):
-                key = it["html_url"]
+                key = it["html_url"] + "|v2"                                    # v2: review_status logic changed
                 hit = _pr_rev_cache.get(key)
                 if hit and hit[0] == it.get("updated_at"): return hit[1]
                 repo_api = it["repository_url"]
@@ -32908,7 +32919,6 @@ sys.exit(out.channel.recv_exit_status())
                 try:
                     url = "%s/issues/%d/timeline" % (repo_api, num)
                     reviewed = None
-                    last_rv = ("", "")
                     for _ in range(5):
                         r = get(url, params={"per_page": 100}) if "?" not in url else get(url)
                         if r.status_code != 200: break
@@ -32919,15 +32929,24 @@ sys.exit(out.channel.recv_exit_status())
                             if ev.get("event") == "reviewed" and (ev.get("user") or {}).get("login") == me:
                                 t = ev.get("submitted_at")
                                 if t and (reviewed is None or t < reviewed): reviewed = t
-                                if t and ev.get("state") != "pending" and t >= last_rv[0]: last_rv = (t, ev.get("state") or "")
                         nxt = r.links.get("next", {}).get("url")
                         if not nxt: break
                         url = nxt
                     start = start or reviewed or it.get("created_at")
-                    rv_state = last_rv[1]
                 except Exception:
                     start = it.get("created_at")
-                    rv_state = ""
+                rv_list = []
+                try:
+                    url = "%s/pulls/%d/reviews" % (repo_api, num)
+                    for _ in range(5):
+                        r = get(url, params={"per_page": 100}) if "?" not in url else get(url)
+                        if r.status_code != 200: break
+                        rv_list += r.json()
+                        url = r.links.get("next", {}).get("url")
+                        if not url: break
+                except Exception:
+                    pass
+                rv_state = _rv_label(rv_list, me)
                 m = pat.search(it.get("title", ""))
                 if not m:                                                       # no ticket in the title: look at the branch name
                     try:
@@ -32940,7 +32959,7 @@ sys.exit(out.channel.recv_exit_status())
                 info = {"jira_id": m.group(1) if m else "", "pr": it["html_url"], "pr_label": "%s#%d" % (repo_api.rsplit("/", 1)[-1], num),
                         "title": it.get("title", ""), "repository": "/".join(repo_api.split("/")[-2:]), "author": (it.get("user") or {}).get("login", ""),
                         "state": "open" if it.get("state") == "open" else ("merged" if merged else "closed"),
-                        "review_status": _rv_label(rv_state),
+                        "review_status": rv_state,
                         "requested_at": start, "end_at": merged or it.get("closed_at") if it.get("state") != "open" else None}
                 _pr_rev_cache[key] = (it.get("updated_at"), info)
                 return info
@@ -32974,8 +32993,7 @@ sys.exit(out.channel.recv_exit_status())
             me = (_rq.get("https://api.github.com/user", headers=H, timeout=30, verify=False).json() or {}).get("login", "")
             rvs = _rq.get("https://api.github.com/repos/%s/%s/pulls/%d/reviews" % (owner, repo, num), params={"per_page": 100},
                           headers=H, timeout=30, verify=False).json()
-            mine = [x for x in rvs if isinstance(x, dict) and (x.get("user") or {}).get("login") == me and x.get("state") != "PENDING"]
-            rv_state = mine[-1].get("state", "") if mine else ""
+            rv_state = _rv_label(rvs if isinstance(rvs, list) else [], me)
         except Exception as e:
             return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
         pat = _r.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-\d+)(?!\d)")
@@ -32990,7 +33008,7 @@ sys.exit(out.channel.recv_exit_status())
         return jsonify({"ok": True, "row": {
             "jira_id": jm.group(1) if jm else "", "pr": p.get("html_url", ""), "pr_label": "%s#%d" % (repo, num),
             "title": p.get("title", ""), "repository": "%s/%s" % (owner, repo), "author": (p.get("user") or {}).get("login", ""),
-            "state": "open" if opened else ("merged" if merged else "closed"), "review_status": _rv_label(rv_state), "requested_at": start, "end_at": end,
+            "state": "open" if opened else ("merged" if merged else "closed"), "review_status": rv_state, "requested_at": start, "end_at": end,
             "review_days": max(0, (e.date() - s.date()).days) if s and e else 0}})
 
     @app.route("/api/project-management/sprint/pr-reviews/export", methods=["POST"])
