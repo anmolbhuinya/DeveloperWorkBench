@@ -478,7 +478,7 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
                       {c.map((v, i) => (
                         <td key={i} style={{ ...td, ...(i === 9 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), wordBreak: 'break-word' }}>
                           {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a>
-                            : i === 6 && v === 'Review' ? <button onClick={() => startReview(r)} title="Open in AI PR Review and track review time" style={{ background: '#ef6c00', color: '#fff', border: 'none', borderRadius: 10, padding: '2px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Review</button>
+                            : i === 6 && (v === 'Review' || v === 'Changes Requested') ? <button onClick={() => startReview(r)} title="Open in AI PR Review and track review time" style={{ background: v === 'Review' ? '#ef6c00' : '#c62828', color: '#fff', border: 'none', borderRadius: 10, padding: '2px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>{v}</button>
                             : i === 5 || i === 6 ? v.split(', ').map(p => <span key={p} style={{ ...badge(p), marginRight: 4 }}>{p}</span>) : v}
                         </td>))}
                     </tr>)

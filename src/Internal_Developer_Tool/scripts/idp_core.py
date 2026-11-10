@@ -32912,9 +32912,24 @@ sys.exit(out.channel.recv_exit_status())
             def build(it):
                 key = it["html_url"] + "|v3"                                    # v3: "Not Reviewed" renamed "Review"
                 hit = _pr_rev_cache.get(key)
-                if hit and hit[0] == it.get("updated_at"): return hit[1]
                 repo_api = it["repository_url"]
                 num = it["number"]
+                def reviews_label():
+                    rv_list = []
+                    try:
+                        url = "%s/pulls/%d/reviews" % (repo_api, num)
+                        for _ in range(5):
+                            r = get(url, params={"per_page": 100}) if "?" not in url else get(url)
+                            if r.status_code != 200: break
+                            rv_list += r.json()
+                            url = r.links.get("next", {}).get("url")
+                            if not url: break
+                    except Exception:
+                        pass
+                    return _rv_label(rv_list, me)
+                if hit and hit[0] == it.get("updated_at"):
+                    # the rest of the row is cached, but the review status is always re-read (e.g. Changes Requested -> Approved)
+                    return dict(hit[1], review_status=reviews_label())
                 start = None
                 try:
                     url = "%s/issues/%d/timeline" % (repo_api, num)
@@ -32935,18 +32950,7 @@ sys.exit(out.channel.recv_exit_status())
                     start = start or reviewed or it.get("created_at")
                 except Exception:
                     start = it.get("created_at")
-                rv_list = []
-                try:
-                    url = "%s/pulls/%d/reviews" % (repo_api, num)
-                    for _ in range(5):
-                        r = get(url, params={"per_page": 100}) if "?" not in url else get(url)
-                        if r.status_code != 200: break
-                        rv_list += r.json()
-                        url = r.links.get("next", {}).get("url")
-                        if not url: break
-                except Exception:
-                    pass
-                rv_state = _rv_label(rv_list, me)
+                rv_state = reviews_label()
                 m = pat.search(it.get("title", ""))
                 if not m:                                                       # no ticket in the title: look at the branch name
                     try:
