@@ -362,7 +362,22 @@ function PrReviewsPanel({ file }) {
       .catch(() => setErr('Could not reach server')).finally(() => setBusy(false))
   }
   useEffect(() => { load() }, [since])
-  const sections = data ? [{ title: 'Open PR', rows: data.open }, { title: 'Closed PR', rows: data.closed }] : []
+  const [adhoc, setAdhoc] = useState(() => { try { return JSON.parse(localStorage.getItem('dwb_adhoc_prs') || '[]') } catch { return [] } })
+  const [adhocUrl, setAdhocUrl] = useState('')
+  const [adhocBusy, setAdhocBusy] = useState(false)
+  const [adhocErr, setAdhocErr] = useState('')
+  const saveAdhoc = rows => { setAdhoc(rows); localStorage.setItem('dwb_adhoc_prs', JSON.stringify(rows)) }
+  async function addAdhoc() {
+    if (!adhocUrl.trim()) return
+    setAdhocBusy(true); setAdhocErr('')
+    try {
+      const d = await fetch(`${API}/pr-reviews/adhoc?url=${encodeURIComponent(adhocUrl.trim())}`).then(r => r.json())
+      if (!d.ok) setAdhocErr(d.error || 'Failed')
+      else { saveAdhoc([d.row, ...adhoc.filter(x => x.pr !== d.row.pr)]); setAdhocUrl('') }
+    } catch { setAdhocErr('Could not reach server') }
+    setAdhocBusy(false)
+  }
+  const sections = data ? [{ title: 'Open PR', rows: data.open }, { title: 'Closed PR', rows: data.closed }, { title: 'Adhoc PR', rows: adhoc }] : []
   const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
   const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
   const link = { color: '#0563C1', textDecoration: 'underline' }
@@ -407,6 +422,14 @@ function PrReviewsPanel({ file }) {
       {sections.map(s => (
         <div key={s.title} style={{ marginBottom: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 14, margin: '4px 0 6px' }}>{s.title} <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 12 }}>({s.rows.length})</span></div>
+          {s.title === 'Adhoc PR' && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+              <input value={adhocUrl} onChange={e => setAdhocUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && addAdhoc()}
+                placeholder="https://github.com/org/repo/pull/123" style={{ ...btn, flex: '1 1 360px', maxWidth: 520, padding: '4px 8px', cursor: 'text' }} />
+              <button style={btn} onClick={addAdhoc} disabled={adhocBusy || !adhocUrl.trim()}>{adhocBusy ? 'Adding...' : 'Add PR'}</button>
+              {adhoc.length > 0 && <button style={btn} onClick={() => saveAdhoc([])}>Clear</button>}
+              {adhocErr && <span style={{ color: '#c62828', fontSize: 12 }}>{adhocErr}</span>}
+            </div>)}
           <div style={{ overflow: 'auto', maxHeight: 460, border: '1px solid var(--border)', borderRadius: 6 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>{PR_HEAD.map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
@@ -421,7 +444,7 @@ function PrReviewsPanel({ file }) {
                         </td>))}
                     </tr>)
                 })}
-                {s.rows.length === 0 && <tr><td colSpan={PR_HEAD.length} style={{ ...td, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>No {s.title === 'Open PR' ? 'open' : 'closed'} pull requests</td></tr>}
+                {s.rows.length === 0 && <tr><td colSpan={PR_HEAD.length} style={{ ...td, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>{s.title === 'Adhoc PR' ? 'No adhoc pull requests added' : `No ${s.title === 'Open PR' ? 'open' : 'closed'} pull requests`}</td></tr>}
               </tbody>
             </table>
           </div>

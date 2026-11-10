@@ -32948,6 +32948,37 @@ sys.exit(out.channel.recv_exit_status())
         cls = sorted([r for r in rows if r["state"] != "open"], key=lambda r: r["end_at"] or "", reverse=True)
         return jsonify({"ok": True, "me": me, "since": since, "open": opn, "closed": cls})
 
+    @app.route("/api/project-management/sprint/pr-reviews/adhoc", methods=["GET"])
+    def api_sprint_pr_reviews_adhoc():
+        import requests as _rq, re as _r, datetime as _dt, urllib3 as _u3
+        _u3.disable_warnings()
+        m = _r.match(r"^\s*https?://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)", request.args.get("url") or "")
+        if not m: return jsonify({"ok": False, "error": "Enter a GitHub PR URL like https://github.com/org/repo/pull/123"})
+        tok = _scm_github_token()
+        if not tok: return jsonify({"ok": False, "error": "github_token is missing in secrets.xlsx (GitHub sheet)"})
+        H = {"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"}
+        owner, repo, num = m.group(1), m.group(2), int(m.group(3))
+        try:
+            r = _rq.get("https://api.github.com/repos/%s/%s/pulls/%d" % (owner, repo, num), headers=H, timeout=30, verify=False)
+            if r.status_code != 200: return jsonify({"ok": False, "error": "GitHub returned HTTP %d for this PR" % r.status_code})
+            p = r.json()
+        except Exception as e:
+            return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
+        pat = _r.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-\d+)(?!\d)")
+        jm = pat.search(p.get("title", "")) or pat.search((p.get("head") or {}).get("ref", "")) or pat.search(p.get("body") or "")
+        merged = p.get("merged_at")
+        opened = p.get("state") == "open"
+        start = p.get("created_at")
+        end = None if opened else (merged or p.get("closed_at"))
+        now = _dt.datetime.now(_dt.timezone.utc)
+        def day(t): return _dt.datetime.fromisoformat(t.replace("Z", "+00:00")) if t else None
+        s, e = day(start), (day(end) if end else now)
+        return jsonify({"ok": True, "row": {
+            "jira_id": jm.group(1) if jm else "", "pr": p.get("html_url", ""), "pr_label": "%s#%d" % (repo, num),
+            "title": p.get("title", ""), "repository": "%s/%s" % (owner, repo), "author": (p.get("user") or {}).get("login", ""),
+            "state": "open" if opened else ("merged" if merged else "closed"), "requested_at": start, "end_at": end,
+            "review_days": max(0, (e.date() - s.date()).days) if s and e else 0}})
+
     @app.route("/api/project-management/sprint/pr-reviews/export", methods=["POST"])
     def api_sprint_pr_reviews_export():
         import openpyxl as _xl_ex
