@@ -295,8 +295,154 @@ function FileSection({ file }) {
   )
 }
 
+// ── Files changed: diffs, viewed checkboxes, line comments and the review actions (comment / approve / request changes) ──
+function parsePatch(patch) {
+  const rows = []
+  let o = 0, n = 0
+  for (const line of (patch || '').split('\n')) {
+    const h = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)/)
+    if (h) { o = +h[1]; n = +h[2]; rows.push({ t: 'hunk', text: line }); continue }
+    if (line.startsWith('\\')) continue
+    if (line.startsWith('+')) rows.push({ t: 'add', n: n++, text: line.slice(1) })
+    else if (line.startsWith('-')) rows.push({ t: 'del', o: o++, text: line.slice(1) })
+    else rows.push({ t: 'ctx', o: o++, n: n++, text: line.slice(1) })
+  }
+  return rows
+}
+const DIFF_BG = { add: 'rgba(46,125,50,0.15)', del: 'rgba(198,40,40,0.15)', hunk: 'rgba(25,118,210,0.10)', ctx: 'transparent' }
+
+function DiffFile({ f, viewed, onView, post }) {
+  const [open, setOpen] = useState(false)
+  const [at, setAt] = useState(null)       // row index being commented
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const rows = open ? parsePatch(f.patch) : []
+  const send = async r => {
+    setBusy(true); setMsg('')
+    const e = await post(f.path, r.t === 'del' ? r.o : r.n, r.t === 'del' ? 'LEFT' : 'RIGHT', text)
+    setBusy(false)
+    if (e) setMsg(e); else { setText(''); setAt(null); setMsg('Comment posted') }
+  }
+  const num = { width: 44, textAlign: 'right', padding: '0 6px', color: 'var(--text-muted)', userSelect: 'none', cursor: 'pointer', verticalAlign: 'top' }
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--surface)' }}>
+        <button onClick={() => setOpen(o => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--text)' }}>{open ? '▾' : '▸'}</button>
+        <span onClick={() => setOpen(o => !o)} style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 600, flex: 1, wordBreak: 'break-all', cursor: 'pointer' }}>{f.path}</span>
+        <span style={{ fontSize: 11, color: '#2E7D32', fontWeight: 600 }}>+{f.additions}</span>
+        <span style={{ fontSize: 11, color: '#C62828', fontWeight: 600 }}>-{f.deletions}</span>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{f.status}</span>
+        <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}><input type="checkbox" checked={viewed} onChange={onView} /> Viewed</label>
+      </div>
+      {open && (f.patch ? (
+        <div style={{ overflowX: 'auto', fontFamily: 'monospace', fontSize: 12 }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+            <tbody>
+              {rows.map((r, i) => [
+                <tr key={i} style={{ background: DIFF_BG[r.t] }}>
+                  <td style={num} title={r.t === 'hunk' ? '' : 'Click to comment on this line'} onClick={() => r.t !== 'hunk' && (setAt(at === i ? null : i), setMsg(''))}>{r.t === 'add' ? '' : r.o ?? ''}</td>
+                  <td style={num} title={r.t === 'hunk' ? '' : 'Click to comment on this line'} onClick={() => r.t !== 'hunk' && (setAt(at === i ? null : i), setMsg(''))}>{r.t === 'del' ? '' : r.n ?? ''}</td>
+                  <td style={{ whiteSpace: 'pre', padding: '0 8px', color: r.t === 'hunk' ? '#1565C0' : 'var(--text)' }}>{r.t === 'add' ? '+' : r.t === 'del' ? '-' : r.t === 'ctx' ? ' ' : ''}{r.t === 'hunk' ? r.text : r.text}</td>
+                </tr>,
+                at === i && (
+                  <tr key={'c' + i}><td colSpan={3} style={{ padding: 8, background: 'var(--bg)', fontFamily: 'inherit' }}>
+                    <textarea value={text} onChange={e => setText(e.target.value)} rows={3} placeholder="Leave a comment on this line…" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 6, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface)', color: 'var(--text)' }} />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 4, alignItems: 'center' }}>
+                      <button disabled={busy || !text.trim()} onClick={() => send(r)} style={{ fontSize: 12, padding: '4px 12px', border: 'none', borderRadius: 4, background: 'var(--primary,#1976d2)', color: '#fff', cursor: 'pointer' }}>{busy ? 'Posting…' : 'Add comment'}</button>
+                      <button onClick={() => setAt(null)} style={{ fontSize: 12, padding: '4px 12px', border: '1px solid var(--border)', borderRadius: 4, background: 'none', color: 'var(--text)', cursor: 'pointer' }}>Cancel</button>
+                      {msg && <span style={{ fontSize: 12, color: '#B71C1C' }}>{msg}</span>}
+                    </div>
+                  </td></tr>
+                ),
+              ])}
+            </tbody>
+          </table>
+          {msg === 'Comment posted' && at === null && <div style={{ fontSize: 12, color: '#2E7D32', padding: '4px 10px' }}>✓ Comment posted</div>}
+        </div>
+      ) : <div style={{ padding: 10, fontSize: 12, color: 'var(--text-muted)' }}>No text diff available (binary, renamed or too large) — open it on GitHub.</div>)}
+    </div>
+  )
+}
+
+function FilesPanel({ owner, repo, pr, onSubmitted }) {
+  const [data, setData] = useState(null)
+  const [err, setErr] = useState('')
+  const [filter, setFilter] = useState('')
+  const vkey = `dwb_pr_viewed:${owner}/${repo}#${pr}`
+  const [viewed, setViewed] = useState(() => { try { return JSON.parse(localStorage.getItem(vkey) || '{}') } catch { return {} } })
+  const [body, setBody] = useState('')
+  const [busy, setBusy] = useState('')
+  const [note, setNote] = useState(null)
+  useEffect(() => {
+    setData(null); setErr('')
+    fetch(`${API}/files`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, repo, pr }) })
+      .then(r => r.json()).then(d => { if (d.ok) setData(d); else setErr(d.error || 'Failed to load files') }).catch(e => setErr(String(e)))
+  }, [owner, repo, pr])
+  const toggle = p => setViewed(v => { const n = { ...v, [p]: !v[p] }; localStorage.setItem(vkey, JSON.stringify(n)); return n })
+  const post = async (path, line, side, text) => {
+    try {
+      const d = await fetch(`${API}/comment`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, repo, pr, path, line, side, body: text, commit_id: data.head_sha }) }).then(r => r.json())
+      return d.ok ? '' : (d.error || 'Failed')
+    } catch (e) { return String(e) }
+  }
+  const submit = async event => {
+    setBusy(event); setNote(null)
+    try {
+      const d = await fetch(`${API}/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, repo, pr, event, body }) }).then(r => r.json())
+      if (d.ok) { setNote({ ok: true, text: 'Review submitted' }); setBody(''); onSubmitted && onSubmitted() } else setNote({ ok: false, text: d.error || 'Failed' })
+    } catch (e) { setNote({ ok: false, text: String(e) }) }
+    setBusy('')
+  }
+  if (err) return <div style={{ padding: '12px 16px', background: '#FFEBEE', border: '1px solid #EF9A9A', borderRadius: 8, fontSize: 13, color: '#B71C1C' }}>⚠ {err}</div>
+  if (!data) return <div style={{ padding: 24, textAlign: 'center' }}><span className="spinner" /></div>
+  const files = data.files.filter(f => !filter || f.path.toLowerCase().includes(filter.toLowerCase()))
+  const done = data.files.filter(f => viewed[f.path]).length
+  const rb = (bg, c) => ({ fontSize: 12, fontWeight: 600, padding: '6px 14px', border: bg ? 'none' : '1px solid var(--border)', borderRadius: 6, background: bg || 'var(--bg)', color: c || 'var(--text)', cursor: 'pointer' })
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Submit your review</div>
+        <textarea value={body} onChange={e => setBody(e.target.value)} rows={3} placeholder="Review comment (required for Comment / Request changes)…" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 6, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)' }} />
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button disabled={!!busy} onClick={() => submit('COMMENT')} style={rb()}>{busy === 'COMMENT' ? 'Submitting…' : '💬 Comment'}</button>
+          <button disabled={!!busy} onClick={() => submit('APPROVE')} style={rb('#2e7d32', '#fff')}>{busy === 'APPROVE' ? 'Submitting…' : '✓ Approve'}</button>
+          <button disabled={!!busy} onClick={() => submit('REQUEST_CHANGES')} style={rb('#c62828', '#fff')}>{busy === 'REQUEST_CHANGES' ? 'Submitting…' : '✕ Request changes'}</button>
+          {note && <span style={{ fontSize: 12, color: note.ok ? '#2E7D32' : '#B71C1C' }}>{note.ok ? '✓ ' : '⚠ '}{note.text}</span>}
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{data.files.length} file{data.files.length !== 1 ? 's' : ''} changed <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}>· {done} viewed</span></div>
+        <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter by file path…" style={{ width: 260, fontSize: 12, fontFamily: 'monospace', padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }} />
+      </div>
+      {files.map(f => <DiffFile key={f.path} f={f} viewed={!!viewed[f.path]} onView={() => toggle(f.path)} post={post} />)}
+    </div>
+  )
+}
+
 export default function CoPilotReviewPage() {
   const [searchParams]            = useSearchParams()
+  const [tab, setTab]             = useState('copilot')   // copilot | files
+  // Review time tracking (opened from Sprint > PR Reviews): counts visible seconds, saved to the sprint's "PR Reviews" sheet
+  const track = searchParams.get('track') === '1' ? { pr: searchParams.get('prUrl') || '', sprint: searchParams.get('sprint') || '', jira: searchParams.get('jira') || '' } : null
+  const secRef = useRef(0)
+  const [elapsed, setElapsed] = useState(0)
+  const [saved, setSaved] = useState('')
+  const trackRef = useRef(track); trackRef.current = track
+  const saveTime = () => {
+    const t = trackRef.current, s = secRef.current
+    if (!t || !t.pr || !t.sprint || s < 1) return
+    secRef.current = 0
+    fetch('/api/project-management/sprint/pr-review-time', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: t.sprint, pr: t.pr, jira_id: t.jira, seconds: s }) })
+      .then(r => r.json()).then(d => { if (d.ok) setSaved(d.time); else { secRef.current += s } }).catch(() => { secRef.current += s })
+  }
+  useEffect(() => {
+    if (!track) return
+    const id = setInterval(() => { if (!document.hidden) { secRef.current += 1; setElapsed(e => e + 1) } }, 1000)
+    window.addEventListener('pagehide', saveTime)
+    return () => { clearInterval(id); window.removeEventListener('pagehide', saveTime); saveTime() }
+  }, [])
   const autoRan                   = useRef(false)
   const [urlInput, setUrlInput]   = useState('')
   const [owner,    setOwner]      = useState('')
@@ -427,6 +573,13 @@ export default function CoPilotReviewPage() {
         <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
           View GitHub Copilot review comments for a Pull Request
         </div>
+        {track && (
+          <div style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 10, padding: '6px 12px', border: '1px solid #ef6c00', borderRadius: 8, fontSize: 13 }}>
+            <span style={{ color: '#ef6c00', fontWeight: 700 }}>⏱ Review time {String(Math.floor(elapsed / 3600))}:{String(Math.floor(elapsed / 60) % 60).padStart(2, '0')}:{String(elapsed % 60).padStart(2, '0')}</span>
+            <button onClick={saveTime} style={{ fontSize: 12, padding: '3px 10px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>Save time</button>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{saved ? `Total saved for this PR: ${saved} (h:mm)` : 'Saved to the sprint PR Reviews sheet when you leave this page or press Save time'}</span>
+          </div>
+        )}
       </div>
 
     <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
@@ -543,6 +696,14 @@ export default function CoPilotReviewPage() {
             </div>
           </div>
 
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+            {[['copilot', '🤖 Copilot Review'], ['files', '📄 Files Changed']].map(([k, l]) => (
+              <button key={k} onClick={() => setTab(k)} style={{ fontSize: 13, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontWeight: 600,
+                border: '1px solid var(--primary,#1976d2)', background: tab === k ? 'var(--primary,#1976d2)' : 'var(--bg)', color: tab === k ? '#fff' : 'var(--primary,#1976d2)' }}>{l}</button>
+            ))}
+          </div>
+          {tab === 'files' && <FilesPanel owner={owner} repo={repo} pr={pr} />}
+          {tab === 'copilot' && <>
           {/* No Copilot activity */}
           {result.total_comments === 0 && result.total_reviews === 0 && (
             <div style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--text-muted)',
@@ -627,6 +788,7 @@ export default function CoPilotReviewPage() {
               )}
             </>
           )}
+          </>}
         </>
       )}
     </div>

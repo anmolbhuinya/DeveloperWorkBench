@@ -335,10 +335,10 @@ function SetupProgress({ setup, onNavigate, onConfirmRevert, onAbort }) {
 
 // ─── SprintDetail ────────────────────────────────────────────────────────────
 // Sprint > PR Reviews: the GitHub pull requests I review (open first, longest waiting on top), with the days since I was added as reviewer
-const PR_HEAD = ['JIRA ID', 'PR', 'Title', 'Repository', 'Author', 'Status', 'Review Status', 'Review Requested', 'Closed On', 'Review Days']
+const PR_HEAD = ['JIRA ID', 'PR', 'Title', 'Repository', 'Author', 'Status', 'Review Status', 'Review Requested', 'Closed On', 'Review Days', 'Review Time']
 function prCells(r) {
   const d = t => (t ? t.slice(0, 10) : '')
-  return [r.jira_id, r.pr_label, r.title, r.repository, r.author, r.state === 'open' ? 'Open' : r.state === 'merged' ? 'Merged' : 'Declined', r.review_status || 'Not Reviewed', d(r.requested_at), d(r.end_at), String(r.review_days)]
+  return [r.jira_id, r.pr_label, r.title, r.repository, r.author, r.state === 'open' ? 'Open' : r.state === 'merged' ? 'Merged' : 'Declined', (!r.review_status || r.review_status === 'Not Reviewed') ? 'Review' : r.review_status, d(r.requested_at), d(r.end_at), String(r.review_days), r.review_time || '']
 }
 function prLinks(r) {
   const l = {}
@@ -361,11 +361,16 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
     const refreshAdhoc = Promise.all(adhoc.map(a => fetch(`${API}/pr-reviews/adhoc?url=${encodeURIComponent(a.pr)}`).then(r => r.json()).then(d => (d.ok ? d.row : a)).catch(() => a)))
       .then(rows => saveAdhoc(rows))
     const main = fetch(`${API}/pr-reviews?since=${since}`).then(r => r.json()).then(d => { if (d.ok) { setData(d); try { localStorage.setItem('dwb_pr_reviews', JSON.stringify(d)) } catch { /* quota */ } } else setErr(d.error || 'Failed') })
-    Promise.all([main, refreshAdhoc])
+    Promise.all([main, refreshAdhoc, loadTimes()])
       .catch(() => setErr('Could not reach server')).finally(() => setBusy(false))
   }
   // No automatic sync: show the last synced result (kept in the browser) until the Sync button is pressed
   useEffect(() => { try { const c = JSON.parse(localStorage.getItem('dwb_pr_reviews') || 'null'); if (c) setData(c) } catch { /* ignore */ } }, [])
+  const navigate = useNavigate()
+  const [times, setTimes] = useState({})   // PR url -> review time (h:mm), kept in the sprint file's "PR Reviews" sheet
+  const loadTimes = () => fetch(`${API}/pr-review-time?file=${encodeURIComponent(file)}`).then(r => r.json()).then(d => { if (d.ok) setTimes(d.times || {}) }).catch(() => {})
+  useEffect(() => { loadTimes() }, [file])
+  const startReview = r => navigate(`/developer-tools/copilot-review?prUrl=${encodeURIComponent(r.pr)}&track=1&sprint=${encodeURIComponent(file)}&jira=${encodeURIComponent(r.jira_id || '')}`)
   const [adhoc, setAdhoc] = useState(() => { try { return JSON.parse(localStorage.getItem('dwb_adhoc_prs') || '[]') } catch { return [] } })
   const [adhocUrl, setAdhocUrl] = useState('')
   const [adhocBusy, setAdhocBusy] = useState(false)
@@ -385,9 +390,10 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
   const inSprint = r => !sprintJiras.length || sprintJiras.includes((r.jira_id || '').toUpperCase())
   const seen = new Set()
   const keep = r => { if (seen.has(r.pr)) return false; seen.add(r.pr); return true }
-  const sprintOpen = (data ? data.open : []).filter(r => inSprint(r) && keep(r))
-  const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r))
-  const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep)
+  const withTime = r => ({ ...r, review_time: times[r.pr] || '' })
+  const sprintOpen = (data ? data.open : []).filter(r => inSprint(r) && keep(r)).map(withTime)
+  const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r)).map(withTime)
+  const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep).map(withTime)
   const sections = [{ title: 'Open PR', rows: sprintOpen }, { title: 'Closed PR', rows: sprintClosed }, { title: 'Adhoc PR', rows: adhocRows }]
   const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
   const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
@@ -452,7 +458,8 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
                       {c.map((v, i) => (
                         <td key={i} style={{ ...td, ...(i === 9 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), ...(i === 2 ? { maxWidth: 420 } : {}) }}>
                           {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a>
-                            : i === 6 && v.startsWith('Approved') ? <span style={{ background: '#2e7d32', color: '#fff', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{v}</span> : v}
+                            : i === 6 && v === 'Review' ? <button onClick={() => startReview(r)} title="Open in AI PR Review and track review time" style={{ background: '#ef6c00', color: '#fff', border: 'none', borderRadius: 10, padding: '2px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Review</button>
+                            : i === 6 && v.startsWith('Approved') ?<span style={{ background: '#2e7d32', color: '#fff', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{v}</span> : v}
                         </td>))}
                     </tr>)
                 })}

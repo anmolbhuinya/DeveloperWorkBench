@@ -32878,7 +32878,7 @@ sys.exit(out.channel.recv_exit_status())
         if mine == "APPROVED": return "Approved (By me and others)" if others else "Approved (By me)"
         base = {"CHANGES_REQUESTED": "Changes Requested", "COMMENTED": "Commented", "DISMISSED": "Dismissed"}.get(mine, "")
         if others: return (base + ", " if base else "") + "Approved (By others)"
-        return base or "Not Reviewed"
+        return base or "Review"
 
     @app.route("/api/project-management/sprint/pr-reviews", methods=["GET"])
     def api_sprint_pr_reviews():
@@ -32910,7 +32910,7 @@ sys.exit(out.channel.recv_exit_status())
                 for it in search(q): found[it["html_url"]] = it
             pat = _r.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-\d+)(?!\d)")
             def build(it):
-                key = it["html_url"] + "|v2"                                    # v2: review_status logic changed
+                key = it["html_url"] + "|v3"                                    # v3: "Not Reviewed" renamed "Review"
                 hit = _pr_rev_cache.get(key)
                 if hit and hit[0] == it.get("updated_at"): return hit[1]
                 repo_api = it["repository_url"]
@@ -36896,6 +36896,121 @@ sys.exit(out.channel.recv_exit_status())
     # ── CoPilot Review ────────────────────────────────────────────────────────
 
     _COPILOT_REVIEW_SCRIPT = Path(__file__).parent.parent.parent / "Tools" / "CoPilotReview" / "copilot_review.py"
+
+    # ── AI PR Review: files changed (diffs) + review actions (comment / approve / request changes) + review time ──
+    def _gh_pr_call(method, path, **kw):
+        import requests as _rq, urllib3 as _u3
+        _u3.disable_warnings()
+        tok = _scm_github_token()
+        if not tok: return None, "github_token is missing in secrets.xlsx (GitHub sheet)"
+        H = {"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"}
+        try:
+            return _rq.request(method, "https://api.github.com" + path, headers=H, timeout=60, verify=False, **kw), ""
+        except Exception as e:
+            return None, "%s: %s" % (type(e).__name__, e)
+
+    def _gh_pr_args(body):
+        import re as _r
+        o, rp, n = (str(body.get(k) or "").strip() for k in ("owner", "repo", "pr"))
+        if not (_r.fullmatch(r"[\w.-]+", o) and _r.fullmatch(r"[\w.-]+", rp) and _r.fullmatch(r"\d+", n)): return None
+        return o, rp, n
+
+    @app.route("/api/tools/copilot-review/files", methods=["POST"])
+    def api_copilot_review_files():
+        a = _gh_pr_args(request.get_json() or {})
+        if not a: return jsonify({"ok": False, "error": "owner, repo and pr are required"})
+        o, rp, n = a
+        pr, err = _gh_pr_call("GET", "/repos/%s/%s/pulls/%s" % (o, rp, n))
+        if pr is None or pr.status_code != 200: return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d" % pr.status_code})
+        files = []
+        for page in range(1, 11):
+            r, err = _gh_pr_call("GET", "/repos/%s/%s/pulls/%s/files" % (o, rp, n), params={"per_page": 100, "page": page})
+            if r is None or r.status_code != 200: return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d" % r.status_code})
+            chunk = r.json()
+            files += [{"path": f.get("filename", ""), "status": f.get("status", ""), "additions": f.get("additions", 0),
+                       "deletions": f.get("deletions", 0), "patch": f.get("patch", ""), "previous": f.get("previous_filename", "")} for f in chunk]
+            if len(chunk) < 100: break
+        return jsonify({"ok": True, "head_sha": (pr.json().get("head") or {}).get("sha", ""), "files": files})
+
+    @app.route("/api/tools/copilot-review/submit", methods=["POST"])
+    def api_copilot_review_submit():
+        body = request.get_json() or {}
+        a = _gh_pr_args(body)
+        if not a: return jsonify({"ok": False, "error": "owner, repo and pr are required"})
+        o, rp, n = a
+        ev = str(body.get("event") or "").upper()
+        if ev not in ("COMMENT", "APPROVE", "REQUEST_CHANGES"): return jsonify({"ok": False, "error": "event must be COMMENT, APPROVE or REQUEST_CHANGES"})
+        text = str(body.get("body") or "").strip()
+        if ev != "APPROVE" and not text: return jsonify({"ok": False, "error": "A comment is required for this review type"})
+        r, err = _gh_pr_call("POST", "/repos/%s/%s/pulls/%s/reviews" % (o, rp, n), json={"event": ev, "body": text})
+        if r is None or r.status_code not in (200, 201):
+            return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d: %s" % (r.status_code, r.text[:200])})
+        return jsonify({"ok": True, "state": r.json().get("state", "")})
+
+    @app.route("/api/tools/copilot-review/comment", methods=["POST"])
+    def api_copilot_review_comment():
+        body = request.get_json() or {}
+        a = _gh_pr_args(body)
+        if not a: return jsonify({"ok": False, "error": "owner, repo and pr are required"})
+        o, rp, n = a
+        text, path, sha = str(body.get("body") or "").strip(), str(body.get("path") or ""), str(body.get("commit_id") or "")
+        try: line = int(body.get("line"))
+        except Exception: line = 0
+        if not (text and path and sha and line > 0): return jsonify({"ok": False, "error": "comment text, file, line and commit are required"})
+        side = "LEFT" if str(body.get("side")).upper() == "LEFT" else "RIGHT"
+        r, err = _gh_pr_call("POST", "/repos/%s/%s/pulls/%s/comments" % (o, rp, n),
+                             json={"body": text, "commit_id": sha, "path": path, "line": line, "side": side})
+        if r is None or r.status_code not in (200, 201):
+            return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d: %s" % (r.status_code, r.text[:200])})
+        return jsonify({"ok": True, "url": r.json().get("html_url", "")})
+
+    # Review time lives in the sprint workbook, sheet "PR Reviews" (columns JIRA ID, PR, Review Time as h:mm)
+    def _rt_parse(v):
+        try:
+            h, m = str(v or "0:00").split(":")[:2]
+            return int(h) * 60 + int(m)
+        except Exception:
+            return 0
+
+    @app.route("/api/project-management/sprint/pr-review-time", methods=["GET", "POST"])
+    def api_sprint_pr_review_time():
+        import openpyxl as _xl
+        body = request.get_json(silent=True) or {}
+        filename = str(request.args.get("file") or body.get("file") or "").strip()
+        if not filename: return jsonify({"ok": False, "error": "file required"})
+        target = _sprint_team_path(filename)
+        if not target.exists(): return jsonify({"ok": False, "error": "File not found: %s" % filename})
+        try:
+            wb = _xl.load_workbook(str(target))
+            ws = wb["PR Reviews"] if "PR Reviews" in wb.sheetnames else wb.create_sheet("PR Reviews")
+            if ws.max_row < 1 or not any(c.value for c in ws[1]): ws.append(["JIRA ID", "PR", "Review Time"])
+            head = [str(c.value or "") for c in ws[1]]
+            for h in ("JIRA ID", "PR", "Review Time"):
+                if h not in head:
+                    head.append(h)
+                    ws.cell(row=1, column=len(head), value=h)
+            ji, pi, ti = head.index("JIRA ID"), head.index("PR"), head.index("Review Time")
+            rows = {str(ws.cell(row=r, column=pi + 1).value or "").strip(): r for r in range(2, ws.max_row + 1)}
+            if request.method == "GET":
+                return jsonify({"ok": True, "times": {u: str(ws.cell(row=r, column=ti + 1).value or "") for u, r in rows.items() if u}})
+            pr = str(body.get("pr") or "").strip()
+            if not pr: return jsonify({"ok": False, "error": "pr required"})
+            try: add = max(0, int(round(float(body.get("seconds") or 0) / 60.0)))
+            except Exception: add = 0
+            r = rows.get(pr)
+            if r is None:
+                r = ws.max_row + 1
+                ws.cell(row=r, column=pi + 1, value=pr)
+            if body.get("jira_id"): ws.cell(row=r, column=ji + 1, value=str(body["jira_id"]).upper())
+            tot = _rt_parse(ws.cell(row=r, column=ti + 1).value) + add
+            label = "%d:%02d" % (tot // 60, tot % 60)
+            ws.cell(row=r, column=ti + 1, value=label)
+            wb.save(str(target))
+            return jsonify({"ok": True, "time": label})
+        except PermissionError:
+            return jsonify({"ok": False, "error": "The sprint file is open in another program - close it and try again"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
 
     @app.route("/api/tools/copilot-review/fetch", methods=["POST"])
     def api_copilot_review_fetch():
