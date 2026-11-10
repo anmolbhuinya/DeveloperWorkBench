@@ -7,6 +7,12 @@ const CARDS = [
     title: 'ERD',
     desc: 'Wishlist and bugs — request features, file and track defects',
   },
+  {
+    path: '/help/career-planning',
+    icon: '📈',
+    title: 'Career Planning',
+    desc: 'Editable table of technical roles, scope and management equivalents',
+  },
 ]
 
 export default function HelpIndexPage() {

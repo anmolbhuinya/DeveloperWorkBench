@@ -54,6 +54,7 @@ const ProjectCleanerPage   = lazy(() => import('./pages/ProjectCleanerPage'))
 const SetupPage            = lazy(() => import('./pages/SetupPage'))
 const HelpPage             = lazy(() => import('./pages/HelpPage'))
 const HelpIndexPage        = lazy(() => import('./pages/HelpIndexPage'))
+const CareerPlanningPage   = lazy(() => import('./pages/CareerPlanningPage'))
 const SetupDevToolsPage    = lazy(() => import('./pages/SetupDevToolsPage'))
 const SetupDevSoftwaresPage = lazy(() => import('./pages/SetupDevSoftwaresPage'))
 const JqassistantPage = lazy(() => import('./pages/JqassistantPage'))
@@ -235,6 +236,7 @@ export default function App() {
               <Route path="/setup"                             element={<SetupPage />} />
               <Route path="/help"                              element={<HelpIndexPage />} />
               <Route path="/help/erd"                          element={<HelpPage />} />
+              <Route path="/help/career-planning"              element={<CareerPlanningPage />} />
               <Route path="/setup/dev-tools"                  element={<SetupDevToolsPage />} />
               <Route path="/setup/dev-softwares"              element={<SetupDevSoftwaresPage />} />
               <Route path="/setup/dev-softwares/jqassistant"  element={<JqassistantPage />} />

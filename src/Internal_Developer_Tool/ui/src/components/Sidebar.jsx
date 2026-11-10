@@ -96,6 +96,7 @@ const SECTIONS = [
     path: '/help',
     items: [
       { label: 'ERD', path: '/help/erd' },
+      { label: 'Career Planning', path: '/help/career-planning' },
     ],
   },
 ]
