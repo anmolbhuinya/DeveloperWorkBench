@@ -348,7 +348,7 @@ function prLinks(r) {
 }
 function addDaysIso(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
 
-function PrReviewsPanel({ file }) {
+function PrReviewsPanel({ file, sprintJiras = [] }) {
   const [opt, setOpt] = useState('sprint')
   const [data, setData] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -358,7 +358,10 @@ function PrReviewsPanel({ file }) {
   const since = opt === 'sprint' ? (end ? addDaysIso(end, -14) : addDaysIso(new Date().toISOString().slice(0, 10), -14)) : addDaysIso(new Date().toISOString().slice(0, 10), -Number(opt))
   const load = () => {
     setBusy(true); setErr('')
-    fetch(`${API}/pr-reviews?since=${since}`).then(r => r.json()).then(d => { if (d.ok) { setData(d); try { localStorage.setItem('dwb_pr_reviews', JSON.stringify(d)) } catch { /* quota */ } } else setErr(d.error || 'Failed') })
+    const refreshAdhoc = Promise.all(adhoc.map(a => fetch(`${API}/pr-reviews/adhoc?url=${encodeURIComponent(a.pr)}`).then(r => r.json()).then(d => (d.ok ? d.row : a)).catch(() => a)))
+      .then(rows => saveAdhoc(rows))
+    const main = fetch(`${API}/pr-reviews?since=${since}`).then(r => r.json()).then(d => { if (d.ok) { setData(d); try { localStorage.setItem('dwb_pr_reviews', JSON.stringify(d)) } catch { /* quota */ } } else setErr(d.error || 'Failed') })
+    Promise.all([main, refreshAdhoc])
       .catch(() => setErr('Could not reach server')).finally(() => setBusy(false))
   }
   // No automatic sync: show the last synced result (kept in the browser) until the Sync button is pressed
@@ -378,7 +381,14 @@ function PrReviewsPanel({ file }) {
     } catch { setAdhocErr('Could not reach server') }
     setAdhocBusy(false)
   }
-  const sections = [{ title: 'Open PR', rows: data ? data.open : [] }, { title: 'Closed PR', rows: data ? data.closed : [] }, { title: 'Adhoc PR', rows: adhoc }]
+  // A PR whose JIRA ticket is not a story of this sprint goes to Adhoc PR (only once the sprint board is known); no PR is listed twice
+  const inSprint = r => !sprintJiras.length || sprintJiras.includes((r.jira_id || '').toUpperCase())
+  const seen = new Set()
+  const keep = r => { if (seen.has(r.pr)) return false; seen.add(r.pr); return true }
+  const sprintOpen = (data ? data.open : []).filter(r => inSprint(r) && keep(r))
+  const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r))
+  const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep)
+  const sections = [{ title: 'Open PR', rows: sprintOpen }, { title: 'Closed PR', rows: sprintClosed }, { title: 'Adhoc PR', rows: adhocRows }]
   const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
   const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
   const link = { color: '#0563C1', textDecoration: 'underline' }
@@ -441,7 +451,8 @@ function PrReviewsPanel({ file }) {
                     <tr key={r.pr}>
                       {c.map((v, i) => (
                         <td key={i} style={{ ...td, ...(i === 9 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), ...(i === 2 ? { maxWidth: 420 } : {}) }}>
-                          {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a> : v}
+                          {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a>
+                            : i === 6 && v.startsWith('Approved') ? <span style={{ background: '#2e7d32', color: '#fff', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{v}</span> : v}
                         </td>))}
                     </tr>)
                 })}
@@ -2173,7 +2184,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
         )
       })()}
 
-      {activeTab === 'PR Reviews' && <PrReviewsPanel file={file} />}
+      {activeTab === 'PR Reviews' && <PrReviewsPanel file={file} sprintJiras={((tabRows['Sprint Board'] || []).map(r => ((r[(tabCols['Sprint Board'] || []).indexOf('JIRA ID')] || '').match(/[A-Za-z][A-Za-z0-9]+-\d+/) || [''])[0].toUpperCase()).filter(Boolean))} />}
 
       {loading ? (
         <div style={{ padding: 32, textAlign: 'center' }}><span className="spinner" /></div>
