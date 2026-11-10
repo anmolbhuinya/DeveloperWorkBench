@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import DatePicker from '../components/DatePicker'
 
 const API = '/api/project-management/sprint'
@@ -355,7 +355,7 @@ function badge(label) {
 }
 function addDaysIso(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
 
-function PrReviewsPanel({ file, sprintJiras = [] }) {
+function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced }) {
   const [opt, setOpt] = useState('sprint')
   const [data, setData] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -371,7 +371,8 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
     Promise.all([main, refreshAdhoc, loadTimes()])
       .catch(() => setErr('Could not reach server')).finally(() => setBusy(false))
   }
-  // No automatic sync: show the last synced result (kept in the browser) until the Sync button is pressed
+  useEffect(() => { if (autoSync) { load(); onAutoSynced && onAutoSynced() } }, [])   // only when returning from AI PR Review via "Back to PR Review Panel"
+  // No automatic sync otherwise: show the last synced result (kept in the browser) until the Sync button is pressed
   useEffect(() => { try { const c = JSON.parse(localStorage.getItem('dwb_pr_reviews') || 'null'); if (c) setData(c) } catch { /* ignore */ } }, [])
   const navigate = useNavigate()
   const [times, setTimes] = useState({})   // PR url -> review time (h:mm), kept in the sprint file's "PR Reviews" sheet
@@ -2207,7 +2208,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
         )
       })()}
 
-      {activeTab === 'PR Reviews' && <PrReviewsPanel file={file} sprintJiras={((tabRows['Sprint Board'] || []).map(r => ((r[(tabCols['Sprint Board'] || []).indexOf('JIRA ID')] || '').match(/[A-Za-z][A-Za-z0-9]+-\d+/) || [''])[0].toUpperCase()).filter(Boolean))} />}
+      {activeTab === 'PR Reviews' && <PrReviewsPanel file={file} autoSync={!!sprintProp._autoSync} onAutoSynced={() => { sprintProp._autoSync = false }}sprintJiras={((tabRows['Sprint Board'] || []).map(r => ((r[(tabCols['Sprint Board'] || []).indexOf('JIRA ID')] || '').match(/[A-Za-z][A-Za-z0-9]+-\d+/) || [''])[0].toUpperCase()).filter(Boolean))} />}
 
       {loading ? (
         <div style={{ padding: 32, textAlign: 'center' }}><span className="spinner" /></div>
@@ -3128,7 +3129,8 @@ export default function SprintPage() {
   const [creating,      setCreating]      = useState(false)
   const [createErr,     setCreateErr]     = useState(null)
   const [createMsg,     setCreateMsg]     = useState(null)
-  const [selected,      setSelected]      = useState(null)
+  const location = useLocation()
+  const [selected,      setSelected]      = useState(location.state?.openSprint || null)   // set when coming back from AI PR Review
   const [activeTeamTab,  setActiveTeamTab]  = useState('All')
   const [showTeamConfig,  setShowTeamConfig]  = useState(false)
   const [configTeams,     setConfigTeams]     = useState([])

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 
 const API = '/api/tools/copilot-review'
 
@@ -382,7 +382,7 @@ function DiffFile({ f, viewed, onView, post, remove, comments, me }) {
   )
 }
 
-function FilesPanel({ owner, repo, pr, onSubmitted }) {
+function FilesPanel({ owner, repo, pr, onSubmitted, onBack }) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState('')
   const [filter, setFilter] = useState('')
@@ -415,7 +415,10 @@ function FilesPanel({ owner, repo, pr, onSubmitted }) {
     setBusy(event); setNote(null)
     try {
       const d = await fetch(`${API}/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, repo, pr, event, body }) }).then(r => r.json())
-      if (d.ok) { setNote({ ok: true, text: 'Review submitted' }); setBody(''); onSubmitted && onSubmitted() } else setNote({ ok: false, text: d.error || 'Failed' })
+      if (d.ok) {
+        setNote({ ok: true, text: 'Review submitted' }); setBody(''); onSubmitted && onSubmitted()
+        if (event !== 'COMMENT') setData(x => ({ ...x, my_state: event === 'APPROVE' ? 'APPROVED' : 'CHANGES_REQUESTED' }))
+      } else setNote({ ok: false, text: d.error || 'Failed' })
     } catch (e) { setNote({ ok: false, text: String(e) }) }
     setBusy('')
   }
@@ -424,23 +427,30 @@ function FilesPanel({ owner, repo, pr, onSubmitted }) {
   const files = data.files.filter(f => !filter || f.path.toLowerCase().includes(filter.toLowerCase()))
   const done = data.files.filter(f => viewed[f.path]).length
   const rb = (bg, c) => ({ fontSize: 12, fontWeight: 600, padding: '6px 14px', border: bg ? 'none' : '1px solid var(--border)', borderRadius: 6, background: bg || 'var(--bg)', color: c || 'var(--text)', cursor: 'pointer' })
+  const approved = data.my_state === 'APPROVED', changes = data.my_state === 'CHANGES_REQUESTED'
+  // The same review bar is shown above and below the file list; the Approve / Request changes buttons reflect the review already submitted
+  const bar = (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Submit your review</div>
+      <textarea value={body} onChange={e => setBody(e.target.value)} rows={3} placeholder="Review comment (required for Comment / Request changes)…" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 6, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)' }} />
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button disabled={!!busy} onClick={() => submit('COMMENT')} style={rb()}>{busy === 'COMMENT' ? 'Submitting…' : '💬 Comment'}</button>
+        <button disabled={!!busy || approved} onClick={() => submit('APPROVE')} style={{ ...rb(approved ? '#1b5e20' : '#2e7d32', '#fff'), cursor: approved ? 'default' : 'pointer' }}>{busy === 'APPROVE' ? 'Submitting…' : approved ? '✓ Approved' : '✓ Approve'}</button>
+        <button disabled={!!busy || changes} onClick={() => submit('REQUEST_CHANGES')} style={{ ...rb(changes ? '#8e0000' : '#c62828', '#fff'), cursor: changes ? 'default' : 'pointer' }}>{busy === 'REQUEST_CHANGES' ? 'Submitting…' : changes ? '✕ Changes requested' : '✕ Request changes'}</button>
+        {onBack && <button onClick={onBack} style={{ ...rb('#1565c0', '#fff'), marginLeft: 'auto' }}>← Back to PR Review Panel</button>}
+        {note && <span style={{ fontSize: 12, color: note.ok ? '#2E7D32' : '#B71C1C' }}>{note.ok ? '✓ ' : '⚠ '}{note.text}</span>}
+      </div>
+    </div>
+  )
   return (
     <div>
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Submit your review</div>
-        <textarea value={body} onChange={e => setBody(e.target.value)} rows={3} placeholder="Review comment (required for Comment / Request changes)…" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 6, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)' }} />
-        <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button disabled={!!busy} onClick={() => submit('COMMENT')} style={rb()}>{busy === 'COMMENT' ? 'Submitting…' : '💬 Comment'}</button>
-          <button disabled={!!busy} onClick={() => submit('APPROVE')} style={rb('#2e7d32', '#fff')}>{busy === 'APPROVE' ? 'Submitting…' : '✓ Approve'}</button>
-          <button disabled={!!busy} onClick={() => submit('REQUEST_CHANGES')} style={rb('#c62828', '#fff')}>{busy === 'REQUEST_CHANGES' ? 'Submitting…' : '✕ Request changes'}</button>
-          {note && <span style={{ fontSize: 12, color: note.ok ? '#2E7D32' : '#B71C1C' }}>{note.ok ? '✓ ' : '⚠ '}{note.text}</span>}
-        </div>
-      </div>
+      {bar}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>{data.files.length} file{data.files.length !== 1 ? 's' : ''} changed <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}>· {done} viewed</span></div>
         <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter by file path…" style={{ width: 260, fontSize: 12, fontFamily: 'monospace', padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }} />
       </div>
       {files.map(f => <DiffFile key={f.path} f={f} viewed={!!viewed[f.path]} onView={() => toggle(f.path)} post={post} remove={remove} me={data.me} comments={(data.comments || []).filter(c => c.path === f.path)} />)}
+      {bar}
     </div>
   )
 }
@@ -456,11 +466,19 @@ export default function CoPilotReviewPage() {
   const trackRef = useRef(track); trackRef.current = track
   const saveTime = () => {
     const t = trackRef.current, s = secRef.current
-    if (!t || !t.pr || !t.sprint || s < 1) return
+    if (!t || !t.pr || !t.sprint || s < 1) return inflight.current
     secRef.current = 0
-    fetch('/api/project-management/sprint/pr-review-time', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: t.sprint, pr: t.pr, jira_id: t.jira, seconds: s }) })
+    inflight.current = inflight.current.then(() => fetch('/api/project-management/sprint/pr-review-time', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: t.sprint, pr: t.pr, jira_id: t.jira, seconds: s }) }))
       .then(r => r.json()).then(d => { if (d.ok) setSaved(d.time); else { secRef.current += s } }).catch(() => { secRef.current += s })
+    return inflight.current
+  }
+  const inflight = useRef(Promise.resolve())
+  const navigate = useNavigate()
+  // Back to Sprint > PR Reviews: finish saving the review time, then open that tab and sync it with GitHub
+  const backToPanel = async () => {
+    await saveTime()
+    navigate('/project-management/sprint', { state: { openSprint: { file: track.sprint, name: track.sprint.replace(/\.xlsx$/i, ''), _openTab: 'PR Reviews', _autoSync: true } } })
   }
   // The timer runs only while this page is open and its browser tab is visible; it autosaves every 15 s and adds to the stored total
   useEffect(() => {
@@ -611,6 +629,7 @@ export default function CoPilotReviewPage() {
           <div style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 10, padding: '6px 12px', border: '1px solid #ef6c00', borderRadius: 8, fontSize: 13 }}>
             <span style={{ color: '#ef6c00', fontWeight: 700 }}>⏱ Review time {String(Math.floor(elapsed / 3600))}:{String(Math.floor(elapsed / 60) % 60).padStart(2, '0')}:{String(elapsed % 60).padStart(2, '0')}</span>
             <button onClick={saveTime} style={{ fontSize: 12, padding: '3px 10px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>Save time</button>
+            <button onClick={backToPanel} style={{ fontSize: 12, padding: '3px 10px', border: 'none', borderRadius: 4, background: '#1565c0', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>← Back to PR Review Panel</button>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{saved ? `Total saved for this PR: ${saved} (h:mm)` : 'Saved to the sprint PR Reviews sheet when you leave this page or press Save time'}</span>
           </div>
         )}
@@ -736,7 +755,7 @@ export default function CoPilotReviewPage() {
                 border: '1px solid var(--primary,#1976d2)', background: tab === k ? 'var(--primary,#1976d2)' : 'var(--bg)', color: tab === k ? '#fff' : 'var(--primary,#1976d2)' }}>{l}</button>
             ))}
           </div>
-          {tab === 'files' && <FilesPanel owner={owner} repo={repo} pr={pr} />}
+          {tab === 'files' && <FilesPanel owner={owner} repo={repo} pr={pr} onBack={track && track.sprint ? backToPanel : null} />}
           {tab === 'copilot' && <>
           {/* No Copilot activity */}
           {result.total_comments === 0 && result.total_reviews === 0 && (

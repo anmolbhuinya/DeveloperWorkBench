@@ -36941,7 +36941,13 @@ sys.exit(out.channel.recv_exit_status())
             if len(chunk) < 100: break
         u, _e = _gh_pr_call("GET", "/user")
         me = (u.json().get("login", "") if u is not None and u.status_code == 200 else "")
-        return jsonify({"ok": True, "head_sha": (pr.json().get("head") or {}).get("sha", ""), "files": files, "comments": comments, "me": me})
+        my_state = ""                                   # my latest approve / request-changes (a plain comment does not change it)
+        rv, _e = _gh_pr_call("GET", "/repos/%s/%s/pulls/%s/reviews" % (o, rp, n), params={"per_page": 100})
+        if rv is not None and rv.status_code == 200:
+            for x in sorted(rv.json(), key=lambda x: x.get("submitted_at") or ""):
+                if (x.get("user") or {}).get("login") == me and x.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                    my_state = "" if x["state"] == "DISMISSED" else x["state"]
+        return jsonify({"ok": True, "head_sha": (pr.json().get("head") or {}).get("sha", ""), "files": files, "comments": comments, "me": me, "my_state": my_state})
 
     @app.route("/api/tools/copilot-review/comment/delete", methods=["POST"])
     def api_copilot_review_comment_delete():
