@@ -36930,7 +36930,36 @@ sys.exit(out.channel.recv_exit_status())
             files += [{"path": f.get("filename", ""), "status": f.get("status", ""), "additions": f.get("additions", 0),
                        "deletions": f.get("deletions", 0), "patch": f.get("patch", ""), "previous": f.get("previous_filename", "")} for f in chunk]
             if len(chunk) < 100: break
-        return jsonify({"ok": True, "head_sha": (pr.json().get("head") or {}).get("sha", ""), "files": files})
+        comments = []
+        for page in range(1, 6):
+            r, err = _gh_pr_call("GET", "/repos/%s/%s/pulls/%s/comments" % (o, rp, n), params={"per_page": 100, "page": page})
+            if r is None or r.status_code != 200: break
+            chunk = r.json()
+            comments += [{"id": c["id"], "path": c.get("path", ""), "line": c.get("line") or c.get("original_line"),
+                          "side": c.get("side") or "RIGHT", "author": (c.get("user") or {}).get("login", ""), "body": c.get("body", ""),
+                          "url": c.get("html_url", "")} for c in chunk]
+            if len(chunk) < 100: break
+        u, _e = _gh_pr_call("GET", "/user")
+        me = (u.json().get("login", "") if u is not None and u.status_code == 200 else "")
+        return jsonify({"ok": True, "head_sha": (pr.json().get("head") or {}).get("sha", ""), "files": files, "comments": comments, "me": me})
+
+    @app.route("/api/tools/copilot-review/comment/delete", methods=["POST"])
+    def api_copilot_review_comment_delete():
+        body = request.get_json() or {}
+        a = _gh_pr_args(body)
+        if not a: return jsonify({"ok": False, "error": "owner, repo and pr are required"})
+        o, rp, _n = a
+        try: cid = int(body.get("id"))
+        except Exception: return jsonify({"ok": False, "error": "comment id required"})
+        c, err = _gh_pr_call("GET", "/repos/%s/%s/pulls/comments/%d" % (o, rp, cid))
+        u, _e = _gh_pr_call("GET", "/user")
+        if c is None or c.status_code != 200 or u is None or u.status_code != 200:
+            return jsonify({"ok": False, "error": err or "Could not read the comment from GitHub"})
+        if (c.json().get("user") or {}).get("login") != u.json().get("login"):
+            return jsonify({"ok": False, "error": "You can delete only your own comments"})
+        r, err = _gh_pr_call("DELETE", "/repos/%s/%s/pulls/comments/%d" % (o, rp, cid))
+        if r is None or r.status_code != 204: return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d" % r.status_code})
+        return jsonify({"ok": True})
 
     @app.route("/api/tools/copilot-review/submit", methods=["POST"])
     def api_copilot_review_submit():
@@ -36962,9 +36991,14 @@ sys.exit(out.channel.recv_exit_status())
                              json={"body": text, "commit_id": sha, "path": path, "line": line, "side": side})
         if r is None or r.status_code not in (200, 201):
             return jsonify({"ok": False, "error": err or "GitHub returned HTTP %d: %s" % (r.status_code, r.text[:200])})
-        return jsonify({"ok": True, "url": r.json().get("html_url", "")})
+        return jsonify({"ok": True, "url": r.json().get("html_url", ""), "comment": {
+            "id": r.json().get("id"), "path": path, "line": line, "side": side,
+            "author": (r.json().get("user") or {}).get("login", ""), "body": text, "url": r.json().get("html_url", "")}})
 
     # Review time lives in the sprint workbook, sheet "PR Reviews" (columns JIRA ID, PR, Review Time as h:mm)
+    import threading as _rt_th
+    _rt_lock = _rt_th.Lock()
+
     def _rt_parse(v):
         try:
             h, m = str(v or "0:00").split(":")[:2]
@@ -36981,29 +37015,33 @@ sys.exit(out.channel.recv_exit_status())
         target = _sprint_team_path(filename)
         if not target.exists(): return jsonify({"ok": False, "error": "File not found: %s" % filename})
         try:
+          with _rt_lock:
             wb = _xl.load_workbook(str(target))
             ws = wb["PR Reviews"] if "PR Reviews" in wb.sheetnames else wb.create_sheet("PR Reviews")
             if ws.max_row < 1 or not any(c.value for c in ws[1]): ws.append(["JIRA ID", "PR", "Review Time"])
             head = [str(c.value or "") for c in ws[1]]
-            for h in ("JIRA ID", "PR", "Review Time"):
+            for h in ("JIRA ID", "PR", "Review Time", "Review Seconds"):
                 if h not in head:
                     head.append(h)
                     ws.cell(row=1, column=len(head), value=h)
-            ji, pi, ti = head.index("JIRA ID"), head.index("PR"), head.index("Review Time")
+            ji, pi, ti, si = head.index("JIRA ID"), head.index("PR"), head.index("Review Time"), head.index("Review Seconds")
             rows = {str(ws.cell(row=r, column=pi + 1).value or "").strip(): r for r in range(2, ws.max_row + 1)}
             if request.method == "GET":
                 return jsonify({"ok": True, "times": {u: str(ws.cell(row=r, column=ti + 1).value or "") for u, r in rows.items() if u}})
             pr = str(body.get("pr") or "").strip()
             if not pr: return jsonify({"ok": False, "error": "pr required"})
-            try: add = max(0, int(round(float(body.get("seconds") or 0) / 60.0)))
+            try: add = max(0, int(float(body.get("seconds") or 0)))
             except Exception: add = 0
             r = rows.get(pr)
             if r is None:
                 r = ws.max_row + 1
                 ws.cell(row=r, column=pi + 1, value=pr)
             if body.get("jira_id"): ws.cell(row=r, column=ji + 1, value=str(body["jira_id"]).upper())
-            tot = _rt_parse(ws.cell(row=r, column=ti + 1).value) + add
+            try: prev = int(float(ws.cell(row=r, column=si + 1).value))
+            except Exception: prev = _rt_parse(ws.cell(row=r, column=ti + 1).value) * 60
+            tot = (prev + add) // 60                                 # seconds are kept so small autosaves add up exactly
             label = "%d:%02d" % (tot // 60, tot % 60)
+            ws.cell(row=r, column=si + 1, value=prev + add)
             ws.cell(row=r, column=ti + 1, value=label)
             wb.save(str(target))
             return jsonify({"ok": True, "time": label})

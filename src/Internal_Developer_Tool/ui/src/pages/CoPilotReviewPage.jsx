@@ -311,20 +311,24 @@ function parsePatch(patch) {
 }
 const DIFF_BG = { add: 'rgba(46,125,50,0.15)', del: 'rgba(198,40,40,0.15)', hunk: 'rgba(25,118,210,0.10)', ctx: 'transparent' }
 
-function DiffFile({ f, viewed, onView, post }) {
+function DiffFile({ f, viewed, onView, post, remove, comments, me }) {
   const [open, setOpen] = useState(false)
   const [at, setAt] = useState(null)       // row index being commented
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const [menu, setMenu] = useState(null)   // right-click menu: { x, y, row, comment }
+  useEffect(() => { if (!menu) return; const c = () => setMenu(null); window.addEventListener('click', c); window.addEventListener('scroll', c, true); return () => { window.removeEventListener('click', c); window.removeEventListener('scroll', c, true) } }, [menu])
   const rows = open ? parsePatch(f.patch) : []
   const send = async r => {
     setBusy(true); setMsg('')
     const e = await post(f.path, r.t === 'del' ? r.o : r.n, r.t === 'del' ? 'LEFT' : 'RIGHT', text)
     setBusy(false)
-    if (e) setMsg(e); else { setText(''); setAt(null); setMsg('Comment posted') }
+    if (e) setMsg(e); else { setText(''); setAt(null); setMsg('') }
   }
-  const num = { width: 44, textAlign: 'right', padding: '0 6px', color: 'var(--text-muted)', userSelect: 'none', cursor: 'pointer', verticalAlign: 'top' }
+  const onLine = (r, i) => c => c.side === 'LEFT' ? r.t === 'del' && r.o === c.line : r.t !== 'del' && r.t !== 'hunk' && r.n === c.line
+  const ctx = (e, i, r, comment) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, i, comment }) }
+  const num = { width: 44, textAlign: 'right', padding: '0 6px', color: 'var(--text-muted)', userSelect: 'none', verticalAlign: 'top' }
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--surface)' }}>
@@ -340,11 +344,17 @@ function DiffFile({ f, viewed, onView, post }) {
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
             <tbody>
               {rows.map((r, i) => [
-                <tr key={i} style={{ background: DIFF_BG[r.t] }}>
-                  <td style={num} title={r.t === 'hunk' ? '' : 'Click to comment on this line'} onClick={() => r.t !== 'hunk' && (setAt(at === i ? null : i), setMsg(''))}>{r.t === 'add' ? '' : r.o ?? ''}</td>
-                  <td style={num} title={r.t === 'hunk' ? '' : 'Click to comment on this line'} onClick={() => r.t !== 'hunk' && (setAt(at === i ? null : i), setMsg(''))}>{r.t === 'del' ? '' : r.n ?? ''}</td>
+                <tr key={i} style={{ background: DIFF_BG[r.t] }} onContextMenu={e => r.t !== 'hunk' && ctx(e, i, r, null)}>
+                  <td style={num}>{r.t === 'add' ? '' : r.o ?? ''}</td>
+                  <td style={num}>{r.t === 'del' ? '' : r.n ?? ''}</td>
                   <td style={{ whiteSpace: 'pre', padding: '0 8px', color: r.t === 'hunk' ? '#1565C0' : 'var(--text)' }}>{r.t === 'add' ? '+' : r.t === 'del' ? '-' : r.t === 'ctx' ? ' ' : ''}{r.t === 'hunk' ? r.text : r.text}</td>
                 </tr>,
+                ...comments.filter(onLine(r, i)).map(c => (
+                  <tr key={'k' + c.id}><td colSpan={3} onContextMenu={e => ctx(e, i, r, c)} style={{ padding: '6px 10px', background: 'var(--bg)', fontFamily: 'inherit', borderLeft: '3px solid #1976d2' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>💬 {c.author}{c.author === me ? ' (you)' : ''}{c.url && <> · <a href={c.url} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>GitHub ↗</a></>}</div>
+                    <div style={{ fontSize: 12, whiteSpace: 'pre-wrap', color: 'var(--text)' }}>{c.body}</div>
+                  </td></tr>
+                )),
                 at === i && (
                   <tr key={'c' + i}><td colSpan={3} style={{ padding: 8, background: 'var(--bg)', fontFamily: 'inherit' }}>
                     <textarea value={text} onChange={e => setText(e.target.value)} rows={3} placeholder="Leave a comment on this line…" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 6, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface)', color: 'var(--text)' }} />
@@ -358,7 +368,14 @@ function DiffFile({ f, viewed, onView, post }) {
               ])}
             </tbody>
           </table>
-          {msg === 'Comment posted' && at === null && <div style={{ fontSize: 12, color: '#2E7D32', padding: '4px 10px' }}>✓ Comment posted</div>}
+          {msg && at === null && <div style={{ fontSize: 12, color: '#B71C1C', padding: '4px 10px' }}>⚠ {msg}</div>}
+          {menu && (
+            <div onClick={e => e.stopPropagation()} style={{ position: 'fixed', left: menu.x, top: menu.y, zIndex: 1000, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, boxShadow: '0 4px 14px rgba(0,0,0,0.25)', fontFamily: 'sans-serif', minWidth: 160 }}>
+              {!menu.comment && <div onClick={() => { setAt(menu.i); setMsg(''); setMenu(null) }} style={{ padding: '7px 14px', fontSize: 12, cursor: 'pointer' }}>💬 Add comment</div>}
+              {menu.comment && menu.comment.author === me && (
+                <div onClick={async () => { const c = menu.comment; setMenu(null); const e = await remove(c.id); if (e) setMsg(e) }} style={{ padding: '7px 14px', fontSize: 12, cursor: 'pointer', color: '#C62828' }}>🗑 Delete comment</div>)}
+              {menu.comment && menu.comment.author !== me && <div style={{ padding: '7px 14px', fontSize: 12, color: 'var(--text-muted)' }}>Only your own comments can be deleted</div>}
+            </div>)}
         </div>
       ) : <div style={{ padding: 10, fontSize: 12, color: 'var(--text-muted)' }}>No text diff available (binary, renamed or too large) — open it on GitHub.</div>)}
     </div>
@@ -383,6 +400,14 @@ function FilesPanel({ owner, repo, pr, onSubmitted }) {
   const post = async (path, line, side, text) => {
     try {
       const d = await fetch(`${API}/comment`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, repo, pr, path, line, side, body: text, commit_id: data.head_sha }) }).then(r => r.json())
+      if (d.ok && d.comment) setData(x => ({ ...x, comments: [...(x.comments || []), d.comment] }))
+      return d.ok ? '' : (d.error || 'Failed')
+    } catch (e) { return String(e) }
+  }
+  const remove = async id => {
+    try {
+      const d = await fetch(`${API}/comment/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, repo, pr, id }) }).then(r => r.json())
+      if (d.ok) setData(x => ({ ...x, comments: (x.comments || []).filter(c => c.id !== id) }))
       return d.ok ? '' : (d.error || 'Failed')
     } catch (e) { return String(e) }
   }
@@ -415,7 +440,7 @@ function FilesPanel({ owner, repo, pr, onSubmitted }) {
         <div style={{ fontWeight: 700, fontSize: 14 }}>{data.files.length} file{data.files.length !== 1 ? 's' : ''} changed <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}>· {done} viewed</span></div>
         <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter by file path…" style={{ width: 260, fontSize: 12, fontFamily: 'monospace', padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }} />
       </div>
-      {files.map(f => <DiffFile key={f.path} f={f} viewed={!!viewed[f.path]} onView={() => toggle(f.path)} post={post} />)}
+      {files.map(f => <DiffFile key={f.path} f={f} viewed={!!viewed[f.path]} onView={() => toggle(f.path)} post={post} remove={remove} me={data.me} comments={(data.comments || []).filter(c => c.path === f.path)} />)}
     </div>
   )
 }
@@ -437,11 +462,20 @@ export default function CoPilotReviewPage() {
       body: JSON.stringify({ file: t.sprint, pr: t.pr, jira_id: t.jira, seconds: s }) })
       .then(r => r.json()).then(d => { if (d.ok) setSaved(d.time); else { secRef.current += s } }).catch(() => { secRef.current += s })
   }
+  // The timer runs only while this page is open and its browser tab is visible; it autosaves every 15 s and adds to the stored total
   useEffect(() => {
     if (!track) return
-    const id = setInterval(() => { if (!document.hidden) { secRef.current += 1; setElapsed(e => e + 1) } }, 1000)
+    fetch(`/api/project-management/sprint/pr-review-time?file=${encodeURIComponent(track.sprint)}`).then(r => r.json()).then(d => { if (d.ok && d.times && d.times[track.pr]) setSaved(d.times[track.pr]) }).catch(() => {})
+    let n = 0
+    const id = setInterval(() => {
+      if (document.hidden) return
+      secRef.current += 1; setElapsed(e => e + 1)
+      if (++n % 15 === 0) saveTime()
+    }, 1000)
+    const onHide = () => { if (document.hidden) saveTime() }
     window.addEventListener('pagehide', saveTime)
-    return () => { clearInterval(id); window.removeEventListener('pagehide', saveTime); saveTime() }
+    document.addEventListener('visibilitychange', onHide)
+    return () => { clearInterval(id); window.removeEventListener('pagehide', saveTime); document.removeEventListener('visibilitychange', onHide); saveTime() }
   }, [])
   const autoRan                   = useRef(false)
   const [urlInput, setUrlInput]   = useState('')
@@ -697,7 +731,7 @@ export default function CoPilotReviewPage() {
           </div>
 
           <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-            {[['copilot', '🤖 Copilot Review'], ['files', '📄 Files Changed']].map(([k, l]) => (
+            {[['copilot', '🤖 Copilot Review'], ['files', '📄 Manual Review']].map(([k, l]) => (
               <button key={k} onClick={() => setTab(k)} style={{ fontSize: 13, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontWeight: 600,
                 border: '1px solid var(--primary,#1976d2)', background: tab === k ? 'var(--primary,#1976d2)' : 'var(--bg)', color: tab === k ? '#fff' : 'var(--primary,#1976d2)' }}>{l}</button>
             ))}
