@@ -37006,6 +37006,14 @@ sys.exit(out.channel.recv_exit_status())
         except Exception:
             return 0
 
+    def row_secs(ws, row, si, ti):
+        """Seconds recorded for a PR row (exact seconds column when present, else the h:mm text)."""
+        try:
+            if si >= 0: return int(float(ws.cell(row=row, column=si + 1).value))
+        except Exception:
+            pass
+        return _rt_parse(ws.cell(row=row, column=ti + 1).value) * 60
+
     @app.route("/api/project-management/sprint/pr-review-time", methods=["GET", "POST"])
     def api_sprint_pr_review_time():
         import openpyxl as _xl
@@ -37027,7 +37035,32 @@ sys.exit(out.channel.recv_exit_status())
             ji, pi, ti, si = head.index("JIRA ID"), head.index("PR"), head.index("Review Time"), head.index("Review Seconds")
             rows = {str(ws.cell(row=r, column=pi + 1).value or "").strip(): r for r in range(2, ws.max_row + 1)}
             if request.method == "GET":
-                return jsonify({"ok": True, "times": {u: str(ws.cell(row=r, column=ti + 1).value or "") for u, r in rows.items() if u}})
+                import re as _r
+                def lab(s): return "%d:%02d" % (s // 60 // 60, s // 60 % 60)
+                def secs(row): return row_secs(ws, row, si, ti)
+                mine = {u: secs(r) for u, r in rows.items() if u}
+                # earlier sprints of the same team: time already spent on the same PRs (spill-over)
+                prev, cur_date = {}, (_r.search(r"(\d{4}-\d{2}-\d{2})", filename) or [None, ""])[1]
+                team = _team_from_sprint_filename(filename)
+                for root in (SPRINT_DATA / "Sprints" / team, SPRINT_DATA / "PreviousSprints" / team) if team else ():
+                    for p in (root.glob("*.xlsx") if root.exists() else []):
+                        pd = (_r.search(r"(\d{4}-\d{2}-\d{2})", p.name) or [None, ""])[1]
+                        if p.name == filename or not pd or not cur_date or pd >= cur_date: continue
+                        try:
+                            wb2 = _xl.load_workbook(str(p), read_only=False, data_only=True)
+                            if "PR Reviews" not in wb2.sheetnames: continue
+                            w2 = wb2["PR Reviews"]
+                            h2 = [str(c.value or "") for c in w2[1]]
+                            if "PR" not in h2 or "Review Time" not in h2: continue
+                            p2, t2 = h2.index("PR"), h2.index("Review Time")
+                            s2 = h2.index("Review Seconds") if "Review Seconds" in h2 else -1
+                            for rr in range(2, w2.max_row + 1):
+                                u = str(w2.cell(row=rr, column=p2 + 1).value or "").strip()
+                                if u: prev[u] = prev.get(u, 0) + row_secs(w2, rr, s2, t2)
+                        except Exception:
+                            continue
+                return jsonify({"ok": True, "times": {u: lab(s) for u, s in mine.items()}, "seconds": mine,
+                                "previous": {u: lab(s) for u, s in prev.items() if s}, "total": lab(sum(mine.values()))})
             pr = str(body.get("pr") or "").strip()
             if not pr: return jsonify({"ok": False, "error": "pr required"})
             try: add = max(0, int(float(body.get("seconds") or 0)))

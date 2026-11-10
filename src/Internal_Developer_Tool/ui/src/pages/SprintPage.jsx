@@ -336,7 +336,7 @@ function SetupProgress({ setup, onNavigate, onConfirmRevert, onAbort }) {
 // ─── SprintDetail ────────────────────────────────────────────────────────────
 // Sprint > PR Reviews: the GitHub pull requests I review (open first, longest waiting on top), with the days since I was added as reviewer
 const PR_HEAD = ['JIRA ID', 'PR', 'Title', 'Repository', 'Author', 'Status', 'Review Status', 'Review Requested', 'Closed On', 'Review Days', 'Review Time']
-const PR_WIDTHS = [95, 140, 300, 170, 110, 90, 200, 120, 100, 90, 100]   // shared by Open / Closed / Adhoc so the columns line up
+const PR_WIDTHS = [95, 140, 300, 170, 110, 90, 200, 120, 100, 90, 190]   // shared by Open / Closed / Adhoc so the columns line up
 function prCells(r) {
   const d = t => (t ? t.slice(0, 10) : '')
   return [r.jira_id, r.pr_label, r.title, r.repository, r.author, r.state === 'open' ? 'Open' : r.state === 'merged' ? 'Merged' : 'Declined', (!r.review_status || r.review_status === 'Not Reviewed') ? 'Review' : r.review_status, d(r.requested_at), d(r.end_at), String(r.review_days), r.review_time || '']
@@ -375,7 +375,9 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
   useEffect(() => { try { const c = JSON.parse(localStorage.getItem('dwb_pr_reviews') || 'null'); if (c) setData(c) } catch { /* ignore */ } }, [])
   const navigate = useNavigate()
   const [times, setTimes] = useState({})   // PR url -> review time (h:mm), kept in the sprint file's "PR Reviews" sheet
-  const loadTimes = () => fetch(`${API}/pr-review-time?file=${encodeURIComponent(file)}`).then(r => r.json()).then(d => { if (d.ok) setTimes(d.times || {}) }).catch(() => {})
+  const [prevTimes, setPrevTimes] = useState({})   // PR url -> time spent in earlier sprints (spill-over)
+  const [sprintTotal, setSprintTotal] = useState('0:00')
+  const loadTimes = () => fetch(`${API}/pr-review-time?file=${encodeURIComponent(file)}`).then(r => r.json()).then(d => { if (d.ok) { setTimes(d.times || {}); setPrevTimes(d.previous || {}); setSprintTotal(d.total || '0:00') } }).catch(() => {})
   useEffect(() => { loadTimes() }, [file])
   const startReview = r => navigate(`/developer-tools/copilot-review?prUrl=${encodeURIComponent(r.pr)}&track=1&sprint=${encodeURIComponent(file)}&jira=${encodeURIComponent(r.jira_id || '')}`)
   const [adhoc, setAdhoc] = useState(() => { try { return JSON.parse(localStorage.getItem('dwb_adhoc_prs') || '[]') } catch { return [] } })
@@ -397,7 +399,7 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
   const inSprint = r => !sprintJiras.length || sprintJiras.includes((r.jira_id || '').toUpperCase())
   const seen = new Set()
   const keep = r => { if (seen.has(r.pr)) return false; seen.add(r.pr); return true }
-  const withTime = r => ({ ...r, review_time: times[r.pr] || '' })
+  const withTime = r => ({ ...r, review_time: prevTimes[r.pr] ? `${times[r.pr] || '0:00'} (Previous sprint: ${prevTimes[r.pr]})` : (times[r.pr] || '') })
   const sprintOpen = (data ? data.open : []).filter(r => inSprint(r) && keep(r)).map(withTime)
   const declinedLast = (a, b) => (a.state === 'closed') - (b.state === 'closed')   // stable: Declined PRs go to the bottom
   const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r)).map(withTime).sort(declinedLast)
@@ -430,6 +432,11 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
   const btn = { padding: '4px 12px', fontSize: 12, borderRadius: 4, cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--surface2)', color: 'var(--text)' }
   return (
     <div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Sprint PR Review Time</span>
+        <span style={{ fontSize: 18, fontWeight: 700, color: '#ef6c00' }}>{sprintTotal} <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>h:mm spent in this sprint</span></span>
+        {Object.keys(prevTimes).some(u => times[u] || sections.some(s => s.rows.some(r => r.pr === u))) && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Spilled-over PRs show their earlier-sprint time as "Previous sprint" in the Review Time column</span>}
+      </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed since</span>
         <select value={opt} onChange={e => setOpt(e.target.value)} style={{ ...btn, padding: '3px 6px' }}>
