@@ -335,10 +335,10 @@ function SetupProgress({ setup, onNavigate, onConfirmRevert, onAbort }) {
 
 // ─── SprintDetail ────────────────────────────────────────────────────────────
 // Sprint > PR Reviews: the GitHub pull requests I review (open first, longest waiting on top), with the days since I was added as reviewer
-const PR_HEAD = ['JIRA ID', 'PR', 'Title', 'Repository', 'Author', 'Status', 'Review Requested', 'Closed On', 'Review Days']
+const PR_HEAD = ['JIRA ID', 'PR', 'Title', 'Repository', 'Author', 'Status', 'Review Status', 'Review Requested', 'Closed On', 'Review Days']
 function prCells(r) {
   const d = t => (t ? t.slice(0, 10) : '')
-  return [r.jira_id, r.pr_label, r.title, r.repository, r.author, r.state === 'open' ? 'Open' : r.state === 'merged' ? 'Merged' : 'Declined', d(r.requested_at), d(r.end_at), String(r.review_days)]
+  return [r.jira_id, r.pr_label, r.title, r.repository, r.author, r.state === 'open' ? 'Open' : r.state === 'merged' ? 'Merged' : 'Declined', r.review_status || 'Not Reviewed', d(r.requested_at), d(r.end_at), String(r.review_days)]
 }
 function prLinks(r) {
   const l = {}
@@ -358,10 +358,11 @@ function PrReviewsPanel({ file }) {
   const since = opt === 'sprint' ? (end ? addDaysIso(end, -14) : addDaysIso(new Date().toISOString().slice(0, 10), -14)) : addDaysIso(new Date().toISOString().slice(0, 10), -Number(opt))
   const load = () => {
     setBusy(true); setErr('')
-    fetch(`${API}/pr-reviews?since=${since}`).then(r => r.json()).then(d => { if (d.ok) setData(d); else setErr(d.error || 'Failed') })
+    fetch(`${API}/pr-reviews?since=${since}`).then(r => r.json()).then(d => { if (d.ok) { setData(d); try { localStorage.setItem('dwb_pr_reviews', JSON.stringify(d)) } catch { /* quota */ } } else setErr(d.error || 'Failed') })
       .catch(() => setErr('Could not reach server')).finally(() => setBusy(false))
   }
-  useEffect(() => { load() }, [since])
+  // No automatic sync: show the last synced result (kept in the browser) until the Sync button is pressed
+  useEffect(() => { try { const c = JSON.parse(localStorage.getItem('dwb_pr_reviews') || 'null'); if (c) setData(c) } catch { /* ignore */ } }, [])
   const [adhoc, setAdhoc] = useState(() => { try { return JSON.parse(localStorage.getItem('dwb_adhoc_prs') || '[]') } catch { return [] } })
   const [adhocUrl, setAdhocUrl] = useState('')
   const [adhocBusy, setAdhocBusy] = useState(false)
@@ -377,7 +378,7 @@ function PrReviewsPanel({ file }) {
     } catch { setAdhocErr('Could not reach server') }
     setAdhocBusy(false)
   }
-  const sections = data ? [{ title: 'Open PR', rows: data.open }, { title: 'Closed PR', rows: data.closed }, { title: 'Adhoc PR', rows: adhoc }] : []
+  const sections = [{ title: 'Open PR', rows: data ? data.open : [] }, { title: 'Closed PR', rows: data ? data.closed : [] }, { title: 'Adhoc PR', rows: adhoc }]
   const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
   const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
   const link = { color: '#0563C1', textDecoration: 'underline' }
@@ -406,7 +407,7 @@ function PrReviewsPanel({ file }) {
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-        <button style={btn} onClick={load} disabled={busy}>{busy ? 'Loading...' : 'Refresh'}</button>
+        <button style={btn} onClick={load} disabled={busy}>{busy ? 'Syncing...' : 'Sync'}</button>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Closed since</span>
         <select value={opt} onChange={e => setOpt(e.target.value)} style={{ ...btn, padding: '3px 6px' }}>
           <option value="sprint">Sprint start ({since})</option><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option>
@@ -439,7 +440,7 @@ function PrReviewsPanel({ file }) {
                   return (
                     <tr key={r.pr}>
                       {c.map((v, i) => (
-                        <td key={i} style={{ ...td, ...(i === 8 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), ...(i === 2 ? { maxWidth: 420 } : {}) }}>
+                        <td key={i} style={{ ...td, ...(i === 9 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), ...(i === 2 ? { maxWidth: 420 } : {}) }}>
                           {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a> : v}
                         </td>))}
                     </tr>)
@@ -1034,8 +1035,8 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
   const PROJECT_SUMMARY_TAB = 'Project Summary'
   const TASKS_TAB = 'My Task'
   const ALL_TABS        = myDeveloper
-    ? [TASKS_TAB, MY_STORIES, ...DATA_SHEETS, DEV_BW_TAB, SPRINT_LOG_TAB, SPRINT_SUMMARY_TAB, PROJECT_SUMMARY_TAB]
-    : [TASKS_TAB, ...DATA_SHEETS, DEV_BW_TAB, SPRINT_LOG_TAB, SPRINT_SUMMARY_TAB, PROJECT_SUMMARY_TAB]
+    ? [TASKS_TAB, 'PR Reviews', MY_STORIES, ...DATA_SHEETS.filter(s => s !== 'PR Reviews'), DEV_BW_TAB, SPRINT_LOG_TAB, SPRINT_SUMMARY_TAB, PROJECT_SUMMARY_TAB]
+    : [TASKS_TAB, 'PR Reviews', ...DATA_SHEETS.filter(s => s !== 'PR Reviews'), DEV_BW_TAB, SPRINT_LOG_TAB, SPRINT_SUMMARY_TAB, PROJECT_SUMMARY_TAB]
 
   const stem    = stemOf(file)
   const today   = new Date().toISOString().slice(0, 10)
