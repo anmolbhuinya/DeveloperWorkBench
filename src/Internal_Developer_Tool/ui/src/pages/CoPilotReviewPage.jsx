@@ -676,15 +676,17 @@ export default function CoPilotReviewPage() {
   return (
     <div style={{ padding: '24px 28px' }}>
       {/* Header */}
-      <div style={{ marginBottom: 28 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: 'var(--text)' }}>
-          AI PR Review
-        </h1>
-        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
-          View GitHub Copilot review comments for a Pull Request
+      <div style={{ marginBottom: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: 'var(--text)' }}>
+            AI PR Review
+          </h1>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
+            View GitHub Copilot review comments for a Pull Request
+          </div>
         </div>
         {track && (
-          <div style={{ marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 10, padding: '6px 12px', border: '1px solid #ef6c00', borderRadius: 8, fontSize: 13 }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '6px 12px', border: '1px solid #ef6c00', borderRadius: 8, fontSize: 13, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span style={{ color: '#ef6c00', fontWeight: 700 }}>⏱ Review time {String(Math.floor(elapsed / 3600))}:{String(Math.floor(elapsed / 60) % 60).padStart(2, '0')}:{String(elapsed % 60).padStart(2, '0')}</span>
             <button onClick={saveTime} style={{ fontSize: 12, padding: '3px 10px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>Save time</button>
             <button onClick={backToPanel} style={{ fontSize: 12, padding: '3px 10px', border: 'none', borderRadius: 4, background: '#1565c0', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>← Back to PR Review Panel</button>
@@ -721,9 +723,9 @@ export default function CoPilotReviewPage() {
       </div>
 
       {/* Params */}
-      <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card" style={{ marginBottom: 16, height: 'auto' }}>
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 16 }}>Parameters</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 140px', gap: 14, marginBottom: 18 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr) 110px auto', gap: 14, alignItems: 'end' }}>
           <div>
             <label style={labelStyle}>Owner</label>
             <input value={owner} onChange={e => setOwner(e.target.value)} placeholder="HealthEdge"
@@ -746,7 +748,6 @@ export default function CoPilotReviewPage() {
               onFocus={e => e.target.style.borderColor = 'var(--primary,#1976d2)'}
               onBlur={e  => e.target.style.borderColor = 'var(--border)'} />
           </div>
-        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={fetchReview} disabled={loading}
             style={{ padding: '9px 24px', fontSize: 13, fontWeight: 700,
@@ -765,6 +766,7 @@ export default function CoPilotReviewPage() {
               Clear
             </button>
           )}
+        </div>
         </div>
       </div>
       </div>
