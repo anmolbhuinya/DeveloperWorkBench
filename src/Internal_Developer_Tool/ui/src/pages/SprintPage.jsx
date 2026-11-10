@@ -336,6 +336,7 @@ function SetupProgress({ setup, onNavigate, onConfirmRevert, onAbort }) {
 // ─── SprintDetail ────────────────────────────────────────────────────────────
 // Sprint > PR Reviews: the GitHub pull requests I review (open first, longest waiting on top), with the days since I was added as reviewer
 const PR_HEAD = ['JIRA ID', 'PR', 'Title', 'Repository', 'Author', 'Status', 'Review Status', 'Review Requested', 'Closed On', 'Review Days', 'Review Time']
+const PR_WIDTHS = [95, 140, 300, 170, 110, 90, 200, 120, 100, 90, 100]   // shared by Open / Closed / Adhoc so the columns line up
 function prCells(r) {
   const d = t => (t ? t.slice(0, 10) : '')
   return [r.jira_id, r.pr_label, r.title, r.repository, r.author, r.state === 'open' ? 'Open' : r.state === 'merged' ? 'Merged' : 'Declined', (!r.review_status || r.review_status === 'Not Reviewed') ? 'Review' : r.review_status, d(r.requested_at), d(r.end_at), String(r.review_days), r.review_time || '']
@@ -398,8 +399,9 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
   const keep = r => { if (seen.has(r.pr)) return false; seen.add(r.pr); return true }
   const withTime = r => ({ ...r, review_time: times[r.pr] || '' })
   const sprintOpen = (data ? data.open : []).filter(r => inSprint(r) && keep(r)).map(withTime)
-  const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r)).map(withTime)
-  const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep).map(withTime)
+  const declinedLast = (a, b) => (a.state === 'closed') - (b.state === 'closed')   // stable: Declined PRs go to the bottom
+  const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r)).map(withTime).sort(declinedLast)
+  const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep).map(withTime).sort(declinedLast)
   const sections = [{ title: 'Open PR', rows: sprintOpen }, { title: 'Closed PR', rows: sprintClosed }, { title: 'Adhoc PR', rows: adhocRows }]
   const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
   const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
@@ -454,7 +456,8 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
               {adhocErr && <span style={{ color: '#c62828', fontSize: 12 }}>{adhocErr}</span>}
             </div>)}
           <div style={{ overflow: 'auto', maxHeight: 460, border: '1px solid var(--border)', borderRadius: 6 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table style={{ width: '100%', minWidth: PR_WIDTHS.reduce((a, b) => a + b, 0), tableLayout: 'fixed', borderCollapse: 'collapse' }}>
+              <colgroup>{PR_WIDTHS.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
               <thead><tr>{PR_HEAD.map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
               <tbody>
                 {s.rows.map(r => {
@@ -462,7 +465,7 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
                   return (
                     <tr key={r.pr}>
                       {c.map((v, i) => (
-                        <td key={i} style={{ ...td, ...(i === 9 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), ...(i === 2 ? { maxWidth: 420 } : {}) }}>
+                        <td key={i} style={{ ...td, ...(i === 9 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), wordBreak: 'break-word' }}>
                           {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a>
                             : i === 6 && v === 'Review' ? <button onClick={() => startReview(r)} title="Open in AI PR Review and track review time" style={{ background: '#ef6c00', color: '#fff', border: 'none', borderRadius: 10, padding: '2px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Review</button>
                             : i === 5 || i === 6 ? v.split(', ').map(p => <span key={p} style={{ ...badge(p), marginRight: 4 }}>{p}</span>) : v}
