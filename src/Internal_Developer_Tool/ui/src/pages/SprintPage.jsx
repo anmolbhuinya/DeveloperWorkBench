@@ -401,10 +401,13 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
   const seen = new Set()
   const keep = r => { if (seen.has(r.pr)) return false; seen.add(r.pr); return true }
   const withTime = r => ({ ...r, review_time: prevTimes[r.pr] ? `${times[r.pr] || '0:00'} (Previous sprint: ${prevTimes[r.pr]})` : (times[r.pr] || '') })
-  const sprintOpen = (data ? data.open : []).filter(r => inSprint(r) && keep(r)).map(withTime)
-  const declinedLast = (a, b) => (a.state === 'closed') - (b.state === 'closed')   // stable: Declined PRs go to the bottom
-  const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r)).map(withTime).sort(declinedLast)
-  const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep).map(withTime).sort(declinedLast)
+  // Order: Declined PRs last; otherwise by review status - Review, Changes Requested, Commented, Approved (stable, so the existing order is kept within a group)
+  const RV_RANK = { Review: 0, 'Not Reviewed': 0, 'Changes Requested': 1, Commented: 2, Approved: 3 }
+  const rvRank = r => { const k = Object.keys(RV_RANK).find(k => (r.review_status || 'Review').startsWith(k)); return k ? RV_RANK[k] : 4 }
+  const order = (a, b) => ((a.state === 'closed') - (b.state === 'closed')) || (rvRank(a) - rvRank(b))
+  const sprintOpen = (data ? data.open : []).filter(r => inSprint(r) && keep(r)).map(withTime).sort(order)
+  const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r)).map(withTime).sort(order)
+  const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep).map(withTime).sort(order)
   const sections = [{ title: 'Open PR', rows: sprintOpen }, { title: 'Closed PR', rows: sprintClosed }, { title: 'Adhoc PR', rows: adhocRows }]
   const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
   const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
