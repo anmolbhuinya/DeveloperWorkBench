@@ -153,11 +153,22 @@ def fetch_copilot_review(owner, repo, pr_number, token):
 
     resolved_ids = fetch_resolved_comment_ids(session, owner, repo, pr_number)
 
+    # Replies by people (any non-Copilot comment in a Copilot comment's thread; GitHub points every reply at the thread's first comment)
+    replies_of = {}
+    for c in all_comments:
+        rid = c.get("in_reply_to_id")
+        if rid and not is_copilot(c.get("user")):
+            replies_of.setdefault(rid, []).append({
+                "id": c.get("id"), "author": (c.get("user") or {}).get("login", ""), "body": c.get("body", ""),
+                "url": c.get("html_url", ""), "created": c.get("created_at", ""),
+            })
+
     # Group inline comments by file
     by_file = {}
     for c in copilot_comments:
         path = c.get("path", "")
         by_file.setdefault(path, []).append({
+            "replies":   replies_of.get(c.get("id"), []),
             "id":        c.get("id"),
             "line":      c.get("line") or c.get("original_line"),
             "side":      c.get("side", "RIGHT"),

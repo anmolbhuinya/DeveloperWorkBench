@@ -232,6 +232,34 @@ function CopilotReviewBody({ body }) {
   )
 }
 
+// One Copilot inline comment. Resolved ones are green; unresolved ones amber. People's replies are one toggle away and back.
+function CopilotComment({ c, i }) {
+  const [view, setView] = useState('copilot')
+  const replies = c.replies || []
+  const tone = c.resolved ? { bar: '#2E7D32', bg: 'rgba(46,125,50,0.10)' } : { bar: '#E65100', bg: i % 2 === 0 ? 'var(--bg)' : 'var(--surface)' }
+  return (
+    <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', borderLeft: `4px solid ${tone.bar}`, background: tone.bg }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: '#fff', background: c.resolved ? '#2E7D32' : '#E65100' }}>{c.resolved ? '✓ Resolved' : 'Unresolved'}</span>
+        <SevBadge body={c.body} />
+        {c.author && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>🤖 {c.author.replace(/\[bot\]$/, '')}</span>}
+        {c.line && <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>Line {c.line}</span>}
+        {replies.length > 0 && (
+          <button onClick={() => setView(v => v === 'copilot' ? 'replies' : 'copilot')}
+            style={{ fontSize: 11, padding: '2px 10px', borderRadius: 10, cursor: 'pointer', border: '1px solid var(--primary,#1976d2)', background: view === 'replies' ? 'var(--primary,#1976d2)' : 'var(--bg)', color: view === 'replies' ? '#fff' : 'var(--primary,#1976d2)' }}>
+            {view === 'replies' ? '← Back to Copilot comment' : `💬 ${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}`}
+          </button>)}
+        {c.url && <a href={c.url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: 'var(--primary)', marginLeft: 'auto' }}>View on GitHub ↗</a>}
+      </div>
+      {view === 'copilot' ? <CommentBody body={c.body} /> : replies.map(r => (
+        <div key={r.id} style={{ marginBottom: 8, paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>👤 {r.author}{r.created ? ` · ${r.created.slice(0, 10)}` : ''}</div>
+          <CommentBody body={r.body} />
+        </div>))}
+    </div>
+  )
+}
+
 function FileSection({ file }) {
   const unresolved = file.comments.filter(c => !c.resolved).length
   const allResolved = file.comments.length > 0 && unresolved === 0
@@ -258,37 +286,7 @@ function FileSection({ file }) {
       </button>
       {open && (
         <div>
-          {file.comments.map((c, i) => (
-            <div key={c.id ?? i} style={{
-              padding: '12px 16px',
-              opacity: c.resolved ? 0.6 : 1,
-              borderTop: '1px solid var(--border)',
-              background: i % 2 === 0 ? 'var(--bg)' : 'var(--surface)',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                {c.resolved && (
-                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
-                    background: 'rgba(46,125,50,0.12)', color: '#2E7D32', border: '1px solid rgba(46,125,50,0.35)' }}>✓ Resolved</span>
-                )}
-                <SevBadge body={c.body} />
-                {c.author && (
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>🤖 {c.author.replace(/\[bot\]$/, '')}</span>
-                )}
-                {c.line && (
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                    Line {c.line}
-                  </span>
-                )}
-                {c.url && (
-                  <a href={c.url} target="_blank" rel="noreferrer"
-                    style={{ fontSize: 11, color: 'var(--primary)', marginLeft: 'auto' }}>
-                    View on GitHub ↗
-                  </a>
-                )}
-              </div>
-              <CommentBody body={c.body} />
-            </div>
-          ))}
+          {file.comments.map((c, i) => <CopilotComment key={c.id ?? i} c={c} i={i} />)}
         </div>
       )}
     </div>
@@ -309,7 +307,9 @@ function parsePatch(patch) {
   }
   return rows
 }
-const DIFF_BG = { add: 'rgba(46,125,50,0.15)', del: 'rgba(198,40,40,0.15)', hunk: 'rgba(25,118,210,0.10)', ctx: 'transparent' }
+// Clearly visible in light and dark themes: strong tinted rows, a coloured edge and a bold +/- sign
+const DIFF_BG = { add: 'rgba(46,160,67,0.35)', del: 'rgba(248,81,73,0.38)', hunk: 'rgba(56,139,253,0.25)', ctx: 'transparent' }
+const DIFF_EDGE = { add: '#2ea043', del: '#f85149', hunk: '#388bfd', ctx: 'transparent' }
 
 function DiffFile({ f, viewed, onView, post, remove, comments, me }) {
   const [open, setOpen] = useState(false)
@@ -344,10 +344,10 @@ function DiffFile({ f, viewed, onView, post, remove, comments, me }) {
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
             <tbody>
               {rows.map((r, i) => [
-                <tr key={i} style={{ background: DIFF_BG[r.t] }} onContextMenu={e => r.t !== 'hunk' && ctx(e, i, r, null)}>
+                <tr key={i} style={{ background: DIFF_BG[r.t], boxShadow: `inset 4px 0 0 ${DIFF_EDGE[r.t]}`, fontWeight: r.t === 'hunk' ? 600 : 400 }} onContextMenu={e => r.t !== 'hunk' && ctx(e, i, r, null)}>
                   <td style={num}>{r.t === 'add' ? '' : r.o ?? ''}</td>
                   <td style={num}>{r.t === 'del' ? '' : r.n ?? ''}</td>
-                  <td style={{ whiteSpace: 'pre', padding: '0 8px', color: r.t === 'hunk' ? '#1565C0' : 'var(--text)' }}>{r.t === 'add' ? '+' : r.t === 'del' ? '-' : r.t === 'ctx' ? ' ' : ''}{r.t === 'hunk' ? r.text : r.text}</td>
+                  <td style={{ whiteSpace: 'pre', padding: '0 8px', color: r.t === 'hunk' ? '#58a6ff' : 'var(--text)' }}><b style={{ color: DIFF_EDGE[r.t], marginRight: 4 }}>{r.t === 'add' ? '+' : r.t === 'del' ? '−' : r.t === 'ctx' ? ' ' : ''}</b>{r.text}</td>
                 </tr>,
                 ...comments.filter(onLine(r, i)).map(c => (
                   <tr key={'k' + c.id}><td colSpan={3} onContextMenu={e => ctx(e, i, r, c)} style={{ padding: '6px 10px', background: 'var(--bg)', fontFamily: 'inherit', borderLeft: '3px solid #1976d2' }}>
@@ -444,6 +444,14 @@ function FilesPanel({ owner, repo, pr, onSubmitted, onBack }) {
   )
   return (
     <div>
+      <details className="card" style={{ marginBottom: 12 }} open>
+        <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>📝 PR Description <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 12 }}>— {data.pr_title}{data.pr_author ? ` · by ${data.pr_author}` : ''}</span></summary>
+        <div style={{ marginTop: 8, maxHeight: 320, overflow: 'auto' }}>
+          {data.pr_body && data.pr_body.trim()
+            ? <CopilotReviewBody body={data.pr_body} />
+            : <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No description provided.</div>}
+        </div>
+      </details>
       {bar}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>{data.files.length} file{data.files.length !== 1 ? 's' : ''} changed <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}>· {done} viewed</span></div>

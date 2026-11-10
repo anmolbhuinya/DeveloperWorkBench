@@ -36951,7 +36951,8 @@ sys.exit(out.channel.recv_exit_status())
             for x in sorted(rv.json(), key=lambda x: x.get("submitted_at") or ""):
                 if (x.get("user") or {}).get("login") == me and x.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
                     my_state = "" if x["state"] == "DISMISSED" else x["state"]
-        return jsonify({"ok": True, "head_sha": (pr.json().get("head") or {}).get("sha", ""), "files": files, "comments": comments, "me": me, "my_state": my_state})
+        return jsonify({"ok": True, "head_sha": (pr.json().get("head") or {}).get("sha", ""), "files": files, "comments": comments, "me": me, "my_state": my_state,
+                        "pr_title": pr.json().get("title", ""), "pr_body": pr.json().get("body") or "", "pr_author": (pr.json().get("user") or {}).get("login", "")})
 
     @app.route("/api/tools/copilot-review/comment/delete", methods=["POST"])
     def api_copilot_review_comment_delete():
