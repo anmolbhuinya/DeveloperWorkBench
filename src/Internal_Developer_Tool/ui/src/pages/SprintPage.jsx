@@ -346,6 +346,12 @@ function prLinks(r) {
   if (r.pr) l['1'] = r.pr
   return l
 }
+// Status / Review Status badge colours (a combined review status such as "Commented, Approved (By others)" gets one badge per part)
+const BADGE_BG = { Open: '#1565c0', Merged: '#6a1b9a', Declined: '#c62828', Approved: '#2e7d32', 'Changes Requested': '#c62828', Commented: '#00838f', Dismissed: '#757575' }
+function badge(label) {
+  const key = Object.keys(BADGE_BG).find(k => label.startsWith(k))
+  return { background: BADGE_BG[key] || '#546e7a', color: '#fff', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }
+}
 function addDaysIso(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
 
 function PrReviewsPanel({ file, sprintJiras = [] }) {
@@ -431,7 +437,7 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button style={btn} onClick={copy} disabled={!data} title="Copy both tables (the JIRA ID and PR cells stay clickable when pasted into Excel or mail)">{copied ? '✓ Copied' : 'Copy'}</button>
           <button style={btn} onClick={exportXlsx} disabled={!data} title="Download as Excel (.xlsx) with clickable JIRA ID and PR links">Export</button>
-          <button style={btn} onClick={load} disabled={busy} title="Sync with GitHub">{busy ? 'Syncing...' : 'Sync'}</button>
+          <button style={{ ...btn, background: busy ? '#90a4ae' : 'linear-gradient(135deg, #1976d2, #0d47a1)', color: '#fff', border: 'none', fontWeight: 600, padding: '4px 18px', boxShadow: '0 1px 4px rgba(13,71,161,0.4)', cursor: busy ? 'wait' : 'pointer' }} onClick={load} disabled={busy} title="Sync with GitHub">{busy ? 'Syncing...' : 'Sync'}</button>
         </span>
       </div>
       {err && <div style={{ color: '#c62828', fontSize: 13, marginBottom: 8 }}>{err}</div>}
@@ -459,7 +465,7 @@ function PrReviewsPanel({ file, sprintJiras = [] }) {
                         <td key={i} style={{ ...td, ...(i === 9 ? { textAlign: 'right', fontWeight: 600, color: s.title === 'Open PR' && r.review_days >= 5 ? '#c62828' : 'inherit' } : {}), ...(i === 2 ? { maxWidth: 420 } : {}) }}>
                           {l[String(i)] ? <a href={l[String(i)]} target="_blank" rel="noreferrer" style={link}>{v}</a>
                             : i === 6 && v === 'Review' ? <button onClick={() => startReview(r)} title="Open in AI PR Review and track review time" style={{ background: '#ef6c00', color: '#fff', border: 'none', borderRadius: 10, padding: '2px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Review</button>
-                            : i === 6 && v.startsWith('Approved') ?<span style={{ background: '#2e7d32', color: '#fff', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{v}</span> : v}
+                            : i === 5 || i === 6 ? v.split(', ').map(p => <span key={p} style={{ ...badge(p), marginRight: 4 }}>{p}</span>) : v}
                         </td>))}
                     </tr>)
                 })}
