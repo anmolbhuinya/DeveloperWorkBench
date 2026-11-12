@@ -37118,7 +37118,8 @@ sys.exit(out.channel.recv_exit_status())
                             continue
                 return jsonify({"ok": True, "times": {u: lab(s) for u, s in mine.items()}, "seconds": mine,
                                 "previous": {u: lab(s) for u, s in prev.items() if s}, "total": lab(sum(mine.values())),
-                                "count": sum(1 for s in mine.values() if s > 0)})
+                                "count": sum(1 for s in mine.values() if s > 0),
+                                "average": lab(sum(mine.values()) // max(1, sum(1 for s in mine.values() if s > 0)))})
             pr = str(body.get("pr") or "").strip()
             if not pr: return jsonify({"ok": False, "error": "pr required"})
             try: add = max(0, int(float(body.get("seconds") or 0)))

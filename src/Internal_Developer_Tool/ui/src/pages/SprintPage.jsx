@@ -378,8 +378,9 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
   const [times, setTimes] = useState({})   // PR url -> review time (h:mm), kept in the sprint file's "PR Reviews" sheet
   const [prevTimes, setPrevTimes] = useState({})   // PR url -> time spent in earlier sprints (spill-over)
   const [sprintTotal, setSprintTotal] = useState('0:00')
+  const [sprintAvg, setSprintAvg] = useState('0:00')   // average review time per timed PR
   const [sprintCount, setSprintCount] = useState(0)   // number of PRs that account for the sprint total
-  const loadTimes = () => fetch(`${API}/pr-review-time?file=${encodeURIComponent(file)}`).then(r => r.json()).then(d => { if (d.ok) { setTimes(d.times || {}); setPrevTimes(d.previous || {}); setSprintTotal(d.total || '0:00'); setSprintCount(d.count || 0) } }).catch(() => {})
+  const loadTimes = () => fetch(`${API}/pr-review-time?file=${encodeURIComponent(file)}`).then(r => r.json()).then(d => { if (d.ok) { setTimes(d.times || {}); setPrevTimes(d.previous || {}); setSprintTotal(d.total || '0:00'); setSprintCount(d.count || 0); setSprintAvg(d.average || '0:00') } }).catch(() => {})
   useEffect(() => { loadTimes() }, [file])
   const startReview = r => navigate(`/developer-tools/copilot-review?prUrl=${encodeURIComponent(r.pr)}&track=1&sprint=${encodeURIComponent(file)}&jira=${encodeURIComponent(r.jira_id || '')}`)
   const [adhoc, setAdhoc] = useState(() => { try { return JSON.parse(localStorage.getItem('dwb_adhoc_prs') || '[]') } catch { return [] } })
@@ -448,7 +449,7 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
         <span title={Object.keys(prevTimes).length ? 'Spilled-over PRs show their earlier-sprint time as "Previous sprint" in the Review Time column' : ''} style={{ marginLeft: 20, paddingLeft: 20, borderLeft: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
           <span style={{ fontSize: 13, fontWeight: 700 }}>Sprint PR Review Time</span>
           <span style={{ fontSize: 16, fontWeight: 700, color: '#ef6c00' }}>{sprintTotal}</span>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>h:mm spent in this sprint · {sprintCount} pull request{sprintCount === 1 ? '' : 's'} timed · <b style={{ color: '#2e7d32' }}>{reviewedCount} reviewed</b> of {sections.reduce((n, s) => n + s.rows.length, 0)} listed</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>h:mm spent in this sprint · {sprintCount} pull request{sprintCount === 1 ? '' : 's'} timed · <b style={{ color: '#1565c0' }}>avg {sprintAvg} per PR</b> · <b style={{ color: '#2e7d32' }}>{reviewedCount} reviewed</b> of {sections.reduce((n, s) => n + s.rows.length, 0)} listed</span>
         </span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button style={btn} onClick={copy} disabled={!data} title="Copy both tables (the JIRA ID and PR cells stay clickable when pasted into Excel or mail)">{copied ? '✓ Copied' : 'Copy'}</button>
