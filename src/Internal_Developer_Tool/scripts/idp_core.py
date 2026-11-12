@@ -1046,12 +1046,42 @@ def _load_dep_settings():
         return dict(_DEFAULT_DEP_SETTINGS)
 
 
+def _rp_configured_path(app_root):
+    """Runtime-properties file path configured in <app_root>\\server_config.xlsx (sheet runtime_properties, Kind=path), or ''."""
+    try:
+        import openpyxl as _xl
+        f = Path(app_root) / "server_config.xlsx"
+        if not f.exists():
+            return ""
+        wb = _xl.load_workbook(str(f), read_only=True, data_only=True)
+        try:
+            if "runtime_properties" not in wb.sheetnames:
+                return ""
+            for row in wb["runtime_properties"].iter_rows(min_row=2, values_only=True):
+                if row and str(row[0] or "").strip().lower() == "path" and row[2]:
+                    return str(row[2]).strip()
+        finally:
+            wb.close()          # a read-only workbook keeps the file open (blocks later saves on Windows)
+    except Exception:
+        pass
+    return ""
+
+
+def _rp_env(app_root):
+    """Environment for the l<app>server.py scripts: DWB_RUNTIME_PROPS_PATH overrides their built-in properties-file path."""
+    env = dict(os.environ)
+    p = _rp_configured_path(app_root)
+    if p:
+        env["DWB_RUNTIME_PROPS_PATH"] = p
+    return env
+
+
 def _lpayorserver(*args):
     """Run lpayorserver.py with given args plus --json. Returns parsed dict."""
     import json as _json, subprocess as _sub
     cmd = [sys.executable, str(LPAYORSERVER), "--json"] + list(args)
     r = _sub.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                 errors="replace", creationflags=0x08000000, timeout=30)
+                 errors="replace", creationflags=0x08000000, timeout=30, env=_rp_env(Path(LPAYORSERVER).parent))
     out = (r.stdout or "").strip()
     if not out:
         return {"ok": False, "error": r.stderr.strip() or "lpayorserver produced no output"}
@@ -23383,7 +23413,8 @@ done
             return {"ok": False, "error": f"l{app_name}server.py not found at {script}"}
         cmd = [sys.executable, str(script), "--json"] + list(args)
         r = _sub.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                     errors="replace", creationflags=0x08000000 if sys.platform == "win32" else 0, timeout=30)
+                     errors="replace", creationflags=0x08000000 if sys.platform == "win32" else 0, timeout=30,
+                     env=_rp_env(script.parent))
         out = (r.stdout or "").strip()
         if not out:
             return {"ok": False, "error": r.stderr.strip() or f"l{app_name}server produced no output"}
@@ -28318,7 +28349,7 @@ done
         vm_ip = request.args.get("vm_ip", _REMOTE_DEV_DEFAULT_VM)
         cfg = _read_remote_app_config(app_name)
         container = cfg.get("container", app_name)
-        props_path = cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
+        props_path = _rp_configured_path(_remote_app_root(app_name)) or cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
         ok, props, err = _remote_props_read(vm_ip, container, props_path)
         if not ok:
             return jsonify({"ok": False, "error": err, "properties": {}, "count": 0})
@@ -28336,7 +28367,7 @@ done
             return jsonify({"ok": False, "error": "key is required"})
         cfg = _read_remote_app_config(app_name)
         container = cfg.get("container", app_name)
-        props_path = cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
+        props_path = _rp_configured_path(_remote_app_root(app_name)) or cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
         ok, err = _remote_props_set(vm_ip, container, props_path, key, value)
         if not ok:
             return jsonify({"ok": False, "error": err})
@@ -28352,7 +28383,7 @@ done
         value = str(body.get("value", ""))
         cfg = _read_remote_app_config(app_name)
         container = cfg.get("container", app_name)
-        props_path = cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
+        props_path = _rp_configured_path(_remote_app_root(app_name)) or cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
         ok, err = _remote_props_set(vm_ip, container, props_path, key, value)
         if not ok:
             return jsonify({"ok": False, "error": err})
@@ -28367,12 +28398,202 @@ done
         vm_ip = request.args.get("vm_ip", body.get("vm_ip", _REMOTE_DEV_DEFAULT_VM))
         cfg = _read_remote_app_config(app_name)
         container = cfg.get("container", app_name)
-        props_path = cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
+        props_path = _rp_configured_path(_remote_app_root(app_name)) or cfg.get("props_path", "/home/weblogic/domains/healthedge/runtime.properties")
         ok, err = _remote_props_delete(vm_ip, container, props_path, key)
         if not ok:
             return jsonify({"ok": False, "error": err})
         _, props, _ = _remote_props_read(vm_ip, container, props_path)
         return jsonify({"ok": True, "properties": props})
+
+    # ── Runtime properties manager: file path, tags and backups, kept in <app>\server_config.xlsx (sheet runtime_properties) ──
+    # Columns: Kind | Name | Value | Tag | Backup | Backup Time
+    #   path     Name=file             Value=full path of the runtime properties file (blank = the application's default)
+    #   tag      Name=<tag>            (tags persist even when empty)
+    #   property Name=<key>            Tag=<tag>   Backup=<saved value of this single property>   Backup Time
+    #   backup   Name=* or <tag>       Value=JSON of the saved properties   Backup Time           (latest backup per scope)
+    import json
+    _RP_COLS = ["Kind", "Name", "Value", "Tag", "Backup", "Backup Time"]
+    _rp_lock = _threading.Lock()
+
+    def _rp_root(scope, app_name):
+        return _remote_app_root(app_name) if scope == "remote" else _generic_app_root(app_name)
+
+    def _rp_default_path(scope, app_name):
+        d = (_REMOTE_APP_DEFAULTS if scope == "remote" else _LOCAL_APP_DEFAULTS).get(app_name, {})
+        return d.get("props_path") or "/home/weblogic/domains/healthedge/runtime.properties"
+
+    def _rp_load(root):
+        """-> (workbook, sheet) with the runtime_properties sheet created / header-fixed when missing."""
+        import openpyxl as _xl
+        f = Path(root) / "server_config.xlsx"
+        wb = _xl.load_workbook(str(f)) if f.exists() else _xl.Workbook()
+        if "runtime_properties" in wb.sheetnames:
+            ws = wb["runtime_properties"]
+        else:
+            ws = wb.create_sheet("runtime_properties")
+            if f.exists() is False and wb.sheetnames[0] == "Sheet" and len(wb.sheetnames) == 2:
+                del wb["Sheet"]
+        if [c.value for c in ws[1]][:6] != _RP_COLS:
+            for i, h in enumerate(_RP_COLS, 1):
+                ws.cell(row=1, column=i, value=h)
+        return wb, ws
+
+    def _rp_read(root):
+        wb, ws = _rp_load(root)
+        out = {"path": "", "tags": [], "tagmap": {}, "keybackup": {}, "backups": {}}
+        for r in ws.iter_rows(min_row=2, values_only=True):
+            kind, name, val, tag, bak, btime = (list(r) + [None] * 6)[:6]
+            kind, name = str(kind or "").strip().lower(), str(name or "")
+            if kind == "path":
+                out["path"] = str(val or "").strip()
+            elif kind == "tag" and name:
+                out["tags"].append(name)
+            elif kind == "property" and name:
+                if tag:
+                    out["tagmap"][name] = str(tag)
+                if bak is not None and str(btime or ""):
+                    out["keybackup"][name] = {"value": str(bak), "time": str(btime)}
+            elif kind == "backup" and name:
+                try:
+                    snap = json.loads(val or "{}")
+                except Exception:
+                    snap = {}
+                out["backups"][name] = {"time": str(btime or ""), "props": snap}
+        return out
+
+    def _rp_save(root, mutate):
+        """Apply mutate(ws, find) under a lock and save. find(kind, name) -> row number or None."""
+        with _rp_lock:
+            Path(root).mkdir(parents=True, exist_ok=True)
+            wb, ws = _rp_load(root)
+
+            def find(kind, name):
+                for i in range(2, ws.max_row + 1):
+                    if str(ws.cell(row=i, column=1).value or "").strip().lower() == kind and str(ws.cell(row=i, column=2).value or "") == name:
+                        return i
+                return None
+            mutate(ws, find)
+            wb.save(str(Path(root) / "server_config.xlsx"))
+
+    def _rp_call(method, scope, app_name, path_suffix="", body=None):
+        """Call the existing runtime-properties endpoint of the app (payor / generic, local / remote)."""
+        base = f"/api/{'remote-app' if scope == 'remote' else 'local-app'}/{app_name}/runtime-properties"
+        q = f"?vm_ip={request.args.get('vm_ip')}" if scope == "remote" and request.args.get("vm_ip") else ""
+        c = app.test_client()
+        r = c.open(base + path_suffix + q, method=method, json=body) if body is not None else c.open(base + path_suffix + q, method=method)
+        return r.get_json() or {"ok": False, "error": "no response"}
+
+    def _rp_live(scope, app_name):
+        d = _rp_call("GET", scope, app_name)
+        return (d.get("properties") or {}), ("" if d.get("ok") else d.get("error", "Could not read the runtime properties"))
+
+    def _rp_state(scope, app_name, err=""):
+        root = _rp_root(scope, app_name)
+        cfg = _rp_read(root)
+        props, lerr = _rp_live(scope, app_name)
+        return {"ok": True, "properties": props, "load_error": err or lerr,
+                "path": cfg["path"], "default_path": _rp_default_path(scope, app_name),
+                "tags": cfg["tags"], "tagmap": {k: t for k, t in cfg["tagmap"].items() if t in cfg["tags"]},
+                "keybackup": cfg["keybackup"],
+                "backups": {k: {"time": v["time"], "count": len(v["props"])} for k, v in cfg["backups"].items()},
+                "config_file": str(Path(root) / "server_config.xlsx")}
+
+    @app.route("/api/rp/<scope>/<app_name>", methods=["GET"])
+    def api_rp_state(scope, app_name):
+        if scope not in ("local", "remote") or app_name not in (_ALL_REMOTE_APPS if scope == "remote" else _KNOWN_GENERIC_LOCAL_APPS):
+            return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
+        return jsonify(_rp_state(scope, app_name))
+
+    @app.route("/api/rp/<scope>/<app_name>/<action>", methods=["POST"])
+    def api_rp_action(scope, app_name, action):
+        if scope not in ("local", "remote") or app_name not in (_ALL_REMOTE_APPS if scope == "remote" else _KNOWN_GENERIC_LOCAL_APPS):
+            return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
+        b = request.get_json() or {}
+        root = _rp_root(scope, app_name)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            if action == "path":
+                p = str(b.get("path") or "").strip()
+                def m(ws, find):
+                    r = find("path", "file") or ws.max_row + 1
+                    ws.cell(row=r, column=1, value="path"); ws.cell(row=r, column=2, value="file"); ws.cell(row=r, column=3, value=p)
+                _rp_save(root, m)
+            elif action == "tag":                                   # create / rename / delete a tag
+                op, name, new = str(b.get("op") or ""), str(b.get("name") or "").strip(), str(b.get("new") or "").strip()
+                if not name: return jsonify({"ok": False, "error": "Tag name is required"})
+                if name.lower() in ("all", "*"): return jsonify({"ok": False, "error": "'All' is reserved"})
+                def m(ws, find):
+                    if op == "create":
+                        if not find("tag", name):
+                            r = ws.max_row + 1
+                            ws.cell(row=r, column=1, value="tag"); ws.cell(row=r, column=2, value=name)
+                    elif op == "rename" and new:
+                        for i in range(2, ws.max_row + 1):
+                            kind = str(ws.cell(row=i, column=1).value or "").strip().lower()
+                            if kind == "tag" and ws.cell(row=i, column=2).value == name: ws.cell(row=i, column=2, value=new)
+                            elif kind == "property" and ws.cell(row=i, column=4).value == name: ws.cell(row=i, column=4, value=new)
+                            elif kind == "backup" and ws.cell(row=i, column=2).value == name: ws.cell(row=i, column=2, value=new)
+                    elif op == "delete":                             # properties of this tag go back to All only
+                        for i in range(ws.max_row, 1, -1):
+                            kind = str(ws.cell(row=i, column=1).value or "").strip().lower()
+                            if (kind == "tag" or kind == "backup") and ws.cell(row=i, column=2).value == name: ws.delete_rows(i)
+                            elif kind == "property" and ws.cell(row=i, column=4).value == name: ws.cell(row=i, column=4).value = None
+                _rp_save(root, m)
+            elif action == "assign":                                 # tag / untag one property
+                key, tag = str(b.get("key") or "").strip(), str(b.get("tag") or "").strip()
+                if not key: return jsonify({"ok": False, "error": "key is required"})
+                if tag and tag not in _rp_read(root)["tags"]: return jsonify({"ok": False, "error": f"Unknown tag: {tag}"})
+                def m(ws, find):
+                    r = find("property", key) or ws.max_row + 1
+                    ws.cell(row=r, column=1, value="property"); ws.cell(row=r, column=2, value=key); ws.cell(row=r, column=4).value = tag or None
+                _rp_save(root, m)
+            elif action in ("backup", "restore"):
+                level, tag, key = str(b.get("level") or "all"), str(b.get("tag") or ""), str(b.get("key") or "")
+                cfg = _rp_read(root)
+                props, lerr = _rp_live(scope, app_name)
+                if lerr and action == "backup": return jsonify({"ok": False, "error": lerr})
+                if action == "backup":
+                    if level == "key":
+                        if key not in props: return jsonify({"ok": False, "error": f"Unknown property: {key}"})
+                        def m(ws, find):
+                            r = find("property", key) or ws.max_row + 1
+                            ws.cell(row=r, column=1, value="property"); ws.cell(row=r, column=2, value=key)
+                            ws.cell(row=r, column=5, value=str(props[key])); ws.cell(row=r, column=6, value=now)
+                    else:
+                        name = "*" if level == "all" else tag
+                        snap = props if level == "all" else {k: v for k, v in props.items() if cfg["tagmap"].get(k) == tag}
+                        if level == "tag" and not tag: return jsonify({"ok": False, "error": "tag is required"})
+                        def m(ws, find):
+                            r = find("backup", name) or ws.max_row + 1
+                            ws.cell(row=r, column=1, value="backup"); ws.cell(row=r, column=2, value=name)
+                            ws.cell(row=r, column=3, value=json.dumps(snap)); ws.cell(row=r, column=6, value=now)
+                    _rp_save(root, m)
+                else:                                                # restore = toggle back to the saved copy
+                    if level == "key":
+                        kb = cfg["keybackup"].get(key)
+                        if not kb: return jsonify({"ok": False, "error": f"No backup for {key}"})
+                        todo, drop = {key: kb["value"]}, []
+                    else:
+                        name = "*" if level == "all" else tag
+                        bk = cfg["backups"].get(name)
+                        if not bk: return jsonify({"ok": False, "error": "No backup found for " + ("all properties" if level == "all" else f"tag {tag}")})
+                        todo = dict(bk["props"])
+                        # all: keys added after the backup are removed too; tag: only the tag's own properties are touched
+                        drop = [k for k in props if k not in todo] if level == "all" else []
+                    for k, v in todo.items():
+                        if k not in props or str(props[k]) != str(v):
+                            r = _rp_call("PUT" if k in props else "POST", scope, app_name, "/" + k if k in props else "", {"value": v} if k in props else {"key": k, "value": v})
+                            if not r.get("ok"): return jsonify({"ok": False, "error": f"{k}: {r.get('error', 'failed')}"})
+                    for k in drop:
+                        r = _rp_call("DELETE", scope, app_name, "/" + k)
+                        if not r.get("ok"): return jsonify({"ok": False, "error": f"{k}: {r.get('error', 'failed')}"})
+            else:
+                return jsonify({"ok": False, "error": f"Unknown action: {action}"}), 404
+        except PermissionError:
+            return jsonify({"ok": False, "error": "server_config.xlsx is open in another program - close it and try again"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"})
+        return jsonify(_rp_state(scope, app_name))
 
     # ── Per-app screen configuration (driven by screen_config.xlsx) ─────────────
 

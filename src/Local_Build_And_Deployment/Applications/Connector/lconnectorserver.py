@@ -21,7 +21,7 @@ import tempfile
 import os
 import re
 
-PROPS_PATH = "/home/connector/config/connector.properties"
+PROPS_PATH = os.environ.get("DWB_RUNTIME_PROPS_PATH") or "/home/connector/config/connector.properties"
 CONTAINER_FILTER = "connector"
 CFLAGS = 0x08000000 if sys.platform == "win32" else 0
 

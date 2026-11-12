@@ -21,7 +21,7 @@ import tempfile
 import os
 import re
 
-PROPS_PATH = "/home/weblogic/domains/healthedge/runtime.properties"
+PROPS_PATH = os.environ.get("DWB_RUNTIME_PROPS_PATH") or "/home/weblogic/domains/healthedge/runtime.properties"
 CONTAINER_FILTER = "pik-tc"
 CFLAGS = 0x08000000 if sys.platform == "win32" else 0
 
