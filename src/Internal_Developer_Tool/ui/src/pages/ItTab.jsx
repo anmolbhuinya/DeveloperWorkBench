@@ -234,7 +234,11 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
             <span style={{ fontSize: 12, fontWeight: 600 }}>test.properties</span>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{propInfo.path}{!propInfo.exists && ' (not found - will be created on save)'}</span>
-            <input value={propQ} onChange={e => setPropQ(e.target.value)} placeholder="Filter keys / values…" style={{ marginLeft: 'auto', width: 220 }} />
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+              {propQ.trim() ? `${propRows.filter(r => r.key.toLowerCase().includes(propQ.trim().toLowerCase())).length} of ${propRows.length} keys` : `${propRows.length} keys`}
+            </span>
+            <input value={propQ} onChange={e => setPropQ(e.target.value)} placeholder="🔍 Search by key…" style={{ width: 240 }} />
+            {propQ && <button onClick={() => setPropQ('')} title="Clear search" style={{ ...btn(false), padding: '1px 8px' }}>✕</button>}
             <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" checked={showSecret} onChange={e => setShowSecret(e.target.checked)} /> show passwords
             </label>
@@ -242,7 +246,7 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
           <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
             {propRows.map((r, i) => {
               const q2 = propQ.trim().toLowerCase()
-              if (q2 && !r.key.toLowerCase().includes(q2) && !r.value.toLowerCase().includes(q2)) return null
+              if (q2 && !r.key.toLowerCase().includes(q2)) return null
               return (
                 <div key={i} style={{ display: 'flex', gap: 6, padding: '3px 6px', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
                   <input value={r.key} onChange={e => setProp(i, 'key', e.target.value)} style={{ flex: '0 0 280px', fontFamily: 'monospace', fontSize: 12 }} />
@@ -252,6 +256,9 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
                 </div>
               )
             })}
+            {propQ.trim() && !propRows.some(r => r.key.toLowerCase().includes(propQ.trim().toLowerCase())) && (
+              <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>No key matches "{propQ.trim()}"</div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
             <button onClick={() => { setPropQ(''); setPropRows(rs => [...rs, { key: '', value: '' }]) }} style={btn(false)}>+ Add property</button>
