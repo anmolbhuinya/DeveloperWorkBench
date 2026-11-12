@@ -410,6 +410,8 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
   const sprintClosed = (data ? data.closed : []).filter(r => inSprint(r) && keep(r)).map(withTime).sort(order)
   const adhocRows = [...adhoc, ...(data ? [...data.open, ...data.closed] : [])].filter(r => !inSprint(r) || adhoc.includes(r)).filter(keep).map(withTime).sort(order)
   const sections = [{ title: 'Open PR', rows: sprintOpen }, { title: 'Closed PR', rows: sprintClosed }, { title: 'Adhoc PR', rows: adhocRows }]
+  // PRs I have reviewed (any review status other than "Review"), across Open / Closed / Adhoc
+  const reviewedCount = sections.reduce((n, s) => n + s.rows.filter(r => r.review_status && r.review_status !== 'Review' && r.review_status !== 'Not Reviewed').length, 0)
   const th = { textAlign: 'left', padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: 'var(--surface)' }
   const td = { padding: '5px 10px', fontSize: 12, borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
   const link = { color: '#0563C1', textDecoration: 'underline' }
@@ -446,7 +448,7 @@ function PrReviewsPanel({ file, sprintJiras = [], autoSync = false, onAutoSynced
         <span title={Object.keys(prevTimes).length ? 'Spilled-over PRs show their earlier-sprint time as "Previous sprint" in the Review Time column' : ''} style={{ marginLeft: 20, paddingLeft: 20, borderLeft: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
           <span style={{ fontSize: 13, fontWeight: 700 }}>Sprint PR Review Time</span>
           <span style={{ fontSize: 16, fontWeight: 700, color: '#ef6c00' }}>{sprintTotal}</span>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>h:mm spent in this sprint · {sprintCount} pull request{sprintCount === 1 ? '' : 's'}</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>h:mm spent in this sprint · {sprintCount} pull request{sprintCount === 1 ? '' : 's'} timed · <b style={{ color: '#2e7d32' }}>{reviewedCount} reviewed</b> of {sections.reduce((n, s) => n + s.rows.length, 0)} listed</span>
         </span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button style={btn} onClick={copy} disabled={!data} title="Copy both tables (the JIRA ID and PR cells stay clickable when pasted into Excel or mail)">{copied ? '✓ Copied' : 'Copy'}</button>
