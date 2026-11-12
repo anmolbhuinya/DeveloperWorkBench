@@ -232,16 +232,18 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
       {propsOpen && (
         <div className="card" style={{ marginBottom: 12, padding: '12px 14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600 }}>test.properties</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{propInfo.path}{!propInfo.exists && ' (not found - will be created on save)'}</span>
-            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
-              {propQ.trim() ? `${propRows.filter(r => r.key.toLowerCase().includes(propQ.trim().toLowerCase())).length} of ${propRows.length} keys` : `${propRows.length} keys`}
-            </span>
             <input value={propQ} onChange={e => setPropQ(e.target.value)} placeholder="🔍 Search by key…" style={{ width: 240 }} />
             {propQ && <button onClick={() => setPropQ('')} title="Clear search" style={{ ...btn(false), padding: '1px 8px' }}>✕</button>}
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              {propQ.trim() ? `${propRows.filter(r => r.key.toLowerCase().includes(propQ.trim().toLowerCase())).length} of ${propRows.length} keys` : `${propRows.length} keys`}
+            </span>
             <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" checked={showSecret} onChange={e => setShowSecret(e.target.checked)} /> show passwords
             </label>
+            <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>test.properties</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{propInfo.path}{!propInfo.exists && ' (not found - will be created on save)'}</span>
+            </span>
           </div>
           <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
             {propRows.map((r, i) => {
