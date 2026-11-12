@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 
+const BK_BG = 'rgba(249,168,37,0.16)'   // row tint of a backed-up property
+
 // Runtime properties of an application (local or remote): the properties themselves live in the app / container,
 // while the properties-file path, the tags and the backups are kept in <app>\server_config.xlsx (sheet runtime_properties).
 export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '' }) {
@@ -20,6 +22,8 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
   const [newVal, setNewVal]   = useState('')
   const [newTag, setNewTag]   = useState('')
   const [busy, setBusy]       = useState(false)
+  const [showAllBk, setShowAllBk] = useState(false)   // show the backed-up value under every backed-up row
+  const [openBk, setOpenBk]   = useState({})          // ... or just under the rows clicked
 
   const apply = r => {
     if (r.ok) {
@@ -123,6 +127,10 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
           if (window.confirm(`Toggle back ${scopeLabel} to the backup of ${bk.time}?${tab === 'All' ? '\nProperties added since the backup will be removed.' : ''}`)) post('restore', level, `Restored ${scopeLabel}`)
         }}>↩ Restore {scopeLabel}</button>
         <span style={{ color: 'var(--text-muted)' }}>{bk ? `Last backup ${bk.time} (${bk.count} propert${bk.count === 1 ? 'y' : 'ies'})` : 'No backup yet'}</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto', cursor: 'pointer' }} title="Show the backed-up value under every backed-up row">
+          <input type="checkbox" checked={showAllBk} onChange={e => setShowAllBk(e.target.checked)} /> Show all backup values
+        </label>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}><span style={{ width: 12, height: 12, borderRadius: 3, background: BK_BG, border: '1px solid #f9a825' }} /> backed up</span>
       </div>
 
       <input type="text" placeholder="Filter by key or value…" value={filter} onChange={e => setFilter(e.target.value)}
@@ -145,9 +153,16 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
                 <tr><td colSpan={5} style={{ ...cell, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
                   {filter ? 'No matches' : tab === 'All' ? 'No properties yet' : `No properties tagged "${tab}" - tag them from the All tab`}
                 </td></tr>
-              ) : rows.map(k => (
-                <tr key={k} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                  <td style={{ ...cell, fontFamily: 'monospace', wordBreak: 'break-all' }}>{k}</td>
+              ) : rows.map(k => {
+                const bv = d?.backup_values?.[k]            // {value, time, source} when this property is backed up
+                const changed = bv && String(props[k]) !== bv.value
+                const showBv = bv && (showAllBk || openBk[k])
+                return (
+                <tr key={k} style={{ borderBottom: '1px solid var(--border-color)', background: bv ? BK_BG : undefined, boxShadow: bv ? 'inset 4px 0 0 #f9a825' : undefined }}>
+                  <td style={{ ...cell, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                    {k}
+                    {bv && <span title={`Backed up ${bv.time} (${bv.source})`} style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: '#8d6e00', background: '#ffe082', borderRadius: 8, padding: '1px 6px', fontFamily: 'sans-serif' }}>{changed ? 'changed since backup' : 'backed up'}</span>}
+                  </td>
                   <td style={cell}>
                     {editKey === k ? (
                       <div style={{ display: 'flex', gap: 5 }}>
@@ -162,6 +177,11 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
                         {String(props[k]) || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>(empty)</span>}
                       </span>
                     )}
+                    {showBv && (
+                      <div style={{ marginTop: 3, fontSize: 11, color: '#8d6e00', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        ↩ backup ({bv.source}, {bv.time}): {bv.value || <i>(empty)</i>}
+                      </div>
+                    )}
                   </td>
                   <td style={cell}>
                     <select value={tagmap[k] || ''} disabled={busy || (tags.length === 0 && !tagmap[k])} style={{ ...input, width: '100%' }}
@@ -174,8 +194,10 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
                   <td style={{ ...cell, whiteSpace: 'nowrap' }}>
                     <button className="btn btn-sm" style={{ ...sbtn, padding: '1px 6px' }} disabled={busy} title="Back up this property"
                       onClick={() => post('backup', { level: 'key', key: k }, `Backed up ${k}`)}>💾</button>{' '}
+                    {bv && <><button className="btn btn-sm" style={{ ...sbtn, padding: '1px 6px' }} title="Show / hide the backed-up value of this property"
+                      onClick={() => setOpenBk(o => ({ ...o, [k]: !o[k] }))}>👁</button>{' '}</>}
                     <button className="btn btn-sm" style={{ ...sbtn, padding: '1px 6px' }} disabled={busy || !d?.keybackup?.[k]}
-                      title={d?.keybackup?.[k] ? `Toggle back to "${d.keybackup[k].value}" (${d.keybackup[k].time})` : 'No backup for this property'}
+                      title={d?.keybackup?.[k] ? `Toggle back to "${d.keybackup[k].value}" (${d.keybackup[k].time})` : 'No individual backup for this property'}
                       onClick={() => { if (window.confirm(`Toggle ${k} back to "${d.keybackup[k].value}"?`)) post('restore', { level: 'key', key: k }, `Restored ${k}`) }}>↩</button>
                   </td>
                   <td style={{ ...cell, textAlign: 'center' }}>
@@ -183,7 +205,8 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f44336', fontSize: 14, padding: '2px 4px', lineHeight: 1 }}>🗑</button>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>

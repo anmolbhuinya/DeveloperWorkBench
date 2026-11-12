@@ -28491,7 +28491,17 @@ done
         root = _rp_root(scope, app_name)
         cfg = _rp_read(root)
         props, lerr = _rp_live(scope, app_name)
-        return {"ok": True, "properties": props, "load_error": err or lerr,
+        # backed-up value of each property: its own backup, else its tag's backup, else the "all" backup
+        bvals = {}
+        for src, snap_name in (("all", "*"),):
+            for k, v in (cfg["backups"].get(snap_name, {}).get("props") or {}).items():
+                bvals[k] = {"value": str(v), "time": cfg["backups"][snap_name]["time"], "source": "all"}
+        for t in cfg["tags"]:
+            for k, v in (cfg["backups"].get(t, {}).get("props") or {}).items():
+                bvals[k] = {"value": str(v), "time": cfg["backups"][t]["time"], "source": "tag " + t}
+        for k, kb in cfg["keybackup"].items():
+            bvals[k] = {"value": kb["value"], "time": kb["time"], "source": "property"}
+        return {"ok": True, "properties": props, "load_error": err or lerr, "backup_values": bvals,
                 "path": cfg["path"], "default_path": _rp_default_path(scope, app_name),
                 "tags": cfg["tags"], "tagmap": {k: t for k, t in cfg["tagmap"].items() if t in cfg["tags"]},
                 "keybackup": cfg["keybackup"],
