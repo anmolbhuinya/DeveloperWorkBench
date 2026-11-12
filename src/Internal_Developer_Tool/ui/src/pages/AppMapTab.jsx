@@ -299,24 +299,88 @@ function SqlExec({ m }) {
   )
 }
 
+const SENSITIVE = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token)$/i
+
+// One side (request or response) of an HTTP exchange with everything AppMap recorded
+function HttpSide({ title, color, general, side, reveal }) {
+  const hs = Object.entries(side?.headers || {})
+  const ctype = Object.entries(side?.headers || {}).find(([k]) => k.toLowerCase() === 'content-type')?.[1]
+  const clen = Object.entries(side?.headers || {}).find(([k]) => k.toLowerCase() === 'content-length')?.[1]
+  const sub = { fontWeight: 600, fontSize: 11, margin: '8px 0 3px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }
+  const kv = { ...td, ...mono, wordBreak: 'break-all' }
+  return (
+    <div style={{ flex: '1 1 420px', minWidth: 0, border: '1px solid var(--border)', borderTop: `3px solid ${color}`, borderRadius: 6, padding: '8px 12px' }}>
+      <div style={{ fontWeight: 700, fontSize: 13, color }}>{title}</div>
+      <div style={sub}>General</div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>{general.map(([k, v]) => (
+        <tr key={k}><td style={{ ...td, width: 110, color: 'var(--text-muted)' }}>{k}</td><td style={{ ...kv, ...(v?.style || {}) }}>{v?.text ?? (v || '—')}</td></tr>))}</tbody></table>
+      {side?.params?.length > 0 && <>
+        <div style={sub}>Query / form parameters ({side.params.length})</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>{side.params.map((p, i) => (
+          <tr key={i}><td style={{ ...kv, width: '34%', fontWeight: 600 }}>{p.name}</td><td style={kv}>{p.value ?? '—'}</td></tr>))}</tbody></table>
+      </>}
+      <div style={sub}>Headers ({hs.length})</div>
+      {hs.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No headers were recorded.</div> : (
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}><tbody>{hs.map(([k, v]) => (
+          <tr key={k}><td style={{ ...kv, width: '34%', fontWeight: 600 }}>{k}</td><td style={kv}>{SENSITIVE.test(k) && !reveal ? '••••••••  (hidden)' : v}</td></tr>))}</tbody></table>
+      )}
+      <div style={sub}>Body {side?.body != null && <CopyBtn text={side.body} label="Copy" />}</div>
+      {side?.body != null
+        ? <pre style={{ ...mono, margin: 0, padding: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 260, overflow: 'auto' }}>{side.body}</pre>
+        : <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>Not recorded — the AppMap Java agent does not capture HTTP bodies{clen ? <> (the {title.toLowerCase()} declares <b>{clen} bytes</b>{ctype ? <> of <code>{ctype}</code></> : null})</> : null}.</div>}
+    </div>
+  )
+}
+
 function Http({ m }) {
   const s = m.http_server || [], c = m.http_client || []
+  const [open, setOpen] = useState({})              // "s<id>" / "c<id>" -> details shown
+  const [reveal, setReveal] = useState(false)       // show Authorization / Cookie header values
   if (!s.length && !c.length) return <Empty>No HTTP requests were recorded in this map.</Empty>
+  const all = [...s.map(r => 's' + r.id), ...c.map(r => 'c' + r.id)]
   const max = Math.max(...[...s, ...c].map(r => r.ms || 0), 1)
   const sc = st => st >= 500 ? '#c62828' : st >= 400 ? '#ef6c00' : '#2e7d32'
-  const tbl = (title, rows, key) => rows.length > 0 && (
+  const tbl = (title, rows, key, pre) => rows.length > 0 && (
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>{title} ({rows.length})</div>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr><th style={th}>Method</th><th style={th}>{key === 'path' ? 'Path' : 'URL'}</th><th style={th}>Status</th><th style={th}>ms</th><th style={{ ...th, width: 200 }}>Duration</th></tr></thead>
-        <tbody>{rows.map((r, i) => (
-          <tr key={i}><td style={{ ...td, fontWeight: 600 }}>{r.method}</td><td style={{ ...td, ...mono, wordBreak: 'break-all' }}>{r[key]}</td>
-            <td style={{ ...td, color: sc(r.status), fontWeight: 600 }}>{r.status ?? '—'}</td><td style={td}>{r.ms ?? '—'}</td>
-            <td style={td}><div style={{ height: 10, width: `${Math.max(2, (r.ms || 0) / max * 100)}%`, background: sc(r.status), borderRadius: 3 }} /></td></tr>))}
+        <thead><tr><th style={{ ...th, width: 24 }} /><th style={th}>Method</th><th style={th}>{key === 'path' ? 'Path' : 'URL'}</th><th style={th}>Status</th><th style={th}>ms</th><th style={{ ...th, width: 200 }}>Duration</th></tr></thead>
+        <tbody>{rows.map(r => {
+          const id = pre + r.id, isOpen = !!open[id]
+          const url = r[key] || ''
+          return [
+            <tr key={id} onClick={() => setOpen(o => ({ ...o, [id]: !o[id] }))} style={{ cursor: 'pointer', background: isOpen ? 'rgba(21,101,192,0.08)' : undefined }} title="Click to show request / response details">
+              <td style={{ ...td, color: 'var(--text-muted)' }}>{isOpen ? '▾' : '▸'}</td>
+              <td style={{ ...td, fontWeight: 600 }}>{r.method}</td><td style={{ ...td, ...mono, wordBreak: 'break-all' }}>{url}</td>
+              <td style={{ ...td, color: sc(r.status), fontWeight: 600 }}>{r.status ?? '—'}</td><td style={td}>{r.ms ?? '—'}</td>
+              <td style={td}><div style={{ height: 10, width: `${Math.max(2, (r.ms || 0) / max * 100)}%`, background: sc(r.status), borderRadius: 3 }} /></td></tr>,
+            isOpen && (
+              <tr key={id + 'd'}><td colSpan={6} style={{ ...td, background: 'var(--surface)', padding: 10 }}>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <HttpSide title="Request" color="#1565c0" reveal={reveal} side={r.req}
+                    general={[['URL / path', url], ['Method', r.method], ['Protocol', r.req?.protocol]]} />
+                  <HttpSide title="Response" color={sc(r.status)} reveal={reveal} side={r.res}
+                    general={[['Status code', { text: r.status ?? '—', style: { color: sc(r.status), fontWeight: 700 } }], ['Duration', r.ms != null ? `${r.ms} ms` : '—'], ['Protocol', r.res?.protocol]]} />
+                </div>
+              </td></tr>),
+          ]
+        })}
         </tbody>
       </table>
     </div>)
-  return <div style={{ maxHeight: 560, overflow: 'auto' }}>{tbl('Incoming requests (server)', s, 'path')}{tbl('Outgoing requests (client)', c, 'url')}</div>
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, fontSize: 12, flexWrap: 'wrap' }}>
+        <button className="btn btn-sm" onClick={() => setOpen(Object.fromEntries(all.map(k => [k, true])))}>▾ Show all details</button>
+        <button className="btn btn-sm" onClick={() => setOpen({})}>▸ Hide all</button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }} title="Authorization, Cookie and similar headers are masked unless this is on">
+          <input type="checkbox" checked={reveal} onChange={e => setReveal(e.target.checked)} /> Show sensitive headers (Authorization, Cookie…)
+        </label>
+        <span style={{ color: 'var(--text-muted)' }}>Click a row for the request and response details.</span>
+      </div>
+      <div style={{ maxHeight: 640, overflow: 'auto' }}>{tbl('Incoming requests (server)', s, 'path', 's')}{tbl('Outgoing requests (client)', c, 'url', 'c')}</div>
+    </div>
+  )
 }
 
 // Loaded data survives leaving and re-entering the tab (kept per app until Refresh)

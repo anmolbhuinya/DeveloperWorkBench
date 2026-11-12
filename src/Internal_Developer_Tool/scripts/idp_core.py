@@ -20330,6 +20330,35 @@ done
         maps = sum(len(list(d.rglob("*.appmap.json"))) for d in _appmap_dirs(srcdir, app_name))
         return jsonify({"ok": True, "available": True, "enabled": _appmap_enabled(text), "srcdir": str(srcdir), "maps": maps})
 
+    def _appmap_http_side(h, ev):
+        """Everything AppMap recorded for one side of an HTTP exchange: headers, protocol, query / form parameters, body (when present)."""
+        from urllib.parse import urlsplit, parse_qsl
+        def _txt(v):
+            if v is None: return None
+            if isinstance(v, (dict, list)):
+                import json as _j
+                return _j.dumps(v, indent=2, ensure_ascii=False)[:20000]
+            return str(v)[:20000]
+        out = {"headers": {str(k): str(v) for k, v in (h.get("headers") or {}).items()}, "protocol": h.get("protocol") or ""}
+        params = []
+        for p in (ev.get("message") or []):                      # AppMap: query / form parameters of the request
+            params.append({"name": str(p.get("name", "")), "value": _txt(p.get("value")), "class": str(p.get("class", ""))})
+        url = h.get("url") or ""
+        if url:
+            try:
+                for k, v in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+                    if not any(x["name"] == k and x["value"] == v for x in params):
+                        params.append({"name": k, "value": v, "class": "query"})
+            except Exception:
+                pass
+        if params: out["params"] = params
+        body = next((h.get(k) for k in ("body", "request_body", "response_body", "payload") if h.get(k) is not None), None)
+        if body is None and ev.get("event") == "return" and ev.get("return_value") is not None:
+            rv = ev["return_value"]
+            body = rv.get("value") if isinstance(rv, dict) else rv
+        if body is not None: out["body"] = _txt(body)
+        return out
+
     def _appmap_parse(path, srcdir):
         import json as _json, re as _re
         data = _json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
@@ -20357,9 +20386,13 @@ done
                        "params": ["%s=%s" % (_pp.get("name") or "arg", str(_pp.get("value"))[:300]) for _pp in (e.get("parameters") or [])][:12],
                        "ret": None}
                 if e.get("http_server_request"):
-                    r = e["http_server_request"]; http_s.append({"id": e["id"], "method": r.get("request_method"), "path": r.get("normalized_path_info") or r.get("path_info"), "status": None, "ms": None})
+                    r = e["http_server_request"]
+                    http_s.append({"id": e["id"], "method": r.get("request_method"), "path": r.get("normalized_path_info") or r.get("path_info"), "status": None, "ms": None,
+                                   "req": _appmap_http_side(r, e), "res": None})
                 elif e.get("http_client_request"):
-                    r = e["http_client_request"]; http_c.append({"id": e["id"], "method": r.get("request_method"), "url": r.get("url"), "status": None, "ms": None})
+                    r = e["http_client_request"]
+                    http_c.append({"id": e["id"], "method": r.get("request_method"), "url": r.get("url"), "status": None, "ms": None,
+                                   "req": _appmap_http_side(r, e), "res": None})
                 elif e.get("sql_query"):
                     q = e["sql_query"]; sqls.append({"id": e["id"], "sql": q.get("sql") or "", "db": q.get("database_type") or "", "ms": None,
                                                      "params": ["%s=%s" % (_pp.get("name") or "arg", str(_pp.get("value"))[:300]) for _pp in (e.get("parameters") or [])]})
@@ -20385,8 +20418,10 @@ done
                                 _rv = e["return_value"]; r["ret"] = "%s: %s" % ((_rv.get("class") or "").split(".")[-1], str(_rv.get("value"))[:500])
                             if "status" in r and e.get("http_server_response"):
                                 r["status"] = e["http_server_response"].get("status_code", e["http_server_response"].get("status"))
+                                r["res"] = _appmap_http_side(e["http_server_response"], e)
                             if "status" in r and e.get("http_client_response"):
                                 r["status"] = e["http_client_response"].get("status_code", e["http_client_response"].get("status"))
+                                r["res"] = _appmap_http_side(e["http_client_response"], e)
                             break
         # edges caller class -> callee class
         cls_of = {c["id"]: c["cls"] for c in calls}
