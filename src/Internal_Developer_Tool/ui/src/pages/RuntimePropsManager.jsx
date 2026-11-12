@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 
-const BK_BG = 'rgba(249,168,37,0.16)'   // row tint of a backed-up property
+// When a backup value is shown: identical to the current value -> both in the same colour; different -> two different colours
+const SAME_CLR = '#43a047', CUR_DIFF = '#ef5350', BK_DIFF = '#42a5f5'
+const BK_BG ='rgba(249,168,37,0.16)'   // row tint of a backed-up property
 
 // Runtime properties of an application (local or remote): the properties themselves live in the app / container,
 // while the properties-file path, the tags and the backups are kept in <app>\server_config.xlsx (sheet runtime_properties).
@@ -172,14 +174,14 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
                         <button className="btn btn-sm" style={sbtn} onClick={() => setEditKey(null)}>✕</button>
                       </div>
                     ) : (
-                      <span style={{ fontFamily: 'monospace', cursor: 'pointer', display: 'block', wordBreak: 'break-all' }} title="Click to edit"
+                      <span style={{ fontFamily: 'monospace', cursor: 'pointer', display: 'block', wordBreak: 'break-all', fontWeight: showBv ? 600 : 400, color: showBv ? (changed ? CUR_DIFF : SAME_CLR) : undefined }} title="Click to edit"
                         onClick={() => { setEditKey(k); setEditVal(props[k] ?? '') }}>
                         {String(props[k]) || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>(empty)</span>}
                       </span>
                     )}
                     {showBv && (
-                      <div style={{ marginTop: 3, fontSize: 11, color: '#8d6e00', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                        ↩ backup ({bv.source}, {bv.time}): {bv.value || <i>(empty)</i>}
+                      <div style={{ marginTop: 3, fontSize: 11, fontWeight: 600, color: changed ? BK_DIFF : SAME_CLR, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        ↩ backup ({bv.source}, {bv.time}): {bv.value || <i>(empty)</i>} <span style={{ fontWeight: 400, fontFamily: 'sans-serif' }}>{changed ? '≠ current' : '= current'}</span>
                       </div>
                     )}
                   </td>
