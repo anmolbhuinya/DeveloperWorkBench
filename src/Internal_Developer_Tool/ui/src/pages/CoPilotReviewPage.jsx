@@ -690,7 +690,7 @@ export default function CoPilotReviewPage() {
             <span style={{ color: '#ef6c00', fontWeight: 700 }}>⏱ Review time {String(Math.floor(elapsed / 3600))}:{String(Math.floor(elapsed / 60) % 60).padStart(2, '0')}:{String(elapsed % 60).padStart(2, '0')}</span>
             <button onClick={saveTime} style={{ fontSize: 12, padding: '3px 10px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' }}>Save time</button>
             <button onClick={backToPanel} style={{ fontSize: 12, padding: '3px 10px', border: 'none', borderRadius: 4, background: '#1565c0', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>← Back to PR Review Panel</button>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{saved ? `Total saved for this PR: ${saved} (h:mm)` : 'Saved to the sprint PR Reviews sheet when you leave this page or press Save time'}</span>
+            <span title="Saved to the sprint PR Reviews sheet automatically, when you leave this page or press Save time" style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{saved ? `Total saved for this PR: ${saved} (h:mm)` : 'Autosaves to the sprint PR Reviews sheet'}</span>
           </div>
         )}
       </div>
@@ -699,7 +699,7 @@ export default function CoPilotReviewPage() {
     <div>
 
       {/* Paste PR URL and Parameters side by side */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16, alignItems: 'stretch' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 3fr)', gap: 16, alignItems: 'stretch' }}>
       {/* URL shortcut */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>
@@ -725,7 +725,7 @@ export default function CoPilotReviewPage() {
       {/* Params */}
       <div className="card" style={{ marginBottom: 16, height: 'auto' }}>
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 16 }}>Parameters</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr) 110px auto', gap: 14, alignItems: 'end' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(110px,1fr) minmax(110px,1fr) 100px auto', gap: 12, alignItems: 'end' }}>
           <div>
             <label style={labelStyle}>Owner</label>
             <input value={owner} onChange={e => setOwner(e.target.value)} placeholder="HealthEdge"
