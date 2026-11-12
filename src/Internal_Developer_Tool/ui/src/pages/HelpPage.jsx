@@ -209,6 +209,7 @@ function Panel({ kind, title, noun, statuses, done, action }) {
 export default function HelpPage() {
   const [session, setSession] = useState('')
   const [sessMsg, setSessMsg] = useState('')
+  const [tab, setTab] = useState('features')
   useEffect(() => {
     fetch('/api/help/config').then(r => r.json()).then(d => { if (d.ok) setSession(d.session_name) }).catch(() => {})
   }, [])
@@ -242,9 +243,16 @@ export default function HelpPage() {
           title="Run lai to create a new session with the version incremented (e.g. Developer_WorkBench_V0 → Developer_WorkBench_V1)">Create New Session</button>
         <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{sessMsg || 'Implement / Fix It run in this session (saved in features_and_bugs.xlsx)'}</span>
       </div>
-      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        {PANELS.map(p => <Panel key={p.kind} {...p} />)}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+        {PANELS.map(p => (
+          <button key={p.kind} onClick={() => setTab(p.kind)} style={{ fontSize: 13, fontWeight: 600, padding: '6px 18px', borderRadius: 6, cursor: 'pointer',
+            border: '1px solid var(--primary,#1976d2)', background: tab === p.kind ? 'var(--primary,#1976d2)' : 'var(--bg)', color: tab === p.kind ? '#fff' : 'var(--primary,#1976d2)' }}>{p.title}</button>
+        ))}
       </div>
+      {/* Both panels stay mounted (running AI jobs keep updating); only the selected one is shown, using the full width */}
+      {PANELS.map(p => (
+        <div key={p.kind} style={{ display: tab === p.kind ? 'flex' : 'none' }}><Panel {...p} /></div>
+      ))}
     </div>
   )
 }
