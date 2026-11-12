@@ -2,6 +2,23 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 
 const JOB_API = '/api/project-management/sonar-report'
 
+// Search box -> { cls: text for the class search, clsName: simple class name, meth: method filter }.
+// Accepts SimpleClaimTest, pkg.SimpleClaimTest, SimpleClaimTest.testX, pkg.SimpleClaimTest.testX, SimpleClaimTest#testX, pkg.SimpleClaimTest#testX
+function parseSearch(raw) {
+  const s = (raw || '').trim()
+  let cls = s, meth = ''
+  const h = s.indexOf('#')
+  if (h >= 0) { cls = s.slice(0, h).trim(); meth = s.slice(h + 1).trim() }
+  else if (!/\s/.test(s)) {
+    const parts = s.split('.')
+    // a lower-case last segment after an upper-case (class) segment is a method; package segments are lower-case
+    if (parts.length >= 2 && /^[A-Z]/.test(parts[parts.length - 2]) && /^[a-z_$]/.test(parts[parts.length - 1])) {
+      meth = parts[parts.length - 1]; cls = parts.slice(0, -1).join('.')
+    }
+  }
+  return { cls, clsName: cls.split('.').pop(), meth }
+}
+
 // Survives navigating away and back (component unmounts): search text, results, selected class and its methods
 const _itCache = {}
 
@@ -34,6 +51,8 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
   const [changedTotal, setChangedTotal] = useState(0)
   const [changedMeths, setChangedMeths] = useState(c0.changedMeths || [])
   const [recent,       setRecent]       = useState(!!c0.recent)   // "Recent IT": only tests changed on this branch
+  const [resultsFor,   setResultsFor]   = useState(null)   // the class query the current list belongs to
+  const parsed = parseSearch(q)
   const selRef  = useRef(c0.selected?.path || '')
   const pollRef = useRef(null)
   const termRef = useRef(null)
@@ -58,19 +77,29 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
     const t = setTimeout(async () => {
       setSearching(true); setLoadErr('')
       try {
-        const d = await (await fetch(vq(`${API}/classes?q=${encodeURIComponent(q.trim())}${recent ? '&recent=1' : ''}`))).json()
+        const d = await (await fetch(vq(`${API}/classes?q=${encodeURIComponent(parsed.cls)}${recent ? '&recent=1' : ''}`))).json()
         if (stale) return
         if (d.ok) {
-          setClasses(d.classes); setTotal(d.total); setBase(d.base || ''); setChangedTotal(d.changed_total || 0)
+          setClasses(d.classes); setTotal(d.total); setBase(d.base || ''); setChangedTotal(d.changed_total || 0); setResultsFor(parsed.cls)
         } else { setClasses([]); setTotal(0); setLoadErr(d.error || 'Failed to load classes') }
       } catch (e) { if (!stale) setLoadErr(String(e)) }
       if (!stale) setSearching(false)
     }, 200)
     return () => { stale = true; clearTimeout(t) }
-  }, [q, cfg, API, recent, vmIp])
+  }, [parsed.cls, cfg, API, recent, vmIp])
 
-  async function selectClass(c) {
-    setSelected(c); setMq(''); setMethods([]); setChangedMeths([]); setMethLoading(true)
+  // "Class.method", "Class#method", "pkg.Class.method" or "pkg.Class#method": filter the class and the method too
+  useEffect(() => {
+    if (!parsed.meth || resultsFor !== parsed.cls) return
+    const exact = classes.filter(c => c.cls.toLowerCase() === parsed.clsName.toLowerCase())
+    const pick = classes.length === 1 ? classes[0] : exact.length === 1 ? exact[0] : null
+    if (!pick) return
+    if (selected?.path !== pick.path) selectClass(pick, parsed.meth)
+    else setMq(parsed.meth)
+  }, [classes, resultsFor, parsed.cls, parsed.meth])
+
+  async function selectClass(c, meth = '') {
+    setSelected(c); setMq(meth); setMethods([]); setChangedMeths([]); setMethLoading(true)
     selRef.current = c.path
     try {
       const d = await (await fetch(vq(`${API}/methods?path=${encodeURIComponent(c.path)}`))).json()
@@ -279,7 +308,7 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
         <div className="card" style={{ flex: '1 1 360px', minWidth: 300, padding: 0, overflow: 'hidden' }}>
           <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', gap: 8 }}>
-              <input value={q} onChange={e => setQ(e.target.value)} placeholder={recent ? 'Filter recently added ITs…' : 'Search test classes…'} style={{ flex: 1, minWidth: 0, boxSizing: 'border-box' }} />
+              <input value={q} onChange={e => setQ(e.target.value)} placeholder={recent ? 'Filter recently added ITs…' : 'Search test classes… (Class, pkg.Class, Class.method, Class#method)'} style={{ flex: 1, minWidth: 0, boxSizing: 'border-box' }} />
               <button onClick={() => setRecent(r => !r)} title="Show only tests added or changed on this branch (vs master/main)"
                 style={{ ...btn(recent), background: recent ? '#E65100' : 'rgba(25,118,210,0.08)', color: recent ? '#fff' : '#1565C0', whiteSpace: 'nowrap' }}>
                 🕘 Recently Added ITs
