@@ -4,6 +4,47 @@ import { useState, useEffect, useCallback } from 'react'
 const SAME_CLR = '#43a047', CUR_DIFF = '#ef5350', BK_DIFF = '#42a5f5'
 const BK_BG ='rgba(249,168,37,0.16)'   // row tint of a backed-up property
 
+const TONES = { danger: '#e53935', warn: '#f9a825', info: '#1e88e5' }
+
+// Popup used by the runtime properties panel: confirm (danger / warn) or a one-line prompt
+function PropsDialog({ dlg, onClose }) {
+  const [val, setVal] = useState(dlg.value || '')
+  const c = TONES[dlg.tone] || TONES.info
+  const ok = () => { onClose(); dlg.onOk(dlg.kind === 'prompt' ? val : undefined) }
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') onClose(); if (e.key === 'Enter' && dlg.kind === 'confirm') ok() }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  })
+  return (
+    <div className="modal-overlay" onMouseDown={onClose} style={{ backdropFilter: 'blur(2px)' }}>
+      <div onMouseDown={e => e.stopPropagation()} style={{ width: 440, maxWidth: '92vw', background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderTop: `4px solid ${c}`,
+        borderRadius: 12, boxShadow: '0 20px 50px rgba(0,0,0,0.45)', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', gap: 14, padding: '20px 22px 6px' }}>
+          <div style={{ width: 42, height: 42, borderRadius: '50%', background: c + '26', color: c, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>{dlg.icon}</div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>{dlg.title}</div>
+            {dlg.chip && <div style={{ display: 'inline-block', marginTop: 6, fontFamily: 'monospace', fontSize: 12, fontWeight: 600, padding: '2px 9px', borderRadius: 10, background: c + '26', color: c, wordBreak: 'break-all' }}>{dlg.chip}</div>}
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.5 }}>{dlg.message}</div>
+            {dlg.detail !== undefined && (
+              <div style={{ marginTop: 8, fontFamily: 'monospace', fontSize: 12, padding: '7px 10px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, wordBreak: 'break-all', maxHeight: 110, overflow: 'auto' }}>{dlg.detail}</div>
+            )}
+            {dlg.kind === 'prompt' && (
+              <input autoFocus value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') ok() }}
+                style={{ marginTop: 10, width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '7px 10px', background: 'var(--surface)', color: 'var(--text)', border: `1px solid ${c}`, borderRadius: 8, outline: 'none' }} />
+            )}
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '14px 22px 18px' }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn" autoFocus={dlg.kind === 'confirm'} disabled={dlg.kind === 'prompt' && !val.trim()} onClick={ok}
+            style={{ background: c, borderColor: c, color: dlg.tone === 'warn' ? '#1a1a1a' : '#fff', fontWeight: 600 }}>{dlg.confirmLabel || 'OK'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Runtime properties of an application (local or remote): the properties themselves live in the app / container,
 // while the properties-file path, the tags and the backups are kept in <app>\server_config.xlsx (sheet runtime_properties).
 export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '' }) {
@@ -24,6 +65,7 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
   const [newVal, setNewVal]   = useState('')
   const [newTag, setNewTag]   = useState('')
   const [busy, setBusy]       = useState(false)
+  const [dlg, setDlg]         = useState(null)   // styled confirm / prompt popup (replaces the browser's confirm / prompt)
   const [showAllBk, setShowAllBk] = useState(false)   // show the backed-up value under every backed-up row
   const [openBk, setOpenBk]   = useState({})          // ... or just under the rows clicked
 
@@ -76,6 +118,7 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
 
   return (
     <div className="card">
+      {dlg && <PropsDialog dlg={dlg} onClose={() => setDlg(null)} />}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <span style={{ fontWeight: 600, fontSize: 14 }}>Runtime Properties{d ? ` (${Object.keys(props).length})` : ''}</span>
         <button onClick={load} disabled={loading} className="btn btn-sm" style={sbtn}>
@@ -112,11 +155,12 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
         {tab !== 'All' && (
           <>
             <button className="btn btn-sm" style={sbtn} disabled={busy} title="Rename this tag" onClick={() => {
-              const n = window.prompt('New name for tag "' + tab + '"', tab)
-              if (n && n.trim() && n.trim() !== tab) post('tag', { op: 'rename', name: tab, new: n.trim() }).then(ok => { if (ok) setTab(n.trim()) })
+              setDlg({ kind: 'prompt', icon: '✎', tone: 'info', title: 'Rename tag', message: `Enter a new name for the tag "${tab}".`, value: tab, confirmLabel: 'Rename',
+                onOk: n => { if (n.trim() && n.trim() !== tab) post('tag', { op: 'rename', name: tab, new: n.trim() }).then(ok => { if (ok) setTab(n.trim()) }) } })
             }}>✎ Rename</button>
             <button className="btn btn-sm btn-danger" style={sbtn} disabled={busy} title="Delete this tag (its properties stay in All)" onClick={() => {
-              if (window.confirm(`Delete tag "${tab}"? Its properties stay in All, just untagged.`)) post('tag', { op: 'delete', name: tab }).then(ok => { if (ok) setTab('All') })
+              setDlg({ kind: 'confirm', icon: '🗑', tone: 'danger', title: 'Delete tag', message: 'Its properties stay in All, just untagged.', chip: tab, confirmLabel: 'Delete tag',
+                onOk: () => post('tag', { op: 'delete', name: tab }).then(ok => { if (ok) setTab('All') }) })
             }}>🗑 Delete tag</button>
           </>
         )}
@@ -126,7 +170,9 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8, fontSize: 12 }}>
         <button className="btn btn-sm" style={sbtn} disabled={busy || inTab.length === 0 && tab !== 'All'} onClick={() => post('backup', level, `Backed up ${scopeLabel}`)}>💾 Backup {scopeLabel}</button>
         <button className="btn btn-sm" style={sbtn} disabled={busy || !bk} onClick={() => {
-          if (window.confirm(`Toggle back ${scopeLabel} to the backup of ${bk.time}?${tab === 'All' ? '\nProperties added since the backup will be removed.' : ''}`)) post('restore', level, `Restored ${scopeLabel}`)
+          setDlg({ kind: 'confirm', icon: '↩', tone: 'warn', title: 'Restore backup', confirmLabel: 'Restore',
+            message: `Toggle back ${scopeLabel} to the backup taken ${bk.time}.` + (tab === 'All' ? ' Properties added since the backup will be removed.' : ' Only this tag\'s properties are touched.'),
+            onOk: () => post('restore', level, `Restored ${scopeLabel}`) })
         }}>↩ Restore {scopeLabel}</button>
         <span style={{ color: 'var(--text-muted)' }}>{bk ? `Last backup ${bk.time} (${bk.count} propert${bk.count === 1 ? 'y' : 'ies'})` : 'No backup yet'}</span>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto', cursor: 'pointer' }} title="Show the backed-up value under every backed-up row">
@@ -200,10 +246,12 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
                       onClick={() => setOpenBk(o => ({ ...o, [k]: !o[k] }))}>👁</button>{' '}</>}
                     <button className="btn btn-sm" style={{ ...sbtn, padding: '1px 6px' }} disabled={busy || !d?.keybackup?.[k]}
                       title={d?.keybackup?.[k] ? `Toggle back to "${d.keybackup[k].value}" (${d.keybackup[k].time})` : 'No individual backup for this property'}
-                      onClick={() => { if (window.confirm(`Toggle ${k} back to "${d.keybackup[k].value}"?`)) post('restore', { level: 'key', key: k }, `Restored ${k}`) }}>↩</button>
+                      onClick={() => setDlg({ kind: 'confirm', icon: '↩', tone: 'warn', title: 'Restore property', confirmLabel: 'Restore', chip: k,
+                        message: `Toggle back to the value saved ${d.keybackup[k].time}:`, detail: d.keybackup[k].value || '(empty)',
+                        onOk: () => post('restore', { level: 'key', key: k }, `Restored ${k}`) })}>↩</button>
                   </td>
                   <td style={{ ...cell, textAlign: 'center' }}>
-                    <button disabled={busy} title="Delete property" onClick={() => { if (window.confirm(`Delete ${k}?`)) crud('DELETE', '/' + encodeURIComponent(k)) }}
+                    <button disabled={busy} title="Delete property" onClick={() => setDlg({ kind: 'confirm', icon: '🗑', tone: 'danger', title: 'Delete property', message: 'This removes the property from the application.', chip: k, detail: String(props[k]) || '(empty)', confirmLabel: 'Delete', onOk: () => crud('DELETE', '/' + encodeURIComponent(k)) })}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f44336', fontSize: 14, padding: '2px 4px', lineHeight: 1 }}>🗑</button>
                   </td>
                 </tr>
