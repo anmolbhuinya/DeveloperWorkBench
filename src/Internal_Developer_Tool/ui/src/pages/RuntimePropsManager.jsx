@@ -65,7 +65,9 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
   const [newVal, setNewVal]   = useState('')
   const [newTag, setNewTag]   = useState('')
   const [busy, setBusy]       = useState(false)
-  const [dlg, setDlg]         = useState(null)   // styled confirm / prompt popup (replaces the browser's confirm / prompt)
+  const [copyMenu, setCopyMenu] = useState(null)   // 'tab' (whole tab) or a property key
+  useEffect(() => { if (copyMenu === null) return; const c = () => setCopyMenu(null); window.addEventListener('click', c); return () => window.removeEventListener('click', c) }, [copyMenu])
+  const [dlg, setDlg]         = useState(null)  // styled confirm / prompt popup (replaces the browser's confirm / prompt)
   const [showAllBk, setShowAllBk] = useState(false)   // show the backed-up value under every backed-up row
   const [openBk, setOpenBk]   = useState({})          // ... or just under the rows clicked
 
@@ -109,6 +111,25 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
   const level   = tab === 'All' ? { level: 'all' } : { level: 'tag', tag: tab }
   const bk      = d?.backups?.[tab === 'All' ? '*' : tab]
   const scopeLabel = tab === 'All' ? 'all properties' : `tag "${tab}"`
+
+  // Copy to the clipboard: mode 'pair' = key=value lines, 'key' = keys only, 'value' = values only
+  const copyText = async (keys, mode, what) => {
+    const text = keys.map(k => mode === 'key' ? k : mode === 'value' ? String(props[k]) : `${k}=${props[k]}`).join('\n')
+    try { await navigator.clipboard.writeText(text) }
+    catch {
+      const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select()
+      try { document.execCommand('copy') } catch { /* blocked */ }
+      t.remove()
+    }
+    setErr(''); setMsg(`Copied ${what} (${mode === 'key' ? 'key' : mode === 'value' ? 'value' : 'key=value'}${keys.length > 1 ? `, ${keys.length} lines` : ''})`)
+    setCopyMenu(null)
+  }
+  const copyItems = (keys, what) => [['pair', 'Key = Value'], ['key', 'Only key'], ['value', 'Only value']].map(([m, l]) => (
+    <div key={m} onClick={e => { e.stopPropagation(); copyText(keys, m, what) }}
+      style={{ padding: '6px 14px', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface)' }} onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>{l}</div>
+  ))
+  const menuBox = { position: 'absolute', zIndex: 20, marginTop: 2, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, boxShadow: '0 6px 18px rgba(0,0,0,0.35)', overflow: 'hidden' }
 
   const input = { background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 4, padding: '3px 7px', fontSize: 12 }
   const cell  = { padding: '5px 8px', fontSize: 12, verticalAlign: 'middle' }
@@ -175,6 +196,11 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
             onOk: () => post('restore', level, `Restored ${scopeLabel}`) })
         }}>↩ Restore {scopeLabel}</button>
         <span style={{ color: 'var(--text-muted)' }}>{bk ? `Last backup ${bk.time} (${bk.count} propert${bk.count === 1 ? 'y' : 'ies'})` : 'No backup yet'}</span>
+        <span style={{ position: 'relative' }}>
+          <button className="btn btn-sm" style={sbtn} disabled={rows.length === 0} title={`Copy the ${rows.length} listed propert${rows.length === 1 ? 'y' : 'ies'} of ${tab === 'All' ? 'All' : `tag "${tab}"`}`}
+            onClick={e => { e.stopPropagation(); setCopyMenu(copyMenu === 'tab' ? null : 'tab') }}>📋 Copy {scopeLabel} ▾</button>
+          {copyMenu === 'tab' && <div style={menuBox}>{copyItems(rows, scopeLabel)}</div>}
+        </span>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto', cursor: 'pointer' }} title="Show the backed-up value under every backed-up row">
           <input type="checkbox" checked={showAllBk} onChange={e => setShowAllBk(e.target.checked)} /> Show all backup values
         </label>
@@ -240,6 +266,11 @@ export default function RuntimePropsManager({ scope = 'local', appName, vmIp = '
                     </select>
                   </td>
                   <td style={{ ...cell, whiteSpace: 'nowrap' }}>
+                    <span style={{ position: 'relative' }}>
+                      <button className="btn btn-sm" style={{ ...sbtn, padding: '1px 6px' }} title="Copy this property"
+                        onClick={e => { e.stopPropagation(); setCopyMenu(copyMenu === k ? null : k) }}>📋</button>
+                      {copyMenu === k && <div style={{ ...menuBox, right: 0 }}>{copyItems([k], k)}</div>}
+                    </span>{' '}
                     <button className="btn btn-sm" style={{ ...sbtn, padding: '1px 6px' }} disabled={busy} title="Back up this property"
                       onClick={() => post('backup', { level: 'key', key: k }, `Backed up ${k}`)}>💾</button>{' '}
                     {bv && <><button className="btn btn-sm" style={{ ...sbtn, padding: '1px 6px' }} title="Show / hide the backed-up value of this property"
