@@ -16996,6 +16996,8 @@ def create_flask_app():
                     if body["status"] not in cfg["statuses"]:
                         return jsonify({"ok": False, "error": "Invalid status"}), 400
                     row[3].value = body["status"]
+                if "pushed" in body:                      # reopening clears the Git-pushed mark so the new result can be pushed again
+                    row[6].value = str(body["pushed"] or "")
                 row[5].value = _dt_h.datetime.now().strftime("%Y-%m-%d %H:%M")
                 item = {c: ("" if cell.value is None else str(cell.value)) for c, cell in zip(_HELP_COLS, row)}
             try:
@@ -18282,6 +18284,37 @@ def create_flask_app():
             pass
         return d
 
+    def _appmap_panel_off(app_name):
+        """True when the AppMap screen is switched off in the app's screen configuration (Observability tab, Traces, Traces > AppMap):
+        recording must not run for something that has been disabled there."""
+        try:
+            import openpyxl as _xl
+            f = _generic_app_root(app_name) / "screen_config.xlsx"
+            if not f.exists():
+                return False
+            wb = _xl.load_workbook(str(f), data_only=True)
+            try:
+                for r in wb.active.iter_rows(min_row=2, values_only=True):
+                    if not r or r[0] is None or r[1] is None:
+                        continue
+                    sec, key = str(r[0]).strip().lower(), str(r[1]).strip().lower()
+                    if (sec == "tabs" and key == "observability") or (sec == "panels" and key in ("obs_traces", "tr_appmap")):
+                        en = r[3] if len(r) > 3 else True
+                        if not (en if isinstance(en, bool) else str(en).strip().upper() not in ("FALSE", "0", "NO", "")):
+                            return True
+            finally:
+                wb.close()
+        except Exception:
+            pass
+        return False
+
+    def _appmap_active(app_name):
+        """Settings that decide whether the agent is attached (IT runs, app server start, recording pull)."""
+        d = _appmap_settings(app_name)
+        if d["enabled"] and _appmap_panel_off(app_name):
+            d["enabled"] = False
+        return d
+
     # ── App server (Docker Tomcat) recording: agent + appmap.yml are copied into the container and
     #    JAVA_TOOL_OPTIONS is exported before startServer; recordings are pulled back from /tmp/appmap/out ──
     def _appmap_container_name(app_name):
@@ -18302,7 +18335,7 @@ def create_flask_app():
 
     def _appmap_server_prefix(container, app_name):
         """Shell prefix 'export JAVA_TOOL_OPTIONS=...; ' for starting the app server with the agent ('' when AppMap is disabled)."""
-        st = _appmap_settings(app_name)
+        st = _appmap_active(app_name)
         if not st["enabled"] or not container:
             return ""
         jars = sorted(_appmap_lib().glob("appmap-agent-*.jar"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -18325,7 +18358,7 @@ def create_flask_app():
     def _appmap_pull(app_name):
         """Copy recordings written inside the container to <AppMap home>\\tmp\\appmap\\server."""
         c = _appmap_container_name(app_name)
-        if not c or not _appmap_settings(app_name)["enabled"]:
+        if not c or not _appmap_active(app_name)["enabled"]:
             return
         dst = _appmap_home(app_name) / "tmp" / "appmap" / "server"
         dst.mkdir(parents=True, exist_ok=True)
@@ -20293,7 +20326,8 @@ done
                 if k in b: d[k] = bool(b[k])
             h = _appmap_cfgdir(app_name)
             (h / "settings.json").write_text(_js_as.dumps(d), encoding="utf-8")
-        return jsonify({"ok": True, **d})
+        _off = _appmap_panel_off(app_name)
+        return jsonify({"ok": True, **d, "panel_off": _off, "effective_enabled": bool(d["enabled"] and not _off)})
 
     @app.route("/api/local-app/<app_name>/appmap/config", methods=["GET", "POST"])
     def api_appmap_config(app_name):
@@ -36329,6 +36363,9 @@ sys.exit(out.channel.recv_exit_status())
                 return jsonify({"ok": False, "error": "An AI run for this item is already in progress"})
         repo = PROJECTS_HOME.parent / "DWB_Workspace"
         what = "implement the following Wishlist feature" if kind == "features" else "fix the following bug"
+        if "--- Reopened" in desc:
+            what = ("re-do the following Wishlist feature - it was implemented before but the user is NOT satisfied" if kind == "features"
+                    else "fix the following bug again - an earlier fix did not satisfy the user") + " (see the 'Reopened' notes in the description for what is still wrong)"
         prompt = (
             f"In the Developer Workbench (DWB) application, {what}.\n\n"
             f"Title: {title}\n"
@@ -37494,7 +37531,7 @@ sys.exit(out.channel.recv_exit_status())
             _sd = _it_srcdir(app_name)
             _pm = Path(_sd) / "pom.xml" if _sd else None
             _ptxt = _pm.read_text(encoding="utf-8", errors="replace") if _pm and _pm.exists() else ""
-            _amset = _appmap_settings(app_name)
+            _amset = _appmap_active(app_name)
             if _amset["enabled"]:
                 import re as _re_am, urllib.request as _ur_am
                 _mv = _re_am.search(r"appmap-agent</artifactId>\s*<version>([^<]+)</version>", _ptxt)

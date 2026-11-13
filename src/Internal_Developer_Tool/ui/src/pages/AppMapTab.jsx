@@ -402,8 +402,9 @@ export default function AppMapTab({ appName, displayName }) {
   const [cfgText, setCfgText] = useState(C.cfg?.content ?? '')
   const [amSet, setAmSet] = useState(C.amSet ?? { enabled: false, record_values: false })
   useEffect(() => { Object.assign(C, { status, maps, file, m, view, cfg, amSet }) })
+  // always read the saved setting: the effect above already put the default (disabled) into C.amSet, so a cache check here
+  // would skip the fetch and show "disabled" while the server still has recording enabled
   useEffect(() => {
-    if (C.amSet) return
     fetch(`/api/local-app/${appName}/appmap/settings`).then(r => r.json()).then(d => { if (d.ok) setAmSet({ enabled: d.enabled, record_values: d.record_values }) }).catch(() => {})
   }, [appName])
   const saveSet = (patch) => {

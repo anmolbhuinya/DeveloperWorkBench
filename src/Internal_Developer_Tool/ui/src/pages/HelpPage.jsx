@@ -86,6 +86,17 @@ function Panel({ kind, title, noun, statuses, done, action }) {
     const next = it.status === done ? statuses[0] : done
     if (await call(`/api/help/${kind}/${it.id}`, 'PUT', { status: next })) load()
   }
+  // Reopen: back to the first status with the reason added to the description (the AI agent reads it), Git-pushed mark cleared
+  const [reopenIt, setReopenIt] = useState(null)
+  const [reopenWhy, setReopenWhy] = useState('')
+  const reopen = async () => {
+    const it = reopenIt, why = reopenWhy.trim()
+    if (!it || !why) return
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ')
+    const description = `${it.description ? it.description + '\n\n' : ''}--- Reopened ${stamp}: ${why}`
+    setReopenIt(null); setReopenWhy('')
+    if (await call(`/api/help/${kind}/${it.id}`, 'PUT', { status: statuses[0], description, pushed: '' })) load()
+  }
   const move = async (it, dir) => {
     if (await call(`/api/help/${kind}/${it.id}/move`, 'POST', { dir })) load()
   }
@@ -117,6 +128,25 @@ function Panel({ kind, title, noun, statuses, done, action }) {
         <div><button className="btn btn-sm btn-primary" disabled={busy || !draft.title.trim()} onClick={add}>+ Add {noun}</button></div>
       </div>
 
+      {reopenIt && (
+        <div onClick={() => setReopenIt(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', backdropFilter: 'blur(2px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: 480, maxWidth: '92vw', background: 'var(--bg)', color: 'var(--text)', borderRadius: 14, borderTop: '4px solid #f9a825', boxShadow: '0 20px 50px rgba(0,0,0,0.35)', overflow: 'hidden' }}>
+            <div style={{ padding: '20px 24px 6px', display: 'flex', gap: 14 }}>
+              <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'rgba(249,168,37,0.18)', color: '#f9a825', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>↻</div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>Reopen this {noun}?</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginTop: 6, wordBreak: 'break-word' }}>{reopenIt.title}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '8px 0 6px' }}>What is still wrong or missing? It is added to the description, so {action === 'Fix It' ? 'Fix It' : 'Implement'} sees it on the next run.</div>
+                <textarea autoFocus rows={4} value={reopenWhy} onChange={e => setReopenWhy(e.target.value)} placeholder="e.g. the button is still in the wrong place; the colour is not visible…" style={fieldStyle} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '14px 24px 18px' }}>
+              <button className="btn" onClick={() => setReopenIt(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={!reopenWhy.trim() || busy} onClick={reopen}>↻ Reopen</button>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmDel && (
         <div onClick={() => setConfirmDel(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', backdropFilter: 'blur(2px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div onClick={e => e.stopPropagation()} style={{ width: 420, maxWidth: '90vw', background: 'var(--bg)', color: 'var(--text)', borderRadius: 14, boxShadow: '0 20px 50px rgba(0,0,0,0.35)', overflow: 'hidden' }}>
@@ -184,6 +214,8 @@ function Panel({ kind, title, noun, statuses, done, action }) {
                       : <button className="btn btn-sm btn-primary" disabled={busy} onClick={() => gitPush(it)}
                           title={`git add . / commit "${kind === 'features' ? 'Wishlist' : 'Bug'}:${it.title}" / push (in DWB_Workspace)`}>GitPush</button>)
                   : <button className="btn btn-sm" onClick={() => { setEditId(it.id); setEdit({ title: it.title, description: it.description }) }}>✎ Edit</button>}
+                {it.status === done && <button className="btn btn-sm" disabled={busy || jobs[it.id]?.status === 'running'} style={{ borderColor: '#f9a825', color: '#f9a825' }}
+                  title={`Not satisfied? Reopen this ${noun} and say what is still wrong`} onClick={() => { setReopenIt(it); setReopenWhy('') }}>↻ Reopen</button>}
                 <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => setConfirmDel(it)}>Delete</button>
               </div>
               {jobs[it.id] && (
