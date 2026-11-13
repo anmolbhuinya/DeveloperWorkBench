@@ -32,11 +32,20 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
   const loadCfg = useCallback(() => fetch(vq(api)).then(r => r.json()).then(d => { if (d.ok) { setCfg(d); setDraft(d.settings) } }).catch(() => {}), [api, vmIp])
   useEffect(() => { loadCfg() }, [loadCfg])
 
+  const [cands, setCands] = useState([])     // cacerts files found in the container when the configured trust store is missing
   const load = async () => {
-    setLoading(true); setMsg(null)
+    setLoading(true); setMsg(null); setCands([])
     const d = await call('list')
     setLoading(false)
-    if (d.ok) setEntries(d.entries); else { setEntries(null); say(false, d.error) }
+    if (d.ok) {
+      setEntries(d.entries)
+      if (d.settings) { setCfg(c => ({ ...c, settings: d.settings })); setDraft(d.settings) }
+      if (d.auto) say(true, d.auto)
+    } else { setEntries(null); setCands(d.candidates || []); say(false, d.error) }
+  }
+  const useStore = async p => {
+    setBusy('settings'); const d = await call('settings', { ...draft, trust_store: p }); setBusy('')
+    if (d.ok) { setCfg(c => ({ ...c, settings: d.settings })); setDraft(d.settings); load() } else say(false, d.error)
   }
   const loadFiles = async () => { const d = await call('temp'); if (d.ok) setFiles(d.files); else say(false, d.error) }
   useEffect(() => { if (tab === 'store' && entries === null && cfg && !cfg.container_error) load(); if (tab === 'import' && cfg && !cfg.container_error) loadFiles() }, [tab, cfg?.container, cfg?.container_error])
@@ -100,6 +109,16 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
       </div>
       {cfg?.container_error && <div className="alert alert-error" style={{ fontSize: 12, marginBottom: 8 }}>{cfg.container_error} <button className="btn btn-sm" style={sbtn} onClick={loadCfg}>↻ Retry</button></div>}
       {msg && <div style={{ fontSize: 12, marginBottom: 8, color: msg.ok ? '#2e7d32' : '#c62828', whiteSpace: 'pre-wrap' }}>{msg.ok ? '✓ ' : '⚠ '}{msg.text}</div>}
+      {cands.length > 0 && (
+        <div style={{ marginBottom: 8, padding: '8px 10px', border: '1px dashed #f9a825', borderRadius: 6, background: 'rgba(249,168,37,0.10)' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Trust stores found in this container</div>
+          {cands.map(p => (
+            <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+              <code style={{ fontSize: 12, flex: 1, wordBreak: 'break-all' }}>{p}</code>
+              <button className="btn btn-sm btn-primary" style={sbtn} disabled={busy === 'settings'} onClick={() => useStore(p)}>Use this</button>
+            </div>))}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button style={tabBtn(tab === 'store')} onClick={() => setTab('store')}>Trust store{entries ? ` (${entries.length})` : ''}</button>

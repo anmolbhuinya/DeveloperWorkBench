@@ -28647,7 +28647,8 @@ done
     _CM_DEFAULTS = {"trust_store": "/home/weblogic/java/lib/security/cacerts", "temp_dir": "/tmp/certs",
                     "store_password": "changeit", "keytool": "keytool"}
 
-    def _cm_settings(root):
+    def _cm_settings(root, explicit=None):
+        """Settings with defaults; `explicit` (a set) receives the names that were saved in the sheet."""
         import openpyxl as _xl
         out = dict(_CM_DEFAULTS)
         f = Path(root) / "server_config.xlsx"
@@ -28658,9 +28659,22 @@ done
                     for r in wb[_CM_SHEET].iter_rows(min_row=2, values_only=True):
                         if r and r[0] and str(r[0]).strip() in _CM_DEFAULTS and r[1] not in (None, ""):
                             out[str(r[0]).strip()] = str(r[1]).strip()
+                            if explicit is not None: explicit.add(str(r[0]).strip())
             finally:
                 wb.close()
         return out
+
+    def _cm_candidates(scope, app_name, kt):
+        """cacerts files that exist in the container (JAVA_HOME first), best guess first."""
+        ok, out = _cm_exec(scope, app_name,
+            'for p in "$JAVA_HOME/lib/security/cacerts" "$JAVA_HOME/jre/lib/security/cacerts" /home/weblogic/java/lib/security/cacerts '
+            '/opt/java/jdk-current/lib/security/cacerts /etc/pki/ca-trust/extracted/java/cacerts /etc/ssl/certs/java/cacerts; do [ -f "$p" ] && echo "$p"; done; '
+            'find / -xdev -name cacerts -type f 2>/dev/null | head -8', timeout=60)
+        seen, res = set(), []
+        for ln in (out.splitlines() if ok else []):
+            ln = ln.strip()
+            if ln.startswith("/") and ln not in seen and _CM_PATH.match(ln): seen.add(ln); res.append(ln)
+        return res
 
     def _cm_save_settings(root, upd):
         import openpyxl as _xl
@@ -28783,7 +28797,21 @@ done
                     if v: upd[k] = v
                 _cm_save_settings(root, upd)
                 return jsonify({"ok": True, "settings": _cm_settings(root)})
-            st = _cm_settings(root)
+            explicit = set()
+            st = _cm_settings(root, explicit)
+            auto = ""
+            if action in ("list", "backup", "backups", "delete", "import"):
+                ok, _o = _cm_exec(scope, app_name, f"[ -f {q(st['trust_store'])} ]")
+                tgt, _e = _cm_target(scope, app_name)
+                if not ok and tgt and _e == "":
+                    cands = _cm_candidates(scope, app_name, st["keytool"])
+                    if "trust_store" not in explicit and cands:         # never saved: use what this container really has
+                        auto = f"{st['trust_store']} does not exist in this container - using {cands[0]}"
+                        _cm_save_settings(root, {"trust_store": cands[0]})
+                        st = _cm_settings(root, explicit)
+                    else:
+                        return jsonify({"ok": False, "candidates": cands, "trust_store": st["trust_store"],
+                                        "error": f"Trust store {st['trust_store']} does not exist in this container." + (" Pick one of the trust stores found below, or correct the path above." if cands else " No cacerts file was found - set the trust store path above.")})
             ts, td, pw, kt = st["trust_store"], st["temp_dir"], st["store_password"], st["keytool"]
 
             def backup():
@@ -28793,7 +28821,7 @@ done
                 ok, out = _cm_exec(scope, app_name, f"{q(kt)} -list -v -keystore {q(ts)} -storepass {q(pw)}", timeout=120)
                 if not ok: return jsonify({"ok": False, "error": out or "keytool failed"})
                 ents = _cm_parse_entries(out)
-                return jsonify({"ok": True, "entries": ents, "total": len(ents), "trust_store": ts})
+                return jsonify({"ok": True, "entries": ents, "total": len(ents), "trust_store": ts, "settings": st, "auto": auto})
             if action == "backup":
                 ok, out = backup()
                 if not ok: return jsonify({"ok": False, "error": out or f"Could not back up {ts}"})

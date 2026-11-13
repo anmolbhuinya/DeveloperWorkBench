@@ -2869,6 +2869,7 @@ export function AppServerTab({ appName, displayName, serverType }) {
         ? <KarafRightPanel base={`/api/local-app/${appName}/karaf`} />
         : serverType === 'tomcat'
         ? <TomcatRightPanel
+            appName={appName}
             base={`/api/local-app/${appName}/tomcat`}
             query=""
             propertiesPanel={<RuntimePropertiesPanel appName={appName} />}
