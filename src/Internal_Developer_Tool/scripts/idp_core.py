@@ -28640,6 +28640,233 @@ done
             return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"})
         return jsonify(_rp_state(scope, app_name))
 
+    # ── Certificate management: keytool inside the app's container (local docker, or the VM over SSH) ──
+    # Settings live in <app>\server_config.xlsx, sheet certificate_management (Setting | Value).
+    import base64 as _b64, shlex as _shx
+    _CM_SHEET = "certificate_management"
+    _CM_DEFAULTS = {"trust_store": "/home/weblogic/java/lib/security/cacerts", "temp_dir": "/tmp/certs",
+                    "store_password": "changeit", "keytool": "keytool"}
+
+    def _cm_settings(root):
+        import openpyxl as _xl
+        out = dict(_CM_DEFAULTS)
+        f = Path(root) / "server_config.xlsx"
+        if f.exists():
+            wb = _xl.load_workbook(str(f), data_only=True)
+            try:
+                if _CM_SHEET in wb.sheetnames:
+                    for r in wb[_CM_SHEET].iter_rows(min_row=2, values_only=True):
+                        if r and r[0] and str(r[0]).strip() in _CM_DEFAULTS and r[1] not in (None, ""):
+                            out[str(r[0]).strip()] = str(r[1]).strip()
+            finally:
+                wb.close()
+        return out
+
+    def _cm_save_settings(root, upd):
+        import openpyxl as _xl
+        with _rp_lock:
+            Path(root).mkdir(parents=True, exist_ok=True)
+            f = Path(root) / "server_config.xlsx"
+            wb = _xl.load_workbook(str(f)) if f.exists() else _xl.Workbook()
+            if _CM_SHEET in wb.sheetnames:
+                ws = wb[_CM_SHEET]
+            else:
+                ws = wb.create_sheet(_CM_SHEET)
+                if not f.exists() and "Sheet" in wb.sheetnames and len(wb.sheetnames) == 2:
+                    del wb["Sheet"]
+            ws.cell(row=1, column=1, value="Setting"); ws.cell(row=1, column=2, value="Value")
+            rows = {str(ws.cell(row=i, column=1).value or "").strip(): i for i in range(2, ws.max_row + 1)}
+            for k, v in upd.items():
+                r = rows.get(k) or ws.max_row + 1
+                ws.cell(row=r, column=1, value=k); ws.cell(row=r, column=2, value=v)
+                rows[k] = r
+            wb.save(str(f))
+
+    def _cm_target(scope, app_name):
+        """(container, vm_ip) of the application, or an error string."""
+        if scope == "remote":
+            vm_ip = request.args.get("vm_ip") or _REMOTE_DEV_DEFAULT_VM
+            return (_read_remote_app_config(app_name).get("container", app_name), vm_ip), ""
+        c = _appmap_container_name(app_name)
+        if not c: return None, "No container is configured for this application"
+        if not _docker_container_running(c): return None, f"Container {c} is not running - start the app server first"
+        return (c, ""), ""
+
+    def _cm_exec(scope, app_name, cmd, stdin=None, timeout=90):
+        """Run a shell command inside the container. -> (ok, output). stdin (bytes) is piped to the command."""
+        tgt, err = _cm_target(scope, app_name)
+        if not tgt: return False, err
+        container, vm_ip = tgt
+        wrapped = f"( {cmd} ) 2>&1; echo __DWB_RC=$?"
+        try:
+            if scope == "remote":
+                inner = wrapped if stdin is None else f"printf %s {_shx.quote(_b64.b64encode(stdin).decode())} | base64 -d | ( {cmd} ) 2>&1; echo __DWB_RC=$?"
+                ok, out, e = _ssh_run(vm_ip, f"docker exec {_shx.quote(container)} sh -c {_shx.quote(inner)}", timeout=timeout)
+                if not ok: return False, e or "SSH failed"
+                text = out + ("\n" + e if e else "")
+            else:
+                import subprocess as _sp
+                args = ["docker", "exec"] + (["-i"] if stdin is not None else []) + [container, "sh", "-c", wrapped]
+                r = _sp.run(args, input=stdin, capture_output=True, timeout=timeout, creationflags=0x08000000 if sys.platform == "win32" else 0)
+                text = r.stdout.decode("utf-8", "replace") + r.stderr.decode("utf-8", "replace")
+        except Exception as ex:
+            return False, f"{type(ex).__name__}: {ex}"
+        m = _re_team.search(r"__DWB_RC=(\d+)\s*$", text)
+        rc = int(m.group(1)) if m else 1
+        return rc == 0, (text[:m.start()] if m else text).strip()
+
+    def _cm_parse_entries(text):
+        import datetime as _d
+        res = []
+        parts = _re_team.split(r"(?m)^Alias name:\s*", text)[1:]
+        for blk in parts:
+            alias = blk.split("\n", 1)[0].strip()
+            def g(label):
+                mm = _re_team.search(r"(?m)^" + label + r":\s*(.*)$", blk)
+                return mm.group(1).strip() if mm else ""
+            owner, issuer = g("Owner"), g("Issuer")
+            mv = _re_team.search(r"Valid from:\s*(.*?)\s+until:\s*(.*)", blk)
+            vfrom, vuntil = (mv.group(1).strip(), mv.group(2).strip()) if mv else ("", "")
+            expired = False
+            try:
+                mu = _re_team.search(r"(\w{3}) (\d{1,2}) [\d:]+ \w+ (\d{4})", vuntil)
+                if mu: expired = _d.datetime.strptime(f"{mu.group(1)} {mu.group(2)} {mu.group(3)}", "%b %d %Y") < _d.datetime.now()
+            except Exception:
+                pass
+            cn = _re_team.search(r"CN=([^,]+)", owner)
+            sha = _re_team.search(r"SHA-?256:\s*([0-9A-Fa-f:]+)", blk)
+            res.append({"alias": alias, "type": g("Entry type"), "created": g("Creation date"), "subject": owner,
+                        "cn": cn.group(1).strip() if cn else (owner[:60] or alias), "issuer": issuer, "serial": g("Serial number"),
+                        "valid_from": vfrom, "valid_until": vuntil, "expired": expired, "sig_alg": g("Signature algorithm name"),
+                        "sha256": sha.group(1) if sha else "", "detail": ("Alias name: " + blk).rstrip().rstrip("*").rstrip()})
+        return res
+
+    def _cm_printcert(scope, app_name, st, path):
+        ok, out = _cm_exec(scope, app_name, f"{_shx.quote(st['keytool'])} -printcert -file {_shx.quote(path)}")
+        if not ok: return None, out
+        mv = _re_team.search(r"Valid from:\s*(.*?)\s+until:\s*(.*)", out)
+        g = lambda l: (_re_team.search(r"(?m)^" + l + r":\s*(.*)$", out) or [None, ""])[1].strip()
+        sha = _re_team.search(r"SHA-?256:\s*([0-9A-Fa-f:]+)", out)
+        return {"subject": g("Owner"), "issuer": g("Issuer"), "serial": g("Serial number"), "valid_from": mv.group(1).strip() if mv else "",
+                "valid_until": mv.group(2).strip() if mv else "", "sha256": sha.group(1) if sha else "", "detail": out}, ""
+
+    _CM_NAME = _re_team.compile(r"^[\w.\-]{1,120}$")
+    _CM_ALIAS = _re_team.compile(r"^[\w.\-@: ]{1,100}$")
+    _CM_PATH = _re_team.compile(r"^/[\w./\-]{1,250}$")
+
+    @app.route("/api/cm/<scope>/<app_name>", methods=["GET"])
+    def api_cm_state(scope, app_name):
+        if scope not in ("local", "remote") or app_name not in (_ALL_REMOTE_APPS if scope == "remote" else _KNOWN_GENERIC_LOCAL_APPS):
+            return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
+        root = _rp_root(scope, app_name)
+        tgt, err = _cm_target(scope, app_name)
+        return jsonify({"ok": True, "settings": _cm_settings(root), "defaults": _CM_DEFAULTS, "config_file": str(Path(root) / "server_config.xlsx"),
+                        "container": tgt[0] if tgt else "", "container_error": err})
+
+    @app.route("/api/cm/<scope>/<app_name>/<action>", methods=["POST"])
+    def api_cm_action(scope, app_name, action):
+        if scope not in ("local", "remote") or app_name not in (_ALL_REMOTE_APPS if scope == "remote" else _KNOWN_GENERIC_LOCAL_APPS):
+            return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
+        b = request.get_json() or {}
+        root = _rp_root(scope, app_name)
+        q = _shx.quote
+        try:
+            if action == "settings":
+                upd = {}
+                for k in ("trust_store", "temp_dir"):
+                    v = str(b.get(k) or "").strip()
+                    if v:
+                        if not _CM_PATH.match(v): return jsonify({"ok": False, "error": f"{k}: use an absolute path such as {_CM_DEFAULTS[k]}"})
+                        upd[k] = v
+                for k in ("store_password", "keytool"):
+                    v = str(b.get(k) or "").strip()
+                    if v: upd[k] = v
+                _cm_save_settings(root, upd)
+                return jsonify({"ok": True, "settings": _cm_settings(root)})
+            st = _cm_settings(root)
+            ts, td, pw, kt = st["trust_store"], st["temp_dir"], st["store_password"], st["keytool"]
+
+            def backup():
+                ok, out = _cm_exec(scope, app_name, f"[ -f {q(ts)} ] && cp -p {q(ts)} \"{ts}.bak_$(date +%F)\" && ls -1 {q(ts)}.bak_* 2>/dev/null")
+                return ok, out
+            if action == "list":
+                ok, out = _cm_exec(scope, app_name, f"{q(kt)} -list -v -keystore {q(ts)} -storepass {q(pw)}", timeout=120)
+                if not ok: return jsonify({"ok": False, "error": out or "keytool failed"})
+                ents = _cm_parse_entries(out)
+                return jsonify({"ok": True, "entries": ents, "total": len(ents), "trust_store": ts})
+            if action == "backup":
+                ok, out = backup()
+                if not ok: return jsonify({"ok": False, "error": out or f"Could not back up {ts}"})
+                return jsonify({"ok": True, "backups": out.splitlines()})
+            if action == "backups":
+                ok, out = _cm_exec(scope, app_name, f"ls -1 {q(ts)}.bak_* 2>/dev/null; true")
+                return jsonify({"ok": True, "backups": [x for x in out.splitlines() if x.strip()]})
+            if action == "delete":
+                alias = str(b.get("alias") or "")
+                if not _CM_ALIAS.match(alias): return jsonify({"ok": False, "error": "Invalid alias"})
+                if b.get("backup", True):
+                    ok, out = backup()
+                    if not ok: return jsonify({"ok": False, "error": "Backup failed, nothing deleted: " + out})
+                ok, out = _cm_exec(scope, app_name, f"{q(kt)} -delete -alias {q(alias)} -keystore {q(ts)} -storepass {q(pw)}")
+                return jsonify({"ok": ok, "error": "" if ok else out})
+            if action == "upload":
+                name = str(b.get("name") or "")
+                if not _CM_NAME.match(name): return jsonify({"ok": False, "error": "File name: letters, digits, . _ - only"})
+                try: data = _b64.b64decode(str(b.get("content") or ""), validate=False)
+                except Exception: return jsonify({"ok": False, "error": "Invalid file content"})
+                if not data or len(data) > 2_000_000: return jsonify({"ok": False, "error": "File is empty or larger than 2 MB"})
+                ok, out = _cm_exec(scope, app_name, f"mkdir -p {q(td)} && cat > {q(td + '/' + name)}", stdin=data)
+                return jsonify({"ok": ok, "error": "" if ok else out, "file": name})
+            if action == "temp":
+                ok, out = _cm_exec(scope, app_name, f"cd {q(td)} 2>/dev/null && for f in *; do [ -f \"$f\" ] || continue; echo \"$f|$(wc -c < \"$f\")|$(grep -c 'BEGIN CERTIFICATE' \"$f\")\"; done; true")
+                files = []
+                for ln in out.splitlines():
+                    p = ln.split("|")
+                    if len(p) == 3 and p[1].strip().isdigit(): files.append({"name": p[0], "size": int(p[1]), "certs": int(p[2] or 0)})
+                return jsonify({"ok": True, "files": files, "temp_dir": td})
+            if action == "temp-delete":
+                name = str(b.get("file") or "")
+                if not _CM_NAME.match(name): return jsonify({"ok": False, "error": "Invalid file name"})
+                ok, out = _cm_exec(scope, app_name, f"rm -f {q(td + '/' + name)}")
+                return jsonify({"ok": ok, "error": "" if ok else out})
+            if action == "split":                                    # full chain -> one PEM per certificate, each importable on its own
+                name = str(b.get("file") or "")
+                if not _CM_NAME.match(name): return jsonify({"ok": False, "error": "Invalid file name"})
+                ok, txt = _cm_exec(scope, app_name, f"cat {q(td + '/' + name)}")
+                if not ok: return jsonify({"ok": False, "error": txt})
+                pems = _re_team.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", txt, _re_team.S)
+                if not pems: return jsonify({"ok": False, "error": "No PEM certificates (-----BEGIN CERTIFICATE-----) found in this file"})
+                base = _re_team.sub(r"\.[^.]*$", "", name) or name
+                parts = []
+                for i, pem in enumerate(pems, 1):
+                    fn = f"{base}_{i}.pem"
+                    ok, out = _cm_exec(scope, app_name, f"cat > {q(td + '/' + fn)}", stdin=(pem + "\n").encode())
+                    if not ok: return jsonify({"ok": False, "error": f"{fn}: {out}"})
+                    info, e = _cm_printcert(scope, app_name, st, td + "/" + fn)
+                    info = info or {"subject": "", "issuer": "", "valid_from": "", "valid_until": "", "sha256": "", "serial": "", "detail": e}
+                    cn = _re_team.search(r"CN=([^,]+)", info["subject"])
+                    alias = _re_team.sub(r"[^\w.\-]+", "_", (cn.group(1) if cn else f"{base}_{i}").strip()).strip("_").lower()[:60] or f"{base}_{i}"
+                    parts.append({"file": fn, "index": i, "alias": alias, **info, "self_signed": bool(info["subject"]) and info["subject"] == info["issuer"]})
+                return jsonify({"ok": True, "parts": parts, "count": len(parts)})
+            if action == "import":
+                name, alias = str(b.get("file") or ""), str(b.get("alias") or "").strip()
+                pw2 = str(b.get("password") or "").strip() or pw
+                if not _CM_NAME.match(name): return jsonify({"ok": False, "error": "Invalid file name"})
+                if not _CM_ALIAS.match(alias): return jsonify({"ok": False, "error": "Alias: letters, digits, . _ - @ : and spaces (max 100)"})
+                ok, cnt = _cm_exec(scope, app_name, f"grep -c 'BEGIN CERTIFICATE' {q(td + '/' + name)}")
+                if ok and cnt.strip().isdigit() and int(cnt) > 1:
+                    return jsonify({"ok": False, "error": f"{name} holds {cnt.strip()} certificates (a chain). Use Split chain, then import each certificate."})
+                if b.get("backup", True):
+                    ok, out = backup()
+                    if not ok: return jsonify({"ok": False, "error": "Backup failed, nothing imported: " + out})
+                ok, out = _cm_exec(scope, app_name, f"{q(kt)} -importcert -noprompt -trustcacerts -alias {q(alias)} -file {q(td + '/' + name)} -keystore {q(ts)} -storepass {q(pw2)}")
+                return jsonify({"ok": ok, "error": "" if ok else out, "message": out if ok else ""})
+            return jsonify({"ok": False, "error": f"Unknown action: {action}"}), 404
+        except PermissionError:
+            return jsonify({"ok": False, "error": "server_config.xlsx is open in another program - close it and try again"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"})
+
     # ── Per-app screen configuration (driven by screen_config.xlsx) ─────────────
 
     def _read_build_flags_sheet(wb):

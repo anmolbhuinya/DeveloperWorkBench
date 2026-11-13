@@ -4,6 +4,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import { useGridView, SortableTh, FilterRow, RowMenu, RelationsModal, TableRelationsModal, SchemaRelationsModal } from './ResultTools'
 import { ConfigureModal, KarafRightPanel, GpRunPanel, ColoredTerminal, AiDevCard } from './LocalAppShared'
 import RuntimePropsManager from './RuntimePropsManager'
+import CertificateManager from './CertificateManager'
 export { KarafRightPanel }
 
 // Shared localStorage TTL cache (same keys as GenericRemoteAppPage / RemoteAppDevPage)
@@ -2179,7 +2180,7 @@ export function RemoteSimpleServerTab({ vmIp, appName, displayName }) {
 
 // ── Runtime Properties Panel (used by RemoteAppServerTab) ─────────────────────
 function SharedRuntimePropertiesPanel({ vmIp, appName }) {
-  return <RuntimePropsManager scope="remote" appName={appName} vmIp={vmIp} />
+  return <><RuntimePropsManager scope="remote" appName={appName} vmIp={vmIp} /><CertificateManager scope="remote" appName={appName} vmIp={vmIp} /></>
 }
 
 // previous plain list, kept for reference (no longer used)

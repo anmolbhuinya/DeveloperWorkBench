@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom'
 import { useGridView, SortableTh, FilterRow, RowMenu, RelationsModal, TableRelationsModal, SchemaRelationsModal } from './ResultTools'
 import { TomcatRightPanel } from './RemoteAppShared'
 import RuntimePropsManager from './RuntimePropsManager'
+import CertificateManager from './CertificateManager'
 
 function CopyButton({ text, label, style: extraStyle }) {
   const [copied, setCopied] = useState(false)
@@ -1539,7 +1540,7 @@ export function StatusBadge({ running }) {
 
 // Runtime properties with file path, tags and backups (backed by server_config.xlsx) - see RuntimePropsManager
 export function RuntimePropertiesPanel({ appName }) {
-  return <RuntimePropsManager scope="local" appName={appName} />
+  return <><RuntimePropsManager scope="local" appName={appName} /><CertificateManager scope="local" appName={appName} /></>
 }
 
 // previous plain list, kept for reference (no longer used)
