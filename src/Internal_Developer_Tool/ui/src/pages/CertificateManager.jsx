@@ -27,6 +27,11 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
   const [busy, setBusy]     = useState('')
   const [msg, setMsg]       = useState(null)       // { ok, text }
   const [dlg, setDlg]       = useState(null)
+  const [labels, setLabels]   = useState([])        // labels (categories) defined for certificates
+  const [certmap, setCertmap] = useState({})        // alias -> label
+  const [cat, setCat]         = useState('All')     // label tab shown in the trust store
+  const [newLabel, setNewLabel] = useState('')
+  const [bkList, setBkList]   = useState(null)      // backups of the trust store [{file,name,size,time,certs}]
 
   const say = (ok, text) => setMsg({ ok, text })
   const loadCfg = useCallback(() => fetch(vq(api)).then(r => r.json()).then(d => { if (d.ok) { setCfg(d); setDraft(d.settings) } }).catch(() => {}), [api, vmIp])
@@ -38,7 +43,7 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
     const d = await call('list')
     setLoading(false)
     if (d.ok) {
-      setEntries(d.entries)
+      setEntries(d.entries); setLabels(d.labels || []); setCertmap(d.certmap || {})
       if (d.settings) { setCfg(c => ({ ...c, settings: d.settings })); setDraft(d.settings) }
       if (d.auto) say(true, d.auto)
     } else { setEntries(null); setCands(d.candidates || []); say(false, d.error) }
@@ -47,8 +52,9 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
     setBusy('settings'); const d = await call('settings', { ...draft, trust_store: p }); setBusy('')
     if (d.ok) { setCfg(c => ({ ...c, settings: d.settings })); setDraft(d.settings); load() } else say(false, d.error)
   }
+  const loadBackups = async () => { const d = await call('backups'); if (d.ok) setBkList(d.backups); else say(false, d.error) }
   const loadFiles = async () => { const d = await call('temp'); if (d.ok) setFiles(d.files); else say(false, d.error) }
-  useEffect(() => { if (tab === 'store' && entries === null && cfg && !cfg.container_error) load(); if (tab === 'import' && cfg && !cfg.container_error) loadFiles() }, [tab, cfg?.container, cfg?.container_error])
+  useEffect(() => { if (tab === 'store' && entries === null && cfg && !cfg.container_error) load(); if (tab === 'import' && cfg && !cfg.container_error) loadFiles(); if (tab === 'backup' && cfg && !cfg.container_error) loadBackups() }, [tab, cfg?.container, cfg?.container_error])
 
   const saveSettings = async () => {
     setBusy('settings'); const d = await call('settings', draft); setBusy('')
@@ -56,8 +62,17 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
   }
   const doBackup = async () => {
     setBusy('backup'); const d = await call('backup'); setBusy('')
-    if (d.ok) { setBackups(d.backups); say(true, `Backed up to ${d.backups[d.backups.length - 1] || 'a .bak_<date> file'}`) } else say(false, d.error)
+    if (d.ok) { setBackups(d.backups); say(true, `Backed up to ${d.backups[d.backups.length - 1] || 'a .bak_<date> file'}`); if (tab === 'backup') loadBackups() } else say(false, d.error)
   }
+  const revert = b => setDlg({ icon: '↩', tone: '#f9a825', title: 'Revert trust store', chip: b.name, confirmLabel: 'Revert',
+    message: `Replace ${cfg.settings.trust_store} with this backup (${b.time}${b.certs != null ? `, ${b.certs} certificates` : ''}). The current trust store is saved first as ..._before_restore.`,
+    onOk: async () => { setBusy('rev:' + b.file); const d = await call('restore', { file: b.file }); setBusy(''); if (d.ok) { say(true, `Trust store reverted to ${b.name}`); setEntries(null); loadBackups() } else say(false, d.error) } })
+  // labels: create / rename / delete, and label one certificate
+  const labelOp = async (op, name, nw) => {
+    setBusy('label'); const d = await call('label', { op, name, new: nw }); setBusy('')
+    if (d.ok) { setLabels(d.labels); setCertmap(d.certmap); return true } say(false, d.error); return false
+  }
+  const assign = async (alias, label) => { const d = await call('assign', { alias, label }); if (d.ok) { setLabels(d.labels); setCertmap(d.certmap) } else say(false, d.error) }
   const del = a => setDlg({ icon: '🗑', tone: '#e53935', title: 'Delete certificate', chip: a.alias, confirmLabel: 'Delete', message: `This removes the alias from ${cfg.settings.trust_store}.${bk ? ' The trust store is backed up first.' : ' No backup will be taken.'}`,
     onOk: async () => { setBusy('del:' + a.alias); const d = await call('delete', { alias: a.alias, backup: bk }); setBusy(''); if (d.ok) { say(true, `Deleted ${a.alias}`); load() } else say(false, d.error) } })
   const upload = async file => {
@@ -80,7 +95,8 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
   const rmTemp = async file => { const d = await call('temp-delete', { file }); if (d.ok) { setSplit(s => { const n = { ...s }; delete n[file]; return n }); loadFiles() } else say(false, d.error) }
 
   const q = filter.trim().toLowerCase()
-  const shown = (entries || []).filter(e => !q || `${e.alias} ${e.subject} ${e.issuer} ${e.sha256} ${e.serial}`.toLowerCase().includes(q))
+  const inCat = e => cat === 'All' || certmap[e.alias] === cat
+  const shown = (entries || []).filter(e => inCat(e) && (!q || `${e.alias} ${e.subject} ${e.issuer} ${e.sha256} ${e.serial}`.toLowerCase().includes(q)))
   const input = { background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: 4, padding: '3px 7px', fontSize: 12 }
   const cell  = { padding: '5px 8px', fontSize: 12, verticalAlign: 'top' }
   const sbtn  = { fontSize: 11, padding: '2px 9px' }
@@ -122,6 +138,7 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button style={tabBtn(tab === 'store')} onClick={() => setTab('store')}>Trust store{entries ? ` (${entries.length})` : ''}</button>
+        <button style={tabBtn(tab === 'backup')} onClick={() => setTab('backup')}>Backup{bkList ? ` (${bkList.length})` : ''}</button>
         <button style={tabBtn(tab === 'import')} onClick={() => setTab('import')}>Upload / Import</button>
         <label style={{ marginLeft: 'auto', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }} title="Copies the trust store to <trust store>.bak_<yyyy-mm-dd> before deleting or importing">
           <input type="checkbox" checked={bk} onChange={e => setBk(e.target.checked)} /> Back up the trust store before delete / import
@@ -130,6 +147,21 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
 
       {tab === 'store' && (
         <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            <button style={tabBtn(cat === 'All')} onClick={() => setCat('All')}>All{entries ? ` (${entries.length})` : ''}</button>
+            {labels.map(l => <button key={l} style={tabBtn(cat === l)} onClick={() => setCat(l)}>{l} <span style={{ opacity: 0.8, fontWeight: 400 }}>({Object.values(certmap).filter(x => x === l).length})</span></button>)}
+            <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="New label" style={{ ...input, width: 110 }}
+              onKeyDown={e => { if (e.key === 'Enter' && newLabel.trim()) labelOp('create', newLabel.trim()).then(ok => { if (ok) { setCat(newLabel.trim()); setNewLabel('') } }) }} />
+            <button className="btn btn-sm" style={sbtn} disabled={busy === 'label' || !newLabel.trim()} onClick={() => labelOp('create', newLabel.trim()).then(ok => { if (ok) { setCat(newLabel.trim()); setNewLabel('') } })}>+ Label</button>
+            {cat !== 'All' && (
+              <>
+                <button className="btn btn-sm" style={sbtn} onClick={() => setDlg({ kind: 'prompt', icon: '✎', tone: '#1e88e5', title: 'Rename label', message: `Enter a new name for "${cat}".`, value: cat, confirmLabel: 'Rename',
+                  onOk: n => { if (n.trim() && n.trim() !== cat) labelOp('rename', cat, n.trim()).then(ok => { if (ok) setCat(n.trim()) }) } })}>✎ Rename</button>
+                <button className="btn btn-sm btn-danger" style={sbtn} onClick={() => setDlg({ icon: '🗑', tone: '#e53935', title: 'Delete label', chip: cat, confirmLabel: 'Delete label', message: 'Its certificates stay in the trust store, just without a label.',
+                  onOk: () => labelOp('delete', cat).then(ok => { if (ok) setCat('All') }) })}>🗑 Delete label</button>
+              </>
+            )}
+          </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
             <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔍 Filter by alias, subject, issuer, fingerprint, serial…" style={{ ...input, flex: 1, minWidth: 260 }} />
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{entries ? `${shown.length} of ${entries.length}` : ''}</span>
@@ -141,14 +173,22 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
             <div style={{ maxHeight: 460, overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: 5 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead><tr style={{ background: 'var(--bg-secondary)', position: 'sticky', top: 0, zIndex: 1 }}>
-                  {['', 'Alias', 'Subject (CN)', 'Issuer', 'Valid until', 'SHA-256', ''].map((h, i) => <th key={i} style={{ ...cell, textAlign: 'left', fontWeight: 600, borderBottom: '1px solid var(--border-color)' }}>{h}</th>)}
+                  {['', 'Alias', 'Label', 'Subject (CN)', 'Issuer', 'Valid until', 'SHA-256', ''].map((h, i) => <th key={i} style={{ ...cell, textAlign: 'left', fontWeight: 600, borderBottom: '1px solid var(--border-color)' }}>{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {entries && shown.length === 0 && <tr><td colSpan={7} style={{ ...cell, textAlign: 'center', color: 'var(--text-muted)', padding: 16 }}>{filter ? 'No certificates match' : 'The trust store is empty'}</td></tr>}
+                  {entries && shown.length === 0 && <tr><td colSpan={8} style={{ ...cell, textAlign: 'center', color: 'var(--text-muted)', padding: 16 }}>{filter ? 'No certificates match' : cat !== 'All' ? `No certificates labelled "${cat}" - label them from the All tab` : 'The trust store is empty'}</td></tr>}
                   {shown.map(e => [
                     <tr key={e.alias} style={{ borderBottom: '1px solid var(--border-color)', background: e.expired ? 'rgba(229,57,53,0.08)' : undefined }}>
                       <td style={{ ...cell, cursor: 'pointer', color: 'var(--text-muted)' }} onClick={() => setOpen(o => ({ ...o, [e.alias]: !o[e.alias] }))} title="Show details">{open[e.alias] ? '▾' : '▸'}</td>
                       <td style={{ ...cell, fontFamily: 'monospace', wordBreak: 'break-all' }}>{e.alias}</td>
+                      <td style={cell}>
+                        <select value={certmap[e.alias] || ''} disabled={labels.length === 0 && !certmap[e.alias]} style={{ ...input, width: 110 }}
+                          title={labels.length ? 'Label this certificate (or choose "— none —" to remove its label)' : 'Create a label first'}
+                          onChange={ev => assign(e.alias, ev.target.value)}>
+                          <option value="">— none —</option>
+                          {labels.map(l => <option key={l} value={l}>{l}</option>)}
+                        </select>
+                      </td>
                       <td style={{ ...cell, wordBreak: 'break-word' }} title={e.subject}>{e.cn}</td>
                       <td style={{ ...cell, wordBreak: 'break-word', maxWidth: 220 }} title={e.issuer}>{(e.issuer.match(/CN=([^,]+)/) || [])[1] || e.issuer}</td>
                       <td style={{ ...cell, whiteSpace: 'nowrap' }}>{(e.valid_until.match(/(\w{3} \d{1,2}) [\d:]+ \w+ (\d{4})/) || []).slice(1).join(', ') || e.valid_until}{e.expired && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: '#fff', background: '#e53935', borderRadius: 8, padding: '1px 6px' }}>expired</span>}</td>
@@ -159,7 +199,7 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
                       </td>
                     </tr>,
                     open[e.alias] && (
-                      <tr key={e.alias + '-d'}><td colSpan={7} style={{ ...cell, background: 'var(--surface)' }}>
+                      <tr key={e.alias + '-d'}><td colSpan={8} style={{ ...cell, background: 'var(--surface)' }}>
                         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 6, fontSize: 11, color: 'var(--text-muted)' }}>
                           <span>Type: {e.type}</span><span>Created: {e.created}</span><span>Valid from: {e.valid_from}</span><span>Until: {e.valid_until}</span><span>Signature: {e.sig_alg}</span>
                         </div>
@@ -170,6 +210,31 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
               </table>
             </div>
           )}
+        </>
+      )}
+
+      {tab === 'backup' && (
+        <>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+            <button className="btn btn-sm btn-primary" style={sbtn} disabled={busy === 'backup' || !!cfg?.container_error} onClick={doBackup}>💾 Back up now</button>
+            <button className="btn btn-sm" style={sbtn} onClick={loadBackups}>↻ Refresh</button>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Backups of <code>{cfg?.settings?.trust_store}</code> (<code>.bak_&lt;date&gt;</code>), newest first. Reverting keeps the current trust store as <code>..._before_restore</code>.</span>
+          </div>
+          {bkList === null ? <div style={{ textAlign: 'center', padding: 20 }}><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /></div>
+            : bkList.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 14, textAlign: 'center', border: '1px dashed var(--border-color)', borderRadius: 6 }}>No backups yet. Press "Back up now" - one is also taken before every delete / import while the checkbox above is ticked.</div>
+            : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--border-color)' }}>
+                <thead><tr style={{ background: 'var(--bg-secondary)' }}>{['Backup', 'Taken', 'Certificates', 'Size', ''].map((h, i) => <th key={i} style={{ ...cell, textAlign: 'left', fontWeight: 600, borderBottom: '1px solid var(--border-color)' }}>{h}</th>)}</tr></thead>
+                <tbody>{bkList.map(b => (
+                  <tr key={b.file} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                    <td style={{ ...cell, fontFamily: 'monospace', wordBreak: 'break-all' }} title={b.file}>{b.name}</td>
+                    <td style={{ ...cell, whiteSpace: 'nowrap' }}>{b.time}</td>
+                    <td style={cell}>{b.certs ?? '—'}</td>
+                    <td style={cell}>{b.size > 1048576 ? (b.size / 1048576).toFixed(1) + ' MB' : Math.round(b.size / 1024) + ' KB'}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}><button className="btn btn-sm" style={{ ...sbtn, borderColor: '#f9a825', color: '#f9a825' }} disabled={busy === 'rev:' + b.file} onClick={() => revert(b)}>↩ Revert to this backup</button></td>
+                  </tr>))}</tbody>
+              </table>
+            )}
         </>
       )}
 
@@ -230,7 +295,8 @@ export default function CertificateManager({ scope = 'local', appName, vmIp = ''
 }
 
 function CertDialog({ dlg, onClose }) {
-  const ok = () => { onClose(); dlg.onOk() }
+  const [val, setVal] = useState(dlg.value || '')
+  const ok = () => { onClose(); dlg.onOk(dlg.kind === 'prompt' ? val : undefined) }
   useEffect(() => { const h = e => { if (e.key === 'Escape') onClose(); if (e.key === 'Enter') ok() }; document.addEventListener('keydown', h); return () => document.removeEventListener('keydown', h) })
   return (
     <div className="modal-overlay" onMouseDown={onClose} style={{ backdropFilter: 'blur(2px)' }}>
@@ -241,11 +307,12 @@ function CertDialog({ dlg, onClose }) {
             <div style={{ fontWeight: 700, fontSize: 16 }}>{dlg.title}</div>
             {dlg.chip && <div style={{ display: 'inline-block', marginTop: 6, fontFamily: 'monospace', fontSize: 12, fontWeight: 600, padding: '2px 9px', borderRadius: 10, background: dlg.tone + '26', color: dlg.tone, wordBreak: 'break-all' }}>{dlg.chip}</div>}
             <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.5 }}>{dlg.message}</div>
+            {dlg.kind === 'prompt' && <input autoFocus value={val} onChange={e => setVal(e.target.value)} style={{ marginTop: 10, width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '7px 10px', background: 'var(--surface)', color: 'var(--text)', border: `1px solid ${dlg.tone}`, borderRadius: 8, outline: 'none' }} />}
           </div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '14px 22px 18px' }}>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn" autoFocus onClick={ok} style={{ background: dlg.tone, borderColor: dlg.tone, color: '#fff', fontWeight: 600 }}>{dlg.confirmLabel}</button>
+          <button className="btn" autoFocus={dlg.kind !== 'prompt'} disabled={dlg.kind === 'prompt' && !val.trim()} onClick={ok} style={{ background: dlg.tone, borderColor: dlg.tone, color: '#fff', fontWeight: 600 }}>{dlg.confirmLabel}</button>
         </div>
       </div>
     </div>

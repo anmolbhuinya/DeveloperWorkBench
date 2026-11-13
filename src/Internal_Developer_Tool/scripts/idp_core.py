@@ -28664,6 +28664,41 @@ done
                 wb.close()
         return out
 
+    def _cm_labels(root):
+        """(labels, {alias: label}) from the certificate_management sheet: rows Setting=label / Setting=cert:<alias>."""
+        import openpyxl as _xl
+        labels, cmap = [], {}
+        f = Path(root) / "server_config.xlsx"
+        if f.exists():
+            wb = _xl.load_workbook(str(f), data_only=True)
+            try:
+                if _CM_SHEET in wb.sheetnames:
+                    for r in wb[_CM_SHEET].iter_rows(min_row=2, values_only=True):
+                        k, v = str((r[0] if r else "") or "").strip(), str((r[1] if r and len(r) > 1 else "") or "").strip()
+                        if k == "label" and v: labels.append(v)
+                        elif k.startswith("cert:") and v: cmap[k[5:]] = v
+            finally:
+                wb.close()
+        return labels, {a: l for a, l in cmap.items() if l in labels}
+
+    def _cm_labels_edit(root, mutate):
+        """mutate(ws, rows) where rows() lists (row number, Setting, Value); saved under the shared lock."""
+        import openpyxl as _xl
+        with _rp_lock:
+            Path(root).mkdir(parents=True, exist_ok=True)
+            f = Path(root) / "server_config.xlsx"
+            wb = _xl.load_workbook(str(f)) if f.exists() else _xl.Workbook()
+            if _CM_SHEET in wb.sheetnames:
+                ws = wb[_CM_SHEET]
+            else:
+                ws = wb.create_sheet(_CM_SHEET)
+                if not f.exists() and "Sheet" in wb.sheetnames and len(wb.sheetnames) == 2:
+                    del wb["Sheet"]
+            ws.cell(row=1, column=1, value="Setting"); ws.cell(row=1, column=2, value="Value")
+            rows = lambda: [(i, str(ws.cell(row=i, column=1).value or "").strip(), str(ws.cell(row=i, column=2).value or "").strip()) for i in range(2, ws.max_row + 1)]
+            mutate(ws, rows)
+            wb.save(str(f))
+
     def _cm_candidates(scope, app_name, kt):
         """cacerts files that exist in the container (JAVA_HOME first), best guess first."""
         ok, out = _cm_exec(scope, app_name,
@@ -28774,7 +28809,9 @@ done
             return jsonify({"ok": False, "error": f"Unknown app: {app_name}"}), 404
         root = _rp_root(scope, app_name)
         tgt, err = _cm_target(scope, app_name)
+        _lb, _cmap = _cm_labels(root)
         return jsonify({"ok": True, "settings": _cm_settings(root), "defaults": _CM_DEFAULTS, "config_file": str(Path(root) / "server_config.xlsx"),
+                        "labels": _lb, "certmap": _cmap,
                         "container": tgt[0] if tgt else "", "container_error": err})
 
     @app.route("/api/cm/<scope>/<app_name>/<action>", methods=["POST"])
@@ -28821,14 +28858,62 @@ done
                 ok, out = _cm_exec(scope, app_name, f"{q(kt)} -list -v -keystore {q(ts)} -storepass {q(pw)}", timeout=120)
                 if not ok: return jsonify({"ok": False, "error": out or "keytool failed"})
                 ents = _cm_parse_entries(out)
-                return jsonify({"ok": True, "entries": ents, "total": len(ents), "trust_store": ts, "settings": st, "auto": auto})
+                _lb, _cmap = _cm_labels(root)
+                return jsonify({"ok": True, "entries": ents, "total": len(ents), "trust_store": ts, "settings": st, "auto": auto, "labels": _lb, "certmap": _cmap})
             if action == "backup":
                 ok, out = backup()
                 if not ok: return jsonify({"ok": False, "error": out or f"Could not back up {ts}"})
                 return jsonify({"ok": True, "backups": out.splitlines()})
             if action == "backups":
-                ok, out = _cm_exec(scope, app_name, f"ls -1 {q(ts)}.bak_* 2>/dev/null; true")
-                return jsonify({"ok": True, "backups": [x for x in out.splitlines() if x.strip()]})
+                # newest first: file, size, time, number of certificates in it
+                ok, out = _cm_exec(scope, app_name,
+                    "for f in " + q(ts) + ".bak_*; do [ -f \"$f\" ] || continue; "
+                    "echo \"$f|$(wc -c < \"$f\")|$(date -r \"$f\" '+%Y-%m-%d %H:%M:%S')|$(" + q(kt) + " -list -keystore \"$f\" -storepass " + q(pw) + " 2>/dev/null | grep -c 'Entry,')\"; done; true", timeout=180)
+                items = []
+                for ln in out.splitlines():
+                    p = ln.split("|")
+                    if len(p) == 4 and p[0].startswith("/"):
+                        items.append({"file": p[0], "name": p[0].rsplit("/", 1)[-1], "size": int(p[1]) if p[1].strip().isdigit() else 0,
+                                      "time": p[2], "certs": int(p[3]) if p[3].strip().isdigit() else None})
+                items.sort(key=lambda x: x["time"], reverse=True)
+                return jsonify({"ok": True, "backups": items, "trust_store": ts})
+            if action == "restore":                                 # revert the trust store to one of its backups
+                f = str(b.get("file") or "")
+                if not (_CM_PATH.match(f) and f.startswith(ts + ".bak_")): return jsonify({"ok": False, "error": "That is not a backup of this trust store"})
+                ok, out = _cm_exec(scope, app_name, f"[ -f {q(f)} ] && cp -p {q(ts)} \"{ts}.bak_$(date +%F_%H%M%S)_before_restore\" && cp -p {q(f)} {q(ts)}")
+                return jsonify({"ok": ok, "error": "" if ok else (out or f"Could not restore {f}")})
+            if action == "label":                                   # create / rename / delete a label
+                op, name, new = str(b.get("op") or ""), str(b.get("name") or "").strip(), str(b.get("new") or "").strip()
+                if not name or not _CM_ALIAS.match(name): return jsonify({"ok": False, "error": "Label: letters, digits, . _ - @ : and spaces"})
+                if name.lower() == "all": return jsonify({"ok": False, "error": "'All' is reserved"})
+                if op == "rename" and not _CM_ALIAS.match(new): return jsonify({"ok": False, "error": "Invalid new label name"})
+                def m(ws, rows):
+                    if op == "create":
+                        if not any(k == "label" and v == name for _, k, v in rows()):
+                            r = ws.max_row + 1; ws.cell(row=r, column=1, value="label"); ws.cell(row=r, column=2, value=name)
+                    elif op == "rename":
+                        for i, k, v in rows():
+                            if (k == "label" or k.startswith("cert:")) and v == name: ws.cell(row=i, column=2).value = new
+                    elif op == "delete":                            # its certificates go back to All only
+                        for i, k, v in reversed(rows()):
+                            if (k == "label" or k.startswith("cert:")) and v == name: ws.delete_rows(i)
+                _cm_labels_edit(root, m)
+                _lb, _cmap = _cm_labels(root)
+                return jsonify({"ok": True, "labels": _lb, "certmap": _cmap})
+            if action == "assign":                                  # label / unlabel one certificate
+                a, lab = str(b.get("alias") or ""), str(b.get("label") or "").strip()
+                if not a or len(a) > 400: return jsonify({"ok": False, "error": "alias is required"})
+                if lab and lab not in _cm_labels(root)[0]: return jsonify({"ok": False, "error": f"Unknown label: {lab}"})
+                def m(ws, rows):
+                    hit = [i for i, k, v in rows() if k == "cert:" + a]
+                    if lab:
+                        r = hit[0] if hit else ws.max_row + 1
+                        ws.cell(row=r, column=1, value="cert:" + a); ws.cell(row=r, column=2, value=lab)
+                    else:
+                        for i in reversed(hit): ws.delete_rows(i)
+                _cm_labels_edit(root, m)
+                _lb, _cmap = _cm_labels(root)
+                return jsonify({"ok": True, "labels": _lb, "certmap": _cmap})
             if action == "delete":
                 alias = str(b.get("alias") or "")
                 if not _CM_ALIAS.match(alias): return jsonify({"ok": False, "error": "Invalid alias"})
