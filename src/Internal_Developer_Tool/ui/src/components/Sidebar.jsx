@@ -68,6 +68,7 @@ const SECTIONS = [
     items: [
       { label: 'Sprint', path: '/project-management/sprint' },
       { label: 'Resource And Skill', path: '/project-management/resource-skill' },
+      { label: 'Engineering Intelligence', path: '/project-management/engineering-intelligence' },
     ],
   },
   {
@@ -116,6 +117,9 @@ export default function Sidebar() {
     }
     if (path === '/docker') {
       return location.pathname === '/docker'
+    }
+    if (path === '/project-management/engineering-intelligence') {
+      return location.pathname.startsWith(path)
     }
     if (path.startsWith('/tools/')) {
       return location.pathname === path

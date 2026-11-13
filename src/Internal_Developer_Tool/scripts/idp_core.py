@@ -29043,6 +29043,402 @@ done
         except Exception as e:
             return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
+    # ── Engineering Intelligence > Work Item Intelligence ─────────────────────────────────────────────
+    # Definitions (types, reusable stages, workflows): DeveloperWorkBench\Project_Management\Engineering_Intelligence\WorkItem_Intelligence
+    # Work item state:  DWB_Projects\Project_Management\Engineering_Intelligence\WorkItem_Intelligence\<Type>\<KEY>\ (workflow.xlsx, analysis.json, recommendations.json, artifacts\)
+    import json as _ei_json, re as _ei_re
+    EI_CFG  = TEAM_MGMT_ROOT / "Engineering_Intelligence" / "WorkItem_Intelligence"
+    EI_DATA = PROJECTS_HOME / "Project_Management" / "Engineering_Intelligence" / "WorkItem_Intelligence"
+    _ei_lock = _threading.Lock()
+    _EI_STATUS = ["Not Started", "In Progress", "Completed", "Blocked", "Skipped"]
+    _EI_KEY = _ei_re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
+
+    _EI_TYPES = [
+        {"type": "Epic",    "focus": "Strategy & Planning", "workflow": "epic_analysis",       "owner": "Principal Engineer",
+         "contributors": "Lead Engineer, Architect, Product Manager"},
+        {"type": "Feature", "focus": "Solution Design",     "workflow": "feature_analysis",    "owner": "Lead Engineer",
+         "contributors": "Principal Engineer, Senior Engineers"},
+        {"type": "Story",   "focus": "Implementation",      "workflow": "story_analysis",      "owner": "Senior Software Engineer",
+         "contributors": "Lead Engineer, Software Engineers"},
+        {"type": "Task",    "focus": "Execution",           "workflow": "task_implementation", "owner": "Software Engineer",
+         "contributors": "Senior Software Engineer"},
+        {"type": "Bug",     "focus": "Diagnosis & Fix",     "workflow": "bug_investigation",   "owner": "Software Engineer / Senior Software Engineer",
+         "contributors": "Lead Engineer for complex issues"},
+        {"type": "Other",   "focus": "Custom",              "workflow": "custom",              "owner": "", "contributors": ""},
+    ]
+
+    def _ei_stage(sid, name, desc, checklist=None):
+        s = {"id": sid, "name": name, "description": desc}
+        if checklist: s["checklist"] = checklist
+        return s
+
+    # reusable building blocks: any workflow (also a custom one) is an ordered list of these ids
+    _EI_STAGES = [
+        _ei_stage("business_objective", "Business Objective Analysis", "What business outcome is the work item meant to deliver, and how will success be measured?"),
+        _ei_stage("stakeholder", "Stakeholder Analysis", "Who requested it, who is affected, who must approve or be informed?"),
+        _ei_stage("capability", "Capability Identification", "Which business / platform capabilities are needed or changed?"),
+        _ei_stage("feature_discovery", "Feature Discovery", "List the features that make up the capabilities; note gaps and overlaps with existing ones."),
+        _ei_stage("domain_impact", "Domain Impact Analysis", "Which domains / modules / teams are touched and how deeply?"),
+        _ei_stage("dependency", "Dependency Analysis", "Upstream / downstream systems, teams, libraries, releases and data this depends on."),
+        _ei_stage("architecture_assessment", "Architecture Assessment", "Fit with the current architecture; options, trade-offs and the proposed direction."),
+        _ei_stage("risk_assessment", "Risk Assessment", "Risks (technical, delivery, business) with likelihood, impact and mitigation."),
+        _ei_stage("release_planning", "Release Planning", "Target release(s), sequencing, feature flags, rollout and rollback."),
+        _ei_stage("epic_decomposition", "Epic Decomposition", "Break the epic into features / stories with rough size and order."),
+        _ei_stage("recommendations", "Recommendations", "The conclusion: what to do, in what order, and why."),
+        _ei_stage("requirement", "Requirement Analysis", "Restate the requirement in your own words; list assumptions and open questions."),
+        _ei_stage("business_rule", "Business Rule Analysis", "Business rules, validations, calculations and exceptions that apply."),
+        _ei_stage("architecture_review", "Architecture Review", "Review the design against the architecture, standards and non-functional needs."),
+        _ei_stage("api_impact", "API Impact Analysis", "New / changed / removed APIs and web services; compatibility and consumers."),
+        _ei_stage("data_model", "Data Model Analysis", "Tables, entities, migrations and data quality impact."),
+        _ei_stage("integration", "Integration Analysis", "External systems, messages, files and connectors involved."),
+        _ei_stage("risk_analysis", "Risk Analysis", "What can go wrong and how it is handled."),
+        _ei_stage("implementation_strategy", "Implementation Strategy", "Approach, sequencing, toggles and how the work is split between people."),
+        _ei_stage("test_strategy", "Test Strategy", "Unit / integration / regression coverage and the data needed."),
+        _ei_stage("acceptance_criteria", "Acceptance Criteria Analysis", "Turn the acceptance criteria into testable statements; flag gaps."),
+        _ei_stage("code_impact", "Code Impact Analysis", "Classes, modules and configuration to change; blast radius."),
+        _ei_stage("database_impact", "Database Impact Analysis", "Schema, queries, indexes and migrations affected."),
+        _ei_stage("ui_impact", "UI Impact Analysis", "Screens, flows and messages affected."),
+        _ei_stage("effort_estimation", "Effort Estimation", "Estimate (story points / days) with the assumptions behind it."),
+        _ei_stage("implementation_plan", "Implementation Plan", "Ordered steps to implement, including review and deployment."),
+        _ei_stage("test_case_generation", "Test Case Generation", "Test cases (positive, negative, edge) to write or run."),
+        _ei_stage("implementation_tracking", "Implementation Tracking", "Progress of the implementation: branches, PRs, builds, open items."),
+        _ei_stage("task_understanding", "Task Understanding", "What exactly the task asks for and why."),
+        _ei_stage("scope_analysis", "Scope Analysis", "What is in scope, what is not."),
+        _ei_stage("implementation_breakdown", "Implementation Breakdown", "Split the task into small steps."),
+        _ei_stage("development", "Development", "Do the work; note branch, commits and decisions."),
+        _ei_stage("unit_testing", "Unit Testing", "Unit tests added / run and their result."),
+        _ei_stage("validation", "Validation", "Verify the result against the task (manually / IT)."),
+        _ei_stage("completion_review", "Completion Review", "Final check: definition of done, review, hand-over."),
+        _ei_stage("bug_classification", "Bug Classification", "Severity, priority, area, regression or new, customer impact."),
+        _ei_stage("reproduction", "Reproduction Analysis", "Exact steps, data and environment to reproduce; whether it reproduces."),
+        _ei_stage("evidence_collection", "Evidence Collection", "Collect what shows the problem. Tick each kind of evidence once collected and note where it is.",
+                  ["Logs", "Metrics", "Traces", "Thread Dumps", "Heap Dumps", "JFR"]),
+        _ei_stage("similar_bugs", "Similar Bug Discovery", "Search past bugs / fixes with the same symptom, area or stack trace."),
+        _ei_stage("root_cause", "Root Cause Analysis", "Why it happens - the evidence-backed cause, not the symptom."),
+        _ei_stage("fix_recommendation", "Fix Recommendation", "Recommended fix, alternatives and why this one."),
+        _ei_stage("fix_implementation", "Fix Implementation", "Implement the fix; note branch, commits and PR."),
+        _ei_stage("regression_risk", "Regression Risk Analysis", "What else the fix could break and what to re-test."),
+        _ei_stage("validation_testing", "Validation Testing", "Tests proving the fix and guarding against regression."),
+        _ei_stage("closure_summary", "Closure Summary", "Summary: cause, fix, tests, follow-ups; ready to close."),
+    ]
+
+    _EI_WORKFLOWS = [
+        {"id": "epic_analysis", "name": "Epic Analysis", "type": "Epic", "builtin": True, "stages": [
+            "business_objective", "stakeholder", "capability", "feature_discovery", "domain_impact", "dependency", "architecture_assessment",
+            "risk_assessment", "release_planning", "epic_decomposition", "recommendations"]},
+        {"id": "feature_analysis", "name": "Feature Analysis", "type": "Feature", "builtin": True, "stages": [
+            "requirement", "business_rule", "architecture_review", "api_impact", "data_model", "integration", "dependency", "risk_analysis",
+            "implementation_strategy", "test_strategy", "recommendations"]},
+        {"id": "story_analysis", "name": "Story Analysis & Implementation", "type": "Story", "builtin": True, "stages": [
+            "requirement", "acceptance_criteria", "code_impact", "api_impact", "database_impact", "ui_impact", "effort_estimation",
+            "implementation_plan", "test_case_generation", "implementation_tracking", "recommendations"]},
+        {"id": "task_implementation", "name": "Task Implementation", "type": "Task", "builtin": True, "stages": [
+            "task_understanding", "scope_analysis", "dependency", "implementation_breakdown", "development", "unit_testing", "validation", "completion_review"]},
+        {"id": "bug_investigation", "name": "Bug Investigation & Fix", "type": "Bug", "builtin": True, "stages": [
+            "bug_classification", "reproduction", "evidence_collection", "code_impact", "similar_bugs", "root_cause", "fix_recommendation",
+            "fix_implementation", "regression_risk", "validation_testing", "closure_summary"]},
+    ]
+
+    def _ei_read(name, default):
+        f = EI_CFG / name
+        if f.exists():
+            try: return _ei_json.loads(f.read_text(encoding="utf-8"))
+            except Exception: pass
+        return default
+
+    def _ei_write(name, data):
+        EI_CFG.mkdir(parents=True, exist_ok=True)
+        (EI_CFG / name).write_text(_ei_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _ei_config():
+        """Definitions, seeded into the Engineering_Intelligence\\WorkItem_Intelligence folder on first use. Custom stages / workflows are kept."""
+        with _ei_lock:
+            types = _ei_read("work_item_types.json", None)
+            if types is None: types = _EI_TYPES; _ei_write("work_item_types.json", types)
+            stages = _ei_read("stages.json", None)
+            if stages is None: stages = _EI_STAGES; _ei_write("stages.json", stages)
+            wfs = _ei_read("workflows.json", None)
+            if wfs is None: wfs = _EI_WORKFLOWS; _ei_write("workflows.json", wfs)
+        return types, stages, wfs
+
+    def _ei_dir(typ, key):
+        return EI_DATA / typ / key.upper()
+
+    def _ei_load_state(d):
+        import openpyxl as _xl
+        st = {"meta": {}, "stages": {}, "notes": ""}
+        f = d / "workflow.xlsx"
+        if not f.exists(): return st
+        wb = _xl.load_workbook(str(f), data_only=True)
+        try:
+            if "workflow" in wb.sheetnames:
+                for r in wb["workflow"].iter_rows(min_row=2, values_only=True):
+                    if r and r[0]: st["meta"][str(r[0])] = "" if r[1] is None else str(r[1])
+            if "stages" in wb.sheetnames:
+                for r in wb["stages"].iter_rows(min_row=2, values_only=True):
+                    if r and r[1]:
+                        try: checks = _ei_json.loads(r[7]) if r[7] else {}
+                        except Exception: checks = {}
+                        st["stages"][str(r[1])] = {"status": str(r[3] or "Not Started"), "started": str(r[4] or ""), "completed": str(r[5] or ""),
+                                                   "updated": str(r[6] or ""), "checks": checks, "notes": "" if r[8] is None else str(r[8])}
+            if "notes" in wb.sheetnames:
+                st["notes"] = "\n".join("" if r[0] is None else str(r[0]) for r in wb["notes"].iter_rows(min_row=1, values_only=True))
+        finally:
+            wb.close()
+        return st
+
+    def _ei_save_state(d, st, wf_stages, names):
+        """workflow.xlsx: sheets workflow (key/value), stages (one row per stage, in workflow order), notes."""
+        import openpyxl as _xl
+        d.mkdir(parents=True, exist_ok=True)
+        wb = _xl.Workbook()
+        ws = wb.active; ws.title = "workflow"
+        ws.append(["Field", "Value"])
+        for k, v in st["meta"].items(): ws.append([k, v])
+        wss = wb.create_sheet("stages")
+        wss.append(["#", "Stage ID", "Stage", "Status", "Started", "Completed", "Updated", "Checklist", "Notes"])
+        for i, sid in enumerate(wf_stages, 1):
+            s = st["stages"].get(sid, {})
+            wss.append([i, sid, names.get(sid, sid), s.get("status", "Not Started"), s.get("started", ""), s.get("completed", ""), s.get("updated", ""),
+                        _ei_json.dumps(s.get("checks") or {}), s.get("notes", "")])
+        wsn = wb.create_sheet("notes")
+        for line in (st.get("notes") or "").split("\n"): wsn.append([line])
+        wb.save(str(d / "workflow.xlsx"))
+
+    def _ei_wf(wf_id):
+        _t, _s, wfs = _ei_config()
+        return next((w for w in wfs if w["id"] == wf_id), None)
+
+    def _ei_item_summary(typ, key):
+        d = _ei_dir(typ, key)
+        st = _ei_load_state(d)
+        wf = _ei_wf(st["meta"].get("Workflow ID", ""))
+        ids = (wf or {}).get("stages", [])
+        done = sum(1 for i in ids if st["stages"].get(i, {}).get("status") in ("Completed", "Skipped"))
+        return {"key": key.upper(), "type": typ, "title": st["meta"].get("Title", ""), "workflow_id": st["meta"].get("Workflow ID", ""),
+                "workflow": st["meta"].get("Workflow", ""), "created": st["meta"].get("Created", ""), "done": done, "total": len(ids)}
+
+    @app.route("/api/project-management/ei/config", methods=["GET"])
+    def api_ei_config():
+        types, stages, wfs = _ei_config()
+        return jsonify({"ok": True, "types": types, "stages": stages, "workflows": wfs, "statuses": _EI_STATUS,
+                        "config_dir": str(EI_CFG), "data_dir": str(EI_DATA)})
+
+    @app.route("/api/project-management/ei/stage", methods=["POST"])
+    def api_ei_stage_add():
+        """Add a stage to the reusable catalog (used by the custom workflow designer)."""
+        b = request.get_json() or {}
+        name = str(b.get("name") or "").strip()
+        if not name or len(name) > 80: return jsonify({"ok": False, "error": "Stage name is required (max 80 characters)"})
+        types, stages, wfs = _ei_config()
+        if any(s["name"].lower() == name.lower() for s in stages): return jsonify({"ok": False, "error": "A stage with this name already exists"})
+        sid = "custom_" + _ei_re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40]
+        s = _ei_stage(sid, name, str(b.get("description") or "").strip())
+        with _ei_lock:
+            stages.append(s); _ei_write("stages.json", stages)
+        return jsonify({"ok": True, "stage": s, "stages": stages})
+
+    @app.route("/api/project-management/ei/workflow", methods=["POST"])
+    def api_ei_workflow_save():
+        """Create / update a custom workflow: a name and an ordered list of catalog stages."""
+        b = request.get_json() or {}
+        name = str(b.get("name") or "").strip()
+        ids = [str(x) for x in (b.get("stages") or [])]
+        if not name or len(name) > 80 or not _ei_re.match(r"^[\w &.\-]+$", name): return jsonify({"ok": False, "error": "Workflow name: letters, digits, space and & . _ -"})
+        types, stages, wfs = _ei_config()
+        known = {s["id"] for s in stages}
+        if not ids or any(i not in known for i in ids): return jsonify({"ok": False, "error": "Pick at least one stage from the catalog"})
+        wid = str(b.get("id") or "") or "custom_" + _ei_re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40]
+        with _ei_lock:
+            ex = next((w for w in wfs if w["id"] == wid), None)
+            if ex and ex.get("builtin"): return jsonify({"ok": False, "error": "Built-in workflows cannot be changed - design a custom one instead"})
+            if not ex and any(w["name"].lower() == name.lower() for w in wfs): return jsonify({"ok": False, "error": "A workflow with this name already exists"})
+            if ex: ex.update({"name": name, "stages": ids})
+            else: wfs.append({"id": wid, "name": name, "type": "Other", "builtin": False, "stages": ids})
+            _ei_write("workflows.json", wfs)
+        return jsonify({"ok": True, "workflows": wfs, "id": wid})
+
+    @app.route("/api/project-management/ei/workflow/<wid>", methods=["DELETE"])
+    def api_ei_workflow_delete(wid):
+        types, stages, wfs = _ei_config()
+        w = next((x for x in wfs if x["id"] == wid), None)
+        if not w or w.get("builtin"): return jsonify({"ok": False, "error": "Only custom workflows can be deleted"})
+        with _ei_lock:
+            wfs = [x for x in wfs if x["id"] != wid]; _ei_write("workflows.json", wfs)
+        return jsonify({"ok": True, "workflows": wfs})
+
+    @app.route("/api/project-management/ei/items", methods=["GET"])
+    def api_ei_items():
+        """Work items of a type (folder per JIRA key under <Type>)."""
+        typ = str(request.args.get("type") or "")
+        types = [t["type"] for t in _ei_config()[0]]
+        if typ not in types: return jsonify({"ok": False, "error": "Unknown work item type"})
+        base = EI_DATA / typ
+        items = []
+        if base.is_dir():
+            for d in sorted(base.iterdir()):
+                if d.is_dir() and _EI_KEY.match(d.name):
+                    try: items.append(_ei_item_summary(typ, d.name))
+                    except Exception: items.append({"key": d.name, "type": typ, "title": "", "workflow": "", "workflow_id": "", "created": "", "done": 0, "total": 0})
+        items.sort(key=lambda x: x["created"], reverse=True)
+        return jsonify({"ok": True, "items": items})
+
+    @app.route("/api/project-management/ei/item", methods=["POST"])
+    def api_ei_item_create():
+        b = request.get_json() or {}
+        typ, key, wid = str(b.get("type") or ""), str(b.get("key") or "").strip().upper(), str(b.get("workflow_id") or "")
+        types, stages, wfs = _ei_config()
+        if typ not in [t["type"] for t in types]: return jsonify({"ok": False, "error": "Unknown work item type"})
+        if not _EI_KEY.match(key): return jsonify({"ok": False, "error": "Enter a JIRA key such as PAYOR-211607"})
+        wf = next((w for w in wfs if w["id"] == wid), None)
+        if not wf: return jsonify({"ok": False, "error": "Unknown workflow"})
+        d = _ei_dir(typ, key)
+        if (d / "workflow.xlsx").exists(): return jsonify({"ok": False, "error": f"{key} already exists under {typ}"})
+        names = {s["id"]: s["name"] for s in stages}
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        st = {"meta": {"Key": key, "Type": typ, "Workflow": wf["name"], "Workflow ID": wid, "Title": str(b.get("title") or "").strip()[:200], "Created": now}, "stages": {}, "notes": ""}
+        try:
+            with _ei_lock:
+                _ei_save_state(d, st, wf["stages"], names)
+                (d / "analysis.json").write_text("{}", encoding="utf-8")
+                (d / "recommendations.json").write_text("[]", encoding="utf-8")
+                (d / "artifacts").mkdir(exist_ok=True)
+        except PermissionError:
+            return jsonify({"ok": False, "error": "workflow.xlsx is open in another program"})
+        return jsonify({"ok": True, "item": _ei_item_summary(typ, key)})
+
+    def _ei_item_payload(typ, key):
+        types, stages, wfs = _ei_config()
+        d = _ei_dir(typ, key)
+        if not (d / "workflow.xlsx").exists(): return None
+        st = _ei_load_state(d)
+        wf = next((w for w in wfs if w["id"] == st["meta"].get("Workflow ID", "")), None) or {"id": "", "name": st["meta"].get("Workflow", ""), "stages": list(st["stages"])}
+        cat = {s["id"]: s for s in stages}
+        ana = {}
+        try: ana = _ei_json.loads((d / "analysis.json").read_text(encoding="utf-8"))
+        except Exception: pass
+        rec = []
+        try: rec = _ei_json.loads((d / "recommendations.json").read_text(encoding="utf-8"))
+        except Exception: pass
+        arts = []
+        ad = d / "artifacts"
+        if ad.is_dir():
+            for f in sorted(ad.iterdir()):
+                if f.is_file(): arts.append({"name": f.name, "size": f.stat().st_size, "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")})
+        out = []
+        for i, sid in enumerate(wf["stages"], 1):
+            c = cat.get(sid, {"id": sid, "name": sid, "description": ""})
+            s = st["stages"].get(sid, {})
+            out.append({"id": sid, "n": i, "name": c["name"], "description": c.get("description", ""), "checklist": c.get("checklist", []),
+                        "status": s.get("status", "Not Started"), "started": s.get("started", ""), "completed": s.get("completed", ""), "updated": s.get("updated", ""),
+                        "checks": s.get("checks", {}), "notes": s.get("notes", ""), "output": (ana.get(sid) or {}).get("output", "")})
+        return {"ok": True, "meta": st["meta"], "workflow": {"id": wf["id"], "name": wf["name"]}, "stages": out, "notes": st["notes"],
+                "recommendations": rec, "artifacts": arts, "folder": str(d)}
+
+    @app.route("/api/project-management/ei/item/<typ>/<key>", methods=["GET", "DELETE"])
+    def api_ei_item(typ, key):
+        if typ not in [t["type"] for t in _ei_config()[0]] or not _EI_KEY.match(key): return jsonify({"ok": False, "error": "Unknown work item"}), 404
+        if request.method == "DELETE":
+            d = _ei_dir(typ, key)
+            if d.is_dir():
+                import shutil as _sh_ei
+                _sh_ei.rmtree(str(d), ignore_errors=True)
+            return jsonify({"ok": True})
+        p = _ei_item_payload(typ, key)
+        return jsonify(p) if p else (jsonify({"ok": False, "error": "Not found"}), 404)
+
+    @app.route("/api/project-management/ei/item/<typ>/<key>/stage/<sid>", methods=["PUT"])
+    def api_ei_stage_save(typ, key, sid):
+        if typ not in [t["type"] for t in _ei_config()[0]] or not _EI_KEY.match(key): return jsonify({"ok": False, "error": "Unknown work item"}), 404
+        b = request.get_json() or {}
+        p = _ei_item_payload(typ, key)
+        if not p: return jsonify({"ok": False, "error": "Not found"}), 404
+        ids = [s["id"] for s in p["stages"]]
+        if sid not in ids: return jsonify({"ok": False, "error": "Unknown stage"}), 404
+        status = str(b.get("status") or "Not Started")
+        if status not in _EI_STATUS: return jsonify({"ok": False, "error": "Invalid status"})
+        d = _ei_dir(typ, key)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        names = {s["id"]: s["name"] for s in p["stages"]}
+        with _ei_lock:
+            st = _ei_load_state(d)
+            cur = st["stages"].get(sid, {})
+            s = {"status": status, "started": cur.get("started", ""), "completed": cur.get("completed", ""), "updated": now,
+                 "checks": b.get("checks") if isinstance(b.get("checks"), dict) else cur.get("checks", {}), "notes": str(b.get("notes") if "notes" in b else cur.get("notes", ""))[:20000]}
+            if status != "Not Started" and not s["started"]: s["started"] = now
+            if status in ("Completed", "Skipped"): s["completed"] = s["completed"] or now
+            else: s["completed"] = ""
+            st["stages"][sid] = s
+            try:
+                _ei_save_state(d, st, ids, names)
+                if "output" in b:
+                    ana = {}
+                    try: ana = _ei_json.loads((d / "analysis.json").read_text(encoding="utf-8"))
+                    except Exception: pass
+                    ana[sid] = {"output": str(b.get("output") or "")[:200000], "updated": now}
+                    (d / "analysis.json").write_text(_ei_json.dumps(ana, indent=2, ensure_ascii=False), encoding="utf-8")
+                    if sid in ("recommendations", "fix_recommendation", "closure_summary"):
+                        rec = []
+                        try: rec = _ei_json.loads((d / "recommendations.json").read_text(encoding="utf-8"))
+                        except Exception: pass
+                        rec = [r for r in rec if r.get("stage") != sid]
+                        if str(b.get("output") or "").strip(): rec.append({"stage": sid, "name": names.get(sid, sid), "text": str(b["output"]), "updated": now})
+                        (d / "recommendations.json").write_text(_ei_json.dumps(rec, indent=2, ensure_ascii=False), encoding="utf-8")
+            except PermissionError:
+                return jsonify({"ok": False, "error": "workflow.xlsx is open in another program - close it and retry"})
+        return jsonify(_ei_item_payload(typ, key))
+
+    @app.route("/api/project-management/ei/item/<typ>/<key>/notes", methods=["PUT"])
+    def api_ei_notes_save(typ, key):
+        if typ not in [t["type"] for t in _ei_config()[0]] or not _EI_KEY.match(key): return jsonify({"ok": False, "error": "Unknown work item"}), 404
+        p = _ei_item_payload(typ, key)
+        if not p: return jsonify({"ok": False, "error": "Not found"}), 404
+        d = _ei_dir(typ, key)
+        with _ei_lock:
+            st = _ei_load_state(d)
+            st["notes"] = str((request.get_json() or {}).get("notes") or "")[:200000]
+            try: _ei_save_state(d, st, [s["id"] for s in p["stages"]], {s["id"]: s["name"] for s in p["stages"]})
+            except PermissionError: return jsonify({"ok": False, "error": "workflow.xlsx is open in another program - close it and retry"})
+        return jsonify(_ei_item_payload(typ, key))
+
+    _EI_ART = _ei_re.compile(r"^[\w][\w .\-]{0,100}$")
+
+    @app.route("/api/project-management/ei/item/<typ>/<key>/artifact", methods=["POST"])
+    def api_ei_artifact_add(typ, key):
+        """Save a generated artifact (text) in the item's artifacts folder; name 'summary' with generate=true builds the summary report."""
+        if typ not in [t["type"] for t in _ei_config()[0]] or not _EI_KEY.match(key): return jsonify({"ok": False, "error": "Unknown work item"}), 404
+        p = _ei_item_payload(typ, key)
+        if not p: return jsonify({"ok": False, "error": "Not found"}), 404
+        b = request.get_json() or {}
+        d = _ei_dir(typ, key) / "artifacts"
+        d.mkdir(parents=True, exist_ok=True)
+        if b.get("generate"):                                       # summary of all stages as markdown
+            m = p["meta"]
+            lines = [f"# {m.get('Key', key)} - {m.get('Title', '') or p['workflow']['name']}", "", f"Workflow: **{p['workflow']['name']}**  ·  Type: {typ}  ·  Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
+            for s in p["stages"]:
+                lines += [f"## {s['n']}. {s['name']}  —  {s['status']}", ""]
+                if s["checklist"]: lines += ["Evidence: " + ", ".join(f"{c} {'✓' if s['checks'].get(c) else '✗'}" for c in s["checklist"]), ""]
+                if s["output"].strip(): lines += [s["output"].strip(), ""]
+                if s["notes"].strip(): lines += ["_Notes:_ " + s["notes"].strip(), ""]
+            if p["notes"].strip(): lines += ["## Notes", "", p["notes"].strip(), ""]
+            name, content = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md", "\n".join(lines)
+        else:
+            name, content = str(b.get("name") or "").strip(), str(b.get("content") or "")
+            if not _EI_ART.match(name): return jsonify({"ok": False, "error": "File name: letters, digits, space . _ - (max 100)"})
+            if len(content) > 2_000_000: return jsonify({"ok": False, "error": "Artifact is larger than 2 MB"})
+        (d / name).write_text(content, encoding="utf-8")
+        return jsonify(_ei_item_payload(typ, key))
+
+    @app.route("/api/project-management/ei/item/<typ>/<key>/artifact/<name>", methods=["GET", "DELETE"])
+    def api_ei_artifact(typ, key, name):
+        if typ not in [t["type"] for t in _ei_config()[0]] or not _EI_KEY.match(key) or not _EI_ART.match(name): return jsonify({"ok": False, "error": "Unknown artifact"}), 404
+        f = _ei_dir(typ, key) / "artifacts" / name
+        if not f.is_file(): return jsonify({"ok": False, "error": "Not found"}), 404
+        if request.method == "DELETE":
+            f.unlink()
+            return jsonify(_ei_item_payload(typ, key))
+        return jsonify({"ok": True, "name": name, "content": f.read_text(encoding="utf-8", errors="replace")[:500000]})
+
     # ── Per-app screen configuration (driven by screen_config.xlsx) ─────────────
 
     def _read_build_flags_sheet(wb):
