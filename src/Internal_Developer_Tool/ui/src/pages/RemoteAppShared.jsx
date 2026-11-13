@@ -2180,7 +2180,7 @@ export function RemoteSimpleServerTab({ vmIp, appName, displayName }) {
 
 // ── Runtime Properties Panel (used by RemoteAppServerTab) ─────────────────────
 function SharedRuntimePropertiesPanel({ vmIp, appName }) {
-  return <><RuntimePropsManager scope="remote" appName={appName} vmIp={vmIp} /><CertificateManager scope="remote" appName={appName} vmIp={vmIp} /></>
+  return <RuntimePropsManager scope="remote" appName={appName} vmIp={vmIp} />
 }
 
 // previous plain list, kept for reference (no longer used)
@@ -2656,7 +2656,7 @@ export function RemoteAppServerTab({ vmIp, appName, displayName = 'App', serverT
         ? <KarafRightPanel base={`/api/remote-app/${appName}/karaf`} query={`vm_ip=${encodeURIComponent(vmIp)}`} />
         : resolvedType === 'tomcat'
         ? <TomcatRightPanel vmIp={vmIp} appName={appName} logSignal={logSignal} opOutput={opOutput} opKind={opKind} opStatus={opStatus} />
-        : <SharedRuntimePropertiesPanel vmIp={vmIp} appName={appName} />}
+        : <><SharedRuntimePropertiesPanel vmIp={vmIp} appName={appName} /><CertificateManager scope="remote" appName={appName} vmIp={vmIp} /></>}
     </div>
   )
 }
@@ -2686,10 +2686,12 @@ export function TomcatRightPanel({ vmIp, appName, base: baseProp, query: queryPr
         {tabBtn('system',     'System')}
         {tabBtn('apps',       'Application')}
         {tabBtn('properties', 'Runtime Properties')}
+        {tabBtn('certificates', 'Certificate Management')}
       </div>
       {tab === 'system'     && <TomcatSystemTab base={base} query={query} />}
       {tab === 'apps'       && <TomcatAppsTab   base={base} query={query} vmIp={vmIp} />}
       {tab === 'properties' && (propertiesPanel || <SharedRuntimePropertiesPanel vmIp={vmIp} appName={appName} />)}
+      {tab === 'certificates' && <CertificateManager scope={vmIp ? 'remote' : 'local'} appName={appName} vmIp={vmIp} />}
       {/* stays mounted (just hidden) so the log keeps loading and its content survives tab switches */}
       <div style={{ display: tab === 'logs' ? 'block' : 'none' }}>
         <TomcatServerLogsTab base={base} query={query} followFast={logSignal > 0} opOutput={opOutput} opKind={opKind} opStatus={opStatus} visible={tab === 'logs'} />

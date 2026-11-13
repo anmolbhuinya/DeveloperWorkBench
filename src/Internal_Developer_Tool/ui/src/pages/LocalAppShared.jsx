@@ -1540,7 +1540,7 @@ export function StatusBadge({ running }) {
 
 // Runtime properties with file path, tags and backups (backed by server_config.xlsx) - see RuntimePropsManager
 export function RuntimePropertiesPanel({ appName }) {
-  return <><RuntimePropsManager scope="local" appName={appName} /><CertificateManager scope="local" appName={appName} /></>
+  return <RuntimePropsManager scope="local" appName={appName} />
 }
 
 // previous plain list, kept for reference (no longer used)
@@ -2875,7 +2875,7 @@ export function AppServerTab({ appName, displayName, serverType }) {
             logSignal={logSignal}
             opOutput={['start', 'restart'].includes(opKind) ? '' : opOutput} opKind={['start', 'restart'].includes(opKind) ? null : opKind} opStatus={['start', 'restart'].includes(opKind) ? null : opStatus}
           />
-        : <RuntimePropertiesPanel appName={appName} />)}
+        : <><RuntimePropertiesPanel appName={appName} /><CertificateManager scope="local" appName={appName} /></>)}
     </div>
   )
 }
