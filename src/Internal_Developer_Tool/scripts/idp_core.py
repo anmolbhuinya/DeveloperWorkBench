@@ -29439,6 +29439,285 @@ done
             return jsonify(_ei_item_payload(typ, key))
         return jsonify({"ok": True, "name": name, "content": f.read_text(encoding="utf-8", errors="replace")[:500000]})
 
+    # ── Portfolio: Initiative / Epic / Feature progress (Jira) and Delivery metrics / Engineering investment / Team capacity (sprint files) ──
+    # Tracked initiatives / epics: DeveloperWorkBench\Project_Management\Portfolio\portfolio.json
+    import json as _pf_json, re as _pf_re, time as _pf_tm
+    PF_CFG = TEAM_MGMT_ROOT / "Portfolio" / "portfolio.json"
+    _pf_lock = _threading.Lock()
+    _pf_cache = {}
+    _PF_TTL = 300
+    _PF_SP_FIELDS = "customfield_10016,customfield_10045,customfield_16144,customfield_14162,customfield_10028"
+    _PF_SKIP = {"cancelled", "canceled", "rejected", "won't do", "wont do", "duplicate"}      # not part of the work that has to be delivered
+    _PF_DONE = {"closed", "done", "resolved", "released", "deployed", "completed", "verified"}
+
+    def _pf_tracked():
+        d = {"initiatives": [], "epics": []}
+        if PF_CFG.exists():
+            try: d.update({k: v for k, v in _pf_json.loads(PF_CFG.read_text(encoding="utf-8")).items() if k in d and isinstance(v, list)})
+            except Exception: pass
+        return d
+
+    def _pf_save_tracked(d):
+        PF_CFG.parent.mkdir(parents=True, exist_ok=True)
+        PF_CFG.write_text(_pf_json.dumps(d, indent=2), encoding="utf-8")
+
+    def _pf_get(path, params=None):
+        import requests as _rq, urllib3 as _u3
+        from requests.auth import HTTPBasicAuth as _BA
+        _u3.disable_warnings()
+        creds, err = _jira_creds()
+        if not creds: raise RuntimeError(err)
+        r = _rq.get(creds["base_url"] + path, params=params, auth=_BA(creds["email"], creds["api_token"]), headers={"Accept": "application/json"}, timeout=30, verify=False)
+        if r.status_code != 200: raise RuntimeError(f"Jira HTTP {r.status_code}: {r.text[:160]}")
+        return r.json()
+
+    def _pf_search(jql, fields, limit=1000):
+        out, token = [], None
+        while len(out) < limit:
+            p = {"jql": jql, "fields": fields, "maxResults": 100}
+            if token: p["nextPageToken"] = token
+            d = _pf_get("/rest/api/3/search/jql", p)
+            out += d.get("issues", [])
+            token = d.get("nextPageToken")
+            if not token: break
+        return out
+
+    def _pf_cached(key, fn, refresh=False):
+        with _pf_lock:
+            hit = _pf_cache.get(key)
+        if hit and not refresh and _pf_tm.time() - hit[0] < _PF_TTL: return hit[1]
+        v = fn()
+        with _pf_lock: _pf_cache[key] = (_pf_tm.time(), v)
+        return v
+
+    def _pf_points(fields):
+        v = _sp_from_fields(fields)
+        return float(v) if isinstance(v, (int, float)) else 0.0
+
+    def _pf_issue(key):
+        i = _pf_get(f"/rest/api/3/issue/{key}", {"fields": "summary,issuetype,status,parent"})
+        f = i["fields"]; par = f.get("parent") or {}
+        return {"key": i["key"], "summary": f.get("summary", ""), "type": f["issuetype"]["name"], "status": f["status"]["name"], "cat": f["status"]["statusCategory"]["key"],
+                "parent": {"key": par.get("key", ""), "summary": (par.get("fields") or {}).get("summary", ""), "type": ((par.get("fields") or {}).get("issuetype") or {}).get("name", "")} if par else None}
+
+    def _pf_children(key):
+        """Work items directly under an epic (or initiative): [{key, summary, type, status, cat, points}] without cancelled / rejected ones."""
+        res = []
+        for i in _pf_search(f"parent = {key}", "summary,issuetype,status," + _PF_SP_FIELDS):
+            f = i["fields"]
+            if f["status"]["name"].lower() in _PF_SKIP: continue
+            res.append({"key": i["key"], "summary": f.get("summary", ""), "type": f["issuetype"]["name"], "status": f["status"]["name"],
+                        "cat": f["status"]["statusCategory"]["key"], "points": _pf_points(f)})
+        return res
+
+    def _pf_progress(kids):
+        t = len(kids); dn = sum(1 for k in kids if k["cat"] == "done"); ip = sum(1 for k in kids if k["cat"] == "indeterminate")
+        pt = sum(k["points"] for k in kids); pd = sum(k["points"] for k in kids if k["cat"] == "done")
+        bt = {}
+        for k in kids:
+            b = bt.setdefault(k["type"], {"total": 0, "done": 0}); b["total"] += 1; b["done"] += 1 if k["cat"] == "done" else 0
+        return {"total": t, "done": dn, "inprogress": ip, "todo": t - dn - ip, "points_total": pt, "points_done": pd,
+                "pct_items": round(100.0 * dn / t) if t else 0, "pct_points": round(100.0 * pd / pt) if pt else None, "by_type": bt}
+
+    def _pf_epic(key, refresh=False):
+        def go():
+            e = _pf_issue(key); kids = _pf_children(key)
+            return {**e, **_pf_progress(kids), "children": kids}
+        return _pf_cached("epic:" + key, go, refresh)
+
+    def _pf_many(fn, keys):
+        from concurrent.futures import ThreadPoolExecutor
+        def one(k):
+            try: return fn(k)
+            except Exception as ex: return {"key": k, "error": str(ex)}
+        with ThreadPoolExecutor(max_workers=6) as ex: return list(ex.map(one, keys))
+
+    def _pf_sprint_epics():
+        """Epics the teams work on: the 'Epic <KEY>' sheets of the sprint files."""
+        import openpyxl as _xl
+        found = []
+        for f in _pf_sprint_files():
+            try:
+                wb = _xl.load_workbook(str(f["path"]), read_only=True)
+                try:
+                    for sn in wb.sheetnames:
+                        m = _pf_re.match(r"^Epic\s+([A-Z][A-Z0-9]+-\d+)$", sn)
+                        if m and m.group(1) not in found: found.append(m.group(1))
+                finally: wb.close()
+            except Exception: pass
+        return found
+
+    @app.route("/api/project-management/portfolio/config", methods=["GET", "POST"])
+    def api_pf_config():
+        if request.method == "POST":
+            b = request.get_json() or {}
+            lvl, key, op = str(b.get("level") or ""), str(b.get("key") or "").strip().upper(), str(b.get("op") or "add")
+            if lvl not in ("initiatives", "epics") or not _pf_re.match(r"^[A-Z][A-Z0-9]+-\d+$", key): return jsonify({"ok": False, "error": "Enter a JIRA key such as PAYOR-204946"})
+            with _pf_lock:
+                d = _pf_tracked()
+                if op == "remove": d[lvl] = [x for x in d[lvl] if x != key]
+                elif key not in d[lvl]: d[lvl].append(key)
+                _pf_save_tracked(d)
+        d = _pf_tracked()
+        creds, _e = _jira_creds()
+        return jsonify({"ok": True, **d, "jira_base": (creds or {}).get("base_url", ""), "suggested_epics": [k for k in _pf_sprint_epics() if k not in d["epics"]], "config_file": str(PF_CFG)})
+
+    @app.route("/api/project-management/portfolio/epics", methods=["GET"])
+    def api_pf_epics():
+        rf = request.args.get("refresh") == "1"
+        keys = _pf_tracked()["epics"]
+        try:
+            out = _pf_many(lambda k: {kk: vv for kk, vv in _pf_epic(k, rf).items() if kk != "children"}, keys)
+        except Exception as ex:
+            return jsonify({"ok": False, "error": str(ex)})
+        return jsonify({"ok": True, "epics": out})
+
+    @app.route("/api/project-management/portfolio/initiatives", methods=["GET"])
+    def api_pf_initiatives():
+        rf = request.args.get("refresh") == "1"
+        tr = _pf_tracked()
+        def one(k):
+            i = _pf_issue(k)
+            ekeys = [c["key"] for c in _pf_cached("kids:" + k, lambda: _pf_children(k), rf) if c["type"].lower() == "epic"]
+            eps = _pf_many(lambda x: {kk: vv for kk, vv in _pf_epic(x, rf).items() if kk != "children"}, ekeys)
+            ok = [e for e in eps if "error" not in e]
+            roll = _pf_progress([{"cat": "done" if e["total"] and e["done"] == e["total"] else ("indeterminate" if e["done"] or e["inprogress"] else "new"), "points": 0, "type": "Epic"} for e in ok])
+            tot = sum(e["total"] for e in ok); dn = sum(e["done"] for e in ok); pt = sum(e["points_total"] for e in ok); pd = sum(e["points_done"] for e in ok)
+            return {**i, "epics": eps, "epics_total": len(ok), "epics_done": roll["done"], "total": tot, "done": dn, "points_total": pt, "points_done": pd,
+                    "pct_items": round(100.0 * dn / tot) if tot else 0, "pct_points": round(100.0 * pd / pt) if pt else None}
+        try:
+            # initiatives that are tracked, plus the parents of tracked epics
+            keys = list(tr["initiatives"])
+            for e in _pf_many(lambda k: _pf_epic(k, rf), tr["epics"]):
+                p = (e.get("parent") or {}).get("key")
+                if p and p not in keys: keys.append(p)
+            out = _pf_many(one, keys)
+        except Exception as ex:
+            return jsonify({"ok": False, "error": str(ex)})
+        return jsonify({"ok": True, "initiatives": out, "tracked": tr["initiatives"]})
+
+    @app.route("/api/project-management/portfolio/features", methods=["GET"])
+    def api_pf_features():
+        rf = request.args.get("refresh") == "1"
+        try:
+            feats = []
+            for ep in _pf_many(lambda k: _pf_epic(k, rf), _pf_tracked()["epics"]):
+                for c in ep.get("children", []):
+                    if "feature" in c["type"].lower(): feats.append({**c, "epic": ep["key"], "epic_summary": ep.get("summary", "")})
+            subs = {}
+            keys = [f["key"] for f in feats]
+            for i in range(0, len(keys), 40):
+                chunk = keys[i:i + 40]
+                for s in _pf_cached("subs:" + ",".join(chunk), lambda c=chunk: _pf_search("parent in (%s)" % ",".join(c), "status,parent"), rf):
+                    st = s["fields"]["status"]
+                    if st["name"].lower() in _PF_SKIP: continue
+                    b = subs.setdefault(s["fields"]["parent"]["key"], [0, 0]); b[0] += 1; b[1] += 1 if st["statusCategory"]["key"] == "done" else 0
+            for f in feats:
+                t, d = subs.get(f["key"], [0, 0])
+                f["sub_total"], f["sub_done"] = t, d
+                f["pct"] = round(100.0 * d / t) if t else (100 if f["cat"] == "done" else (50 if f["cat"] == "indeterminate" else 0))
+        except Exception as ex:
+            return jsonify({"ok": False, "error": str(ex)})
+        return jsonify({"ok": True, "features": feats})
+
+    # ── sprint-file based views ───────────────────────────────────────────────────────────────────────
+    def _pf_sprint_files():
+        out = []
+        for sub, cur in (("Sprints", True), ("PreviousSprints", False)):
+            base = SPRINT_DATA / sub
+            if not base.is_dir(): continue
+            for f in base.glob("*/*.xlsx"):
+                m = _pf_re.match(r"^(.+?)_(\d{4}-\d{2}-\d{2})_(.+)$", f.stem)
+                if m and not f.name.startswith("~$"): out.append({"path": f, "team": m.group(1), "date": m.group(2), "name": m.group(3), "current": cur, "file": f.name})
+        out.sort(key=lambda x: (x["date"], x["team"]))
+        return out
+
+    def _pf_num(v):
+        try: return float(v)
+        except (TypeError, ValueError): return 0.0
+
+    def _pf_rows(f):
+        """Work items of a sprint file (Sprint Board + Adhoc Task) as dicts."""
+        import openpyxl as _xl
+        rows = []
+        wb = _xl.load_workbook(str(f["path"]), read_only=True, data_only=True)
+        try:
+            for sn, adhoc in (("Sprint Board", False), ("Adhoc Task", True)):
+                if sn not in wb.sheetnames: continue
+                it = wb[sn].iter_rows(values_only=True)
+                hdr = [str(c or "").strip() for c in next(it, [])]
+                for r in it:
+                    if not r or not r[0]: continue
+                    d = {h: r[i] for i, h in enumerate(hdr) if h and i < len(r)}
+                    st = str(d.get("Status") or "").strip()
+                    if st.lower() in _PF_SKIP: continue
+                    rows.append({"key": str(d["JIRA ID"]).strip(), "type": str(d.get("Issue Type") or d.get("Type") or "Other").strip() or "Other", "points": _pf_num(d.get("Story Point")),
+                                 "status": st, "done": st.lower() in _PF_DONE, "dev": str(d.get("Developer") or "").strip(), "dev_days": _pf_num(d.get("DevDays")),
+                                 "qa_days": _pf_num(d.get("QADays")), "carried": bool(d.get("Carried Over")), "adhoc": adhoc})
+        finally: wb.close()
+        return rows
+
+    def _pf_sprints(team="", last=0):
+        fs = [f for f in _pf_sprint_files() if not team or f["team"] == team]
+        if last: fs = fs[-last:]
+        return [{**f, "path": None, "rows": _pf_rows(f)} for f in fs]
+
+    @app.route("/api/project-management/portfolio/delivery", methods=["GET"])
+    def api_pf_delivery():
+        team, last = request.args.get("team", ""), int(request.args.get("last") or 0)
+        sp = _pf_sprints(team, last)
+        out = []
+        for s in sp:
+            r = s["rows"]; tot = len(r); dn = sum(1 for x in r if x["done"])
+            pts = sum(x["points"] for x in r); pd = sum(x["points"] for x in r if x["done"])
+            dd = [x["dev_days"] for x in r if x["dev_days"]]; qd = [x["qa_days"] for x in r if x["qa_days"]]
+            out.append({"team": s["team"], "name": s["name"], "date": s["date"], "file": s["file"], "current": s["current"], "items": tot, "done": dn, "points": pts, "points_done": pd,
+                        "completion": round(100.0 * dn / tot) if tot else 0, "carried": sum(1 for x in r if x["carried"]), "adhoc": sum(1 for x in r if x["adhoc"]),
+                        "bugs": sum(1 for x in r if "bug" in x["type"].lower()), "avg_dev_days": round(sum(dd) / len(dd), 1) if dd else None, "avg_qa_days": round(sum(qd) / len(qd), 1) if qd else None})
+        teams = sorted({f["team"] for f in _pf_sprint_files()})
+        vel = [s["points_done"] for s in out if not s["current"]] or [s["points_done"] for s in out]
+        return jsonify({"ok": True, "sprints": out, "teams": teams, "avg_velocity": round(sum(vel) / len(vel), 1) if vel else 0})
+
+    @app.route("/api/project-management/portfolio/investment", methods=["GET"])
+    def api_pf_investment():
+        team, last = request.args.get("team", ""), int(request.args.get("last") or 0)
+        sp = _pf_sprints(team, last)
+        tot, per = {}, []
+        for s in sp:
+            by = {}
+            for x in s["rows"]:
+                for d in (by, tot):
+                    b = d.setdefault(x["type"], {"items": 0, "points": 0.0, "days": 0.0}); b["items"] += 1; b["points"] += x["points"]; b["days"] += x["dev_days"] + x["qa_days"]
+            per.append({"sprint": f"{s['name']} ({s['date']})", "team": s["team"], "by_type": by})
+        return jsonify({"ok": True, "total": tot, "per_sprint": per, "teams": sorted({f["team"] for f in _pf_sprint_files()})})
+
+    @app.route("/api/project-management/portfolio/capacity", methods=["GET"])
+    def api_pf_capacity():
+        team = request.args.get("team", "")
+        sp = _pf_sprints(team)
+        if not sp: return jsonify({"ok": True, "developers": [], "sprint": None, "teams": sorted({f["team"] for f in _pf_sprint_files()})})
+        cur = [s for s in sp if s["current"]] or sp[-1:]
+        cur = cur[-1]
+        hist = [s for s in sp if s is not cur][-5:]                              # velocity baseline: the last 5 earlier sprints
+        devs = {}
+        def dev(n): return devs.setdefault(n, {"name": n, "items": 0, "points": 0.0, "done": 0, "points_done": 0.0, "inprogress": 0, "days": 0.0, "hist": []})
+        for x in cur["rows"]:
+            if not x["dev"]: continue
+            d = dev(x["dev"]); d["items"] += 1; d["points"] += x["points"]; d["days"] += x["dev_days"]
+            if x["done"]: d["done"] += 1; d["points_done"] += x["points"]
+            elif x["status"].lower() not in ("new", "open", "to do", "backlog", ""): d["inprogress"] += 1
+        for s in hist:
+            per = {}
+            for x in s["rows"]:
+                if x["dev"] and x["done"]: per[x["dev"]] = per.get(x["dev"], 0.0) + x["points"]
+            for n in list(devs) + [k for k in per if k not in devs]: dev(n)["hist"].append(per.get(n, 0.0))
+        for d in devs.values():
+            d["avg_velocity"] = round(sum(d["hist"]) / len(d["hist"]), 1) if d["hist"] else None
+            d["load_pct"] = round(100.0 * d["points"] / d["avg_velocity"]) if d["avg_velocity"] else None
+            d["points"], d["points_done"], d["days"] = round(d["points"], 1), round(d["points_done"], 1), round(d["days"], 1)
+        return jsonify({"ok": True, "sprint": {"name": cur["name"], "date": cur["date"], "team": cur["team"], "baseline_sprints": len(hist)},
+                        "developers": sorted(devs.values(), key=lambda d: -d["points"]), "teams": sorted({f["team"] for f in _pf_sprint_files()})})
+
     # ── Per-app screen configuration (driven by screen_config.xlsx) ─────────────
 
     def _read_build_flags_sheet(wb):
