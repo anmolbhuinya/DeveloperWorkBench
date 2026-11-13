@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import ItLogView from './ItLogView'
 
 const JOB_API = '/api/project-management/sonar-report'
 
@@ -17,22 +18,6 @@ function parseSearch(raw) {
     }
   }
   return { cls, clsName: cls.split('.').pop(), meth }
-}
-
-// Line with every occurrence of the watched string highlighted
-function hl(line, w) {
-  const hay = w.matchCase ? line : line.toLowerCase(), needle = w.matchCase ? w.text : w.text.toLowerCase()
-  const out = []
-  let i = 0, k = 0
-  while (needle) {
-    const j = hay.indexOf(needle, i)
-    if (j < 0) break
-    if (j > i) out.push(line.slice(i, j))
-    out.push(<mark key={k++} style={{ background: '#f0c674', color: '#0d1117', borderRadius: 2, padding: '0 1px' }}>{line.slice(j, j + needle.length)}</mark>)
-    i = j + needle.length
-  }
-  out.push(line.slice(i))
-  return out
 }
 
 // Survives navigating away and back (component unmounts): search text, results, selected class and its methods
@@ -70,10 +55,7 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
   const [resultsFor,   setResultsFor]   = useState(null)   // the class query the current list belongs to
   const parsed = parseSearch(q)
   // Watched strings: lines of the IT log containing one of them are collected in the second terminal tab
-  const [logTab, setLogTab]   = useState('log')                       // log | watch
   const [watches, setWatches] = useState(() => { try { return JSON.parse(localStorage.getItem(`dwb_it_watch:${jobKey}`) || '[]') } catch { return [] } })
-  const [wText, setWText]     = useState('')
-  const [wCase, setWCase]     = useState(false)
   const saveWatches = w => { setWatches(w); try { localStorage.setItem(`dwb_it_watch:${jobKey}`, JSON.stringify(w)) } catch { /* quota */ } }
   const selRef  = useRef(c0.selected?.path || '')
   const pollRef = useRef(null)
@@ -201,7 +183,6 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
     return () => clearInterval(pollRef.current)
   }, [jobKey, watch])
 
-  useEffect(() => { if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight }, [term?.text])
 
   async function run(c, method) {
     setErr('')
@@ -239,28 +220,6 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
     setTerm(null)
   }
 
-  const watchHits = useMemo(() => {
-    const lines = (term?.text || '').split('\n')
-    return watches.map(w => {
-      const needle = w.matchCase ? w.text : w.text.toLowerCase()
-      const hits = []
-      for (let i = 0; i < lines.length && hits.length < 500; i++) {
-        if ((w.matchCase ? lines[i] : lines[i].toLowerCase()).includes(needle)) hits.push({ n: i + 1, line: lines[i] })
-      }
-      return { ...w, hits }
-    })
-  }, [term?.text, watches])
-  const totalHits = watchHits.reduce((n, w) => n + w.hits.length, 0)
-  const addWatch = () => {
-    const t = wText.trim()
-    if (!t) return
-    if (!watches.some(w => w.text === t && w.matchCase === wCase)) saveWatches([...watches, { id: Date.now(), text: t, matchCase: wCase }])
-    setWText('')
-  }
-  const copyText = async text => {
-    try { await navigator.clipboard.writeText(text) }
-    catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy') } catch { /* ignore */ } document.body.removeChild(ta) }
-  }
   // the searched class / method: exact matches get their own colour
   const exactCls = c => !!parsed.clsName && (c.cls.toLowerCase() === parsed.clsName.toLowerCase() || c.fqcn.toLowerCase() === parsed.cls.toLowerCase())
   const exactMeth = m => { const w = (parsed.meth || mq).trim().toLowerCase(); return !!w && m.toLowerCase() === w }
@@ -440,45 +399,7 @@ export default function ItTab({ appName, scope = 'local', vmIp = '' }) {
                 style={{ fontSize: 11, padding: '3px 12px', borderRadius: 6, background: 'none', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-muted)' }}>✕ Close</button>
             </span>
           </div>
-          <div style={{ display: 'flex', background: 'var(--surface2)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
-            {[['log', 'Log'], ['watch', `Watched strings${watches.length ? ` (${totalHits} line${totalHits === 1 ? '' : 's'})` : ''}`]].map(([k, l]) => (
-              <button key={k} onClick={() => setLogTab(k)} style={{ padding: '6px 16px', fontSize: 12, cursor: 'pointer', background: 'none', border: 'none', fontWeight: logTab === k ? 700 : 500,
-                color: logTab === k ? 'var(--primary, #1565c0)' : 'var(--text-muted)', borderBottom: logTab === k ? '2px solid var(--primary, #1565c0)' : '2px solid transparent', marginBottom: -1 }}>{l}</button>
-            ))}
-          </div>
-          <pre ref={termRef} style={{ display: logTab === 'log' ? 'block' : 'none', margin: 0, padding: 12, background: '#0d1117', color: '#c9d1d9', fontSize: 11.5, lineHeight: 1.45, height: 340, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{term.text || 'Starting Maven…'}</pre>
-          {logTab === 'watch' && (
-            <div style={{ background: '#0d1117', color: '#c9d1d9', height: 340, overflow: 'auto', padding: 12, fontSize: 11.5 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-                <input value={wText} onChange={e => setWText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addWatch() }} placeholder='String to watch for, e.g. HCC ID'
-                  style={{ flex: '1 1 240px', minWidth: 180, fontSize: 12, padding: '4px 8px', background: '#161b22', color: '#c9d1d9', border: '1px solid #30363d', borderRadius: 6 }} />
-                <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}><input type="checkbox" checked={wCase} onChange={e => setWCase(e.target.checked)} /> Match case</label>
-                <button onClick={addWatch} disabled={!wText.trim()} style={btn(true, !wText.trim())}>+ Add</button>
-                {totalHits > 0 && <button onClick={() => copyText(watchHits.flatMap(w => w.hits.map(h => h.line)).join('\n'))} style={btn(false)}>⧉ Copy all lines</button>}
-              </div>
-              {watches.length === 0 && <div style={{ color: '#8b949e' }}>Add a string and every line of this IT run that contains it is kept here, even in a long log. Matching is live while the test runs.</div>}
-              {watchHits.map(w => (
-                <div key={w.id} style={{ marginBottom: 12, border: '1px solid #30363d', borderRadius: 6, overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px', background: '#161b22' }}>
-                    <b style={{ color: '#f0c674' }}>{w.text}</b>
-                    <span style={{ fontSize: 10, color: '#8b949e' }}>{w.matchCase ? 'match case' : 'ignore case'} · {w.hits.length}{w.hits.length >= 500 ? '+' : ''} line{w.hits.length === 1 ? '' : 's'}</span>
-                    <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                      {w.hits.length > 0 && <button onClick={() => copyText(w.hits.map(h => h.line).join('\n'))} title="Copy these lines" style={{ ...btn(false), padding: '1px 8px' }}>⧉ Copy</button>}
-                      <button onClick={() => saveWatches(watches.filter(x => x.id !== w.id))} title="Stop watching this string" style={{ ...btn(false), color: '#f85149', padding: '1px 8px' }}>🗑 Delete</button>
-                    </span>
-                  </div>
-                  {w.hits.length === 0
-                    ? <div style={{ padding: '6px 10px', color: '#8b949e' }}>{running ? 'Not found yet…' : 'Not found in this run.'}</div>
-                    : w.hits.map(h => (
-                      <div key={h.n} style={{ display: 'flex', gap: 8, padding: '2px 10px', borderTop: '1px solid #21262d', alignItems: 'flex-start' }}>
-                        <span style={{ color: '#6e7681', minWidth: 42, textAlign: 'right', userSelect: 'none' }}>{h.n}</span>
-                        <span style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{hl(h.line, w)}</span>
-                        <button onClick={() => copyText(h.line)} title="Copy this line" style={{ background: 'none', border: 'none', color: '#8b949e', cursor: 'pointer', fontSize: 12 }}>⧉</button>
-                      </div>))}
-                </div>
-              ))}
-            </div>
-          )}
+          <ItLogView text={term.text} running={running} watches={watches} saveWatches={saveWatches} btn={btn} termRef={termRef} />
         </div>
       )}
     </div>

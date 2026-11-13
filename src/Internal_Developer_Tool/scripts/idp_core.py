@@ -22321,15 +22321,12 @@ done
                 ws.append([rd[c] for c in cols])
         wb.save(str(path))
 
-    _clickonce_versions_cache = {"versions": None, "ts": 0.0}
+    _clickonce_versions_cache = {"versions": None, "ts": 0.0, "fail_ts": 0.0, "thread": None}
 
-    def _fetch_clickonce_versions(base_url):
-        import time as _time2, re as _re4
+    def _clickonce_scrape(base_url):
+        """Read the version folders from the ClickOnce server (slow / times out when the server is not reachable)."""
+        import re as _re4
         import urllib.request as _urlreq2
-        now = _time2.time()
-        if (_clickonce_versions_cache["versions"] is not None
-                and now - _clickonce_versions_cache["ts"] < 300):
-            return _clickonce_versions_cache["versions"]
         try:
             url = base_url.rstrip("/") + "/"
             req = _urlreq2.Request(url, headers={"User-Agent": "IDP/1.0"})
@@ -22338,18 +22335,35 @@ done
             # Match href values that look like release-X.Y.Z or master (with optional trailing /)
             raw = _re4.findall(
                 r'href=["\']([^"\'#?]*(?:release-[\d.]+|master)/?)["\']', html, _re4.I)
-            versions = []
-            seen = set()
+            versions, seen = [], set()
             for v in raw:
                 v = v.rstrip("/").split("/")[-1]
                 if v and v not in seen:
                     seen.add(v)
                     versions.append(v)
             _clickonce_versions_cache["versions"] = versions
-            _clickonce_versions_cache["ts"] = now
-            return versions
+            _clickonce_versions_cache["ts"] = _tm_co.time()
         except Exception:
-            return _clickonce_versions_cache["versions"] or []
+            _clickonce_versions_cache["fail_ts"] = _tm_co.time()      # remember the failure: do not retry on every page load
+
+    import time as _tm_co
+
+    def _fetch_clickonce_versions(base_url):
+        """Versions on the ClickOnce server. The page never waits long for the (often unreachable) server:
+        a fresh cache is used as is, a failure is remembered for 2 minutes, and a refresh runs in the background
+        while the request waits at most 1.5 s - installed / downloaded clients are detected from disk anyway."""
+        c, now = _clickonce_versions_cache, _tm_co.time()
+        if c["versions"] is not None and now - c["ts"] < 300:
+            return c["versions"]
+        if now - c["fail_ts"] < 120:
+            return c["versions"] or []
+        t = c["thread"]
+        if t is None or not t.is_alive():
+            t = _threading.Thread(target=_clickonce_scrape, args=(base_url,), daemon=True)
+            c["thread"] = t
+            t.start()
+        t.join(timeout=1.5)
+        return c["versions"] or []
 
     def _parse_release_tuple(ver):
         import re as _re5
