@@ -405,11 +405,26 @@ export default function AppMapTab({ appName, displayName }) {
   // always read the saved setting: the effect above already put the default (disabled) into C.amSet, so a cache check here
   // would skip the fetch and show "disabled" while the server still has recording enabled
   useEffect(() => {
-    fetch(`/api/local-app/${appName}/appmap/settings`).then(r => r.json()).then(d => { if (d.ok) setAmSet({ enabled: d.enabled, record_values: d.record_values }) }).catch(() => {})
+    loadSettings()
   }, [appName])
+  const [srvAgent, setSrvAgent] = useState(false)       // the app server still runs with the agent although recording is off
+  const [restarting, setRestarting] = useState('')
+  const loadSettings = () => fetch(`/api/local-app/${appName}/appmap/settings`).then(r => r.json())
+    .then(d => { if (d.ok) { setAmSet({ enabled: d.enabled, record_values: d.record_values }); setSrvAgent(!!d.server_restart_needed) } }).catch(() => {})
+  const restartServer = async () => {
+    setRestarting('Restarting the app server…')
+    try {
+      const r = await (await fetch(`/api/local-app/${appName}/server-op`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation: 'restart' }) })).json()
+      if (!r.ok) { setRestarting(r.error || 'Restart failed'); return }
+      setRestarting('Restart started - follow it on the App Server tab; this notice goes away once the server is back without the agent.')
+      const t = setInterval(() => loadSettings().then(() => {}), 15000)
+      setTimeout(() => clearInterval(t), 600000)
+    } catch { setRestarting('Restart failed') }
+  }
   const saveSet = (patch) => {
     const n = { ...amSet, ...patch }; setAmSet(n)
-    fetch(`/api/local-app/${appName}/appmap/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(n) }).catch(() => {})
+    fetch(`/api/local-app/${appName}/appmap/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(n) })
+      .then(r => r.json()).then(d => { if (d.ok) setSrvAgent(!!d.server_restart_needed) }).catch(() => {})
   }
   const [cfgOpen, setCfgOpen] = useState(false)
   const [cfgMsg, setCfgMsg] = useState('')
@@ -468,6 +483,14 @@ export default function AppMapTab({ appName, displayName }) {
         <button className="btn btn-sm" onClick={() => delMaps(true)} disabled={maps.length === 0} title="Delete all recordings">🗑 Delete all</button>
       </div>
 
+      {srvAgent && (
+        <div style={{ marginBottom: 12, padding: '8px 12px', border: '1px solid #f9a825', borderRadius: 6, background: 'rgba(249,168,37,0.12)', fontSize: 12, lineHeight: 1.6 }}>
+          <b>⚠ The app server is still running with the AppMap agent.</b> Recording is switched off, but the server was started while it was on, so API calls and anything else it serves are still being recorded
+          (and slowed down) until it is restarted. {restarting
+            ? <span style={{ color: 'var(--text-muted)' }}>{restarting}</span>
+            : <button className="btn btn-sm btn-primary" style={{ marginLeft: 8 }} onClick={restartServer}>↺ Restart app server now</button>}
+        </div>
+      )}
       {cfg && (
         <div style={{ marginBottom: 12, fontSize: 12 }}>
           <button className="btn btn-sm" onClick={() => setCfgOpen(o => !o)}>{cfgOpen ? '▾' : '▸'} appmap.yml configuration</button>

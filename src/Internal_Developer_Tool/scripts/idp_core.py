@@ -18355,6 +18355,17 @@ def create_flask_app():
         return f"export JAVA_OPTS=\"$JAVA_OPTS {opts}\"; "
     _APPMAP_HOOK["prefix"] = _appmap_server_prefix
 
+    def _appmap_server_has_agent(app_name):
+        """True when the running app server container's JVM was started with the AppMap agent."""
+        try:
+            c = _appmap_container_name(app_name)
+            if not c or not _docker_container_running(c):
+                return False
+            ok, out = _appmap_dk(["exec", c, "sh", "-c", "ps -ef | grep -c '[a]ppmap-agent'"], timeout=15)
+            return ok and out.strip().isdigit() and int(out.strip()) > 0
+        except Exception:
+            return False
+
     def _appmap_pull(app_name):
         """Copy recordings written inside the container to <AppMap home>\\tmp\\appmap\\server."""
         c = _appmap_container_name(app_name)
@@ -20327,7 +20338,11 @@ done
             h = _appmap_cfgdir(app_name)
             (h / "settings.json").write_text(_js_as.dumps(d), encoding="utf-8")
         _off = _appmap_panel_off(app_name)
-        return jsonify({"ok": True, **d, "panel_off": _off, "effective_enabled": bool(d["enabled"] and not _off)})
+        _eff = bool(d["enabled"] and not _off)
+        # a running app server keeps the agent it was started with: switching AppMap off does not detach it until the server restarts
+        _srv = _appmap_server_has_agent(app_name)
+        return jsonify({"ok": True, **d, "panel_off": _off, "effective_enabled": _eff,
+                        "server_agent": _srv, "server_restart_needed": bool(_srv and not _eff)})
 
     @app.route("/api/local-app/<app_name>/appmap/config", methods=["GET", "POST"])
     def api_appmap_config(app_name):
