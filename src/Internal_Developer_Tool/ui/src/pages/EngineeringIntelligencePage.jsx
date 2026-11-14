@@ -17,6 +17,7 @@ const api = async (url, method = 'GET', body) => {
   } catch { return { ok: false, error: 'Could not reach server' } }
 }
 
+let nav2 = () => {}
 function Back({ to, label }) {
   const nav = useNavigate()
   return <button className="btn btn-sm" onClick={() => nav(to)} style={{ marginBottom: 12 }}>← {label}</button>
@@ -57,6 +58,175 @@ function Landing({ cfg }) {
   )
 }
 
+const SPRINT_API = '/api/project-management/sprint'
+const APP_SLUG = { PAYOR: 'payor', CLASSIC: 'classic', CONNECTOR: 'connector', ENROLLMENT: 'enrollment', PIK: 'pik' }
+const small = { fontSize: 11, padding: '2px 9px' }
+
+// Jira issue type -> work item type (project_config.xlsx, tab router): decides where a Sprint project lands
+function RouterEditor() {
+  const [d, setD] = useState(null)
+  const [rows, setRows] = useState([])
+  const [msg, setMsg] = useState('')
+  const [open, setOpen] = useState(false)
+  useEffect(() => { if (open && !d) api(`${API}/router`).then(r => { if (r.ok) { setD(r); setRows(r.rows) } else setMsg(r.error) }) }, [open])
+  const set = (i, k, v) => setRows(rs => rs.map((r, j) => j === i ? { ...r, [k]: v } : r))
+  const save = async () => {
+    const r = await api(`${API}/router`, 'POST', { rows })
+    if (r.ok) { setD(r); setRows(r.rows); setMsg('Saved') } else setMsg(r.error)
+    setTimeout(() => setMsg(''), 3000)
+  }
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <b style={{ fontSize: 14 }}>{open ? '▾' : '▸'} Project router</b>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Which work item type / workflow a project created in Sprint &gt; My Stories belongs to, by Jira issue type</span>
+      </div>
+      {open && !d && !msg && <span className="spinner" />}
+      {open && d && (
+        <div style={{ marginTop: 10 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>{['Jira issue type (* = anything else)', 'Work item type', 'Workflow', ''].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>{rows.map((r, i) => (
+              <tr key={i}>
+                <td style={td}><input value={r['Jira Issue Type']} onChange={e => set(i, 'Jira Issue Type', e.target.value)} style={{ ...field, width: '100%' }} /></td>
+                <td style={td}><select value={r['Work Item Type']} onChange={e => set(i, 'Work Item Type', e.target.value)} style={field}>{d.types.map(t => <option key={t}>{t}</option>)}</select></td>
+                <td style={td}><select value={r['Workflow ID']} onChange={e => set(i, 'Workflow ID', e.target.value)} style={field}>
+                  <option value="">(default of the type)</option>{d.workflows.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></td>
+                <td style={td}><button className="btn btn-sm btn-danger" style={small} onClick={() => setRows(rs => rs.filter((_, j) => j !== i))} disabled={r['Jira Issue Type'] === '*'}>✕</button></td></tr>))}</tbody>
+          </table>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+            <button className="btn btn-sm" onClick={() => setRows(rs => [...rs, { 'Jira Issue Type': '', 'Work Item Type': 'Task', 'Workflow ID': '' }])}>＋ Add issue type</button>
+            <button className="btn btn-sm btn-primary" onClick={save}>Save</button>
+            {msg && <span style={{ fontSize: 12, color: msg === 'Saved' ? '#2e7d32' : '#c62828' }}>{msg}</span>}
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>{d.file}</span>
+          </div>
+        </div>)}
+    </div>
+  )
+}
+
+// Repo branch rules (repo_branch_rule.xlsx, tab rule): application and branch name pattern per Jira prefix / ticket type
+function RulesEditor({ onSaved }) {
+  const [d, setD] = useState(null)
+  const [rows, setRows] = useState([])
+  const [msg, setMsg] = useState('')
+  useEffect(() => { api(`${API}/branch-rules`).then(r => { if (r.ok) { setD(r); setRows(r.rows) } else setMsg(r.error) }) }, [])
+  const set = (i, k, v) => setRows(rs => rs.map((r, j) => j === i ? { ...r, [k]: v } : r))
+  const save = async () => {
+    const r = await api(`${API}/branch-rules`, 'POST', { rows })
+    if (r.ok) { setD(r); setRows(r.rows); setMsg('Saved'); onSaved && onSaved() } else setMsg(r.error)
+    setTimeout(() => setMsg(''), 3000)
+  }
+  if (!d) return msg ? <div className="alert alert-error">{msg}</div> : <span className="spinner" />
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginTop: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Repo branch rules <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— branch = Prefix + JIRA ID + Midfix + story title (snake_case) + Postfix</span></div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+          <thead><tr>{[...d.cols, ''].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+          <tbody>{rows.map((r, i) => (
+            <tr key={i}>{d.cols.map(c => <td key={c} style={{ ...td, padding: '4px 4px' }}>
+              {c === 'Default' ? <select value={r[c]} onChange={e => set(i, c, e.target.value)} style={field}><option value=""></option><option>Yes</option></select>
+                : <input value={r[c] || ''} onChange={e => set(i, c, e.target.value)} style={{ ...field, width: c === 'Application' || c === 'Ticket Type' ? 110 : 90 }} />}</td>)}
+              <td style={{ ...td, padding: '4px 4px' }}><button className="btn btn-sm btn-danger" style={small} onClick={() => setRows(rs => rs.filter((_, j) => j !== i))}>✕</button></td></tr>))}</tbody>
+        </table>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+        <button className="btn btn-sm" onClick={() => setRows(rs => [...rs, Object.fromEntries(d.cols.map(c => [c, '']))])}>＋ Add rule</button>
+        <button className="btn btn-sm btn-primary" onClick={save}>Save rules</button>
+        {msg && <span style={{ fontSize: 12, color: msg === 'Saved' ? '#2e7d32' : '#c62828' }}>{msg}</span>}
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>{d.file}</span>
+      </div>
+    </div>
+  )
+}
+
+// Development stage: repo branch rule, the project's branches (checkout / delete) and creating a new branch
+function BranchPanel({ d, itemKey, reload }) {
+  const proj = d.project
+  const [pv, setPv] = useState(null)
+  const [newBranch, setNewBranch] = useState('')
+  const [busy, setBusy] = useState('')
+  const [steps, setSteps] = useState(null)         // result of a checkout / branch setup
+  const [stale, setStale] = useState(null)         // { branch, files } waiting for "revert & proceed"
+  const [err, setErr] = useState('')
+  const [rules, setRules] = useState(false)
+  const loadPv = useCallback(() => {
+    if (!proj) return
+    api(`${SPRINT_API}/project-preview`, 'POST', { jira_id: itemKey, story: proj.story, issue_type: proj.issue_type }).then(r => {
+      setPv(r); if (r.ok) setNewBranch(r.next_branch_suggestion || r.branch_name || '')
+    })
+  }, [itemKey, proj?.story, proj?.issue_type])
+  useEffect(() => { loadPv() }, [loadPv])
+  if (!proj) return <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>No project information for this work item yet.</div>
+  const app = (pv?.ok && pv.rule?.application) || proj.application
+  const setup = async (branch, confirm_revert = false) => {
+    setBusy('setup:' + branch); setErr(''); setSteps(null); setStale(null)
+    const r = await api(`${SPRINT_API}/project-setup-branch`, 'POST', { application: app, branch_name: branch, confirm_revert })
+    setBusy('')
+    if (r.stale_files) { setStale({ branch, files: r.changed_files }); setSteps(r.steps || []); return }
+    setSteps(r.steps || []); if (!r.ok) setErr(r.error || 'Failed')
+    return r
+  }
+  const create = async () => {
+    const name = newBranch.trim()
+    if (!name) return
+    setBusy('create'); setErr('')
+    const r = await api(`${SPRINT_API}/project-add-branch`, 'POST', { jira_id: itemKey, branch_name: name, team: proj.team })
+    if (!r.ok) { setBusy(''); setErr(r.error); return }
+    await reload()
+    setBusy('')
+    await setup(name)
+  }
+  const del = async (label, name) => {
+    if (!window.confirm(`Delete local branch ${name}?`)) return
+    setBusy('del:' + name)
+    const r = await api(`${SPRINT_API}/project-delete-branch`, 'POST', { jira_id: itemKey, branch_name: name, branch_label: label, application: app, team: proj.team })
+    setBusy(''); if (!r.ok) setErr(r.error); else reload()
+  }
+  const ap = APP_SLUG[(app || '').toUpperCase()]
+  const rule = pv?.ok ? pv.rule : null
+  return (
+    <div style={{ border: '1px solid var(--border)', borderLeft: '4px solid #6a1b9a', borderRadius: 8, padding: '10px 14px', margin: '12px 0', background: 'var(--surface)' }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>🌿 Repository &amp; branches <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}>— where the development of this work item happens</span></div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, marginBottom: 8 }}>
+        <span>Application {ap ? <button className="btn btn-sm" style={{ ...small, color: '#1565c0' }} onClick={() => nav2(`/local-app/${ap}`)}>{app} ↗</button> : <b>{app || '—'}</b>}</span>
+        {rule && <span style={{ color: 'var(--text-muted)' }}>Rule: <code>{rule.branch_prefix}{itemKey}{rule.branch_midfix}…{rule.branch_postfix}</code> {pv.is_default && <i>(default rule - issue type not matched)</i>}</span>}
+        {pv && !pv.ok && <span style={{ color: '#c62828' }}>{pv.error}</span>}
+        <button className="btn btn-sm" style={{ ...small, marginLeft: 'auto' }} onClick={() => setRules(r => !r)}>{rules ? 'Hide' : '⚙ Edit'} branch rules</button>
+      </div>
+      {rules && <RulesEditor onSaved={loadPv} />}
+
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', margin: '10px 0 4px' }}>Existing branches</div>
+      {proj.branches.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No branch yet.</div> : proj.branches.map(([k, v]) => (
+        <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '2px 0', flexWrap: 'wrap' }}>
+          <span style={{ width: 64, color: 'var(--text-muted)' }}>{k}</span>
+          <button onClick={() => setup(v)} disabled={!!busy} title="Check this branch out in the local application" style={{ background: 'none', border: 'none', color: 'var(--primary)', textDecoration: 'underline dotted', cursor: 'pointer', fontFamily: 'monospace', fontSize: 12, padding: 0 }}>{v}</button>
+          <button onClick={() => del(k, v)} disabled={!!busy} title="Delete the local branch" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#999' }}>🗑</button>
+        </div>))}
+
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', margin: '10px 0 4px' }}>New branch</div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input value={newBranch} onChange={e => setNewBranch(e.target.value)} style={{ ...field, flex: '1 1 380px', maxWidth: 620, fontFamily: 'monospace' }} placeholder={pv?.ok ? '' : 'branch name'} />
+        <button className="btn btn-sm btn-primary" disabled={!!busy || !newBranch.trim()} onClick={create}>{busy === 'create' ? 'Creating…' : 'Create branch & check out'}</button>
+      </div>
+      {busy.startsWith('setup') && <div style={{ fontSize: 12, marginTop: 8 }}><span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} /> Setting up the branch…</div>}
+      {err && <div className="alert alert-error" style={{ marginTop: 8, fontSize: 12 }}>{err}</div>}
+      {stale && (
+        <div style={{ marginTop: 8, fontSize: 12, border: '1px solid #ffcc80', background: 'rgba(230,81,0,0.07)', borderRadius: 6, padding: 8 }}>
+          <b style={{ color: '#e65100' }}>⚠ Uncommitted changes in the repository:</b>
+          <div style={{ fontFamily: 'monospace', fontSize: 11, maxHeight: 100, overflow: 'auto', margin: '4px 0' }}>{stale.files.map((f, i) => <div key={i}>{f}</div>)}</div>
+          <button className="btn btn-sm btn-primary" onClick={() => setup(stale.branch, true)}>Revert &amp; proceed</button>{' '}<button className="btn btn-sm" onClick={() => setStale(null)}>Abort</button>
+        </div>)}
+      {steps && steps.length > 0 && !stale && (
+        <div style={{ marginTop: 8 }}>{steps.map((st, i) => (
+          <div key={i} style={{ fontSize: 12, display: 'flex', gap: 6 }}>
+            <span style={{ color: st.status === 'ok' ? '#2e7d32' : st.status === 'warning' ? '#e65100' : '#c62828' }}>{st.status === 'ok' ? '✓' : st.status === 'warning' ? '⚠' : '✗'}</span>
+            <b>{st.label}</b><span style={{ color: 'var(--text-muted)' }}>{st.detail ? `— ${st.detail}` : ''}</span></div>))}</div>)}
+    </div>
+  )
+}
+
 // ── Work Item Intelligence table ─────────────────────────────────────────────────────────────────
 function WorkItemTable({ cfg }) {
   const nav = useNavigate()
@@ -84,6 +254,7 @@ function WorkItemTable({ cfg }) {
           </tbody>
         </table>
       </div>
+      <RouterEditor />
     </>
   )
 }
@@ -267,6 +438,20 @@ function ItemWorkflow({ cfg, typeSlug, itemKey }) {
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.workflow.name} · {t.type}</span>
         <span style={{ marginLeft: 'auto' }}><Progress done={done} total={d.stages.length} /></span>
       </div>
+      {d.project && (
+        <div className="card" style={{ padding: '8px 14px', marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 12, alignItems: 'center' }}>
+            {d.project.fields.filter(([k, v]) => v && k !== 'JIRA ID' && k !== 'Story').map(([k, v]) => (
+              <div key={k}><span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{k}&nbsp;</span>
+                {k === 'Application' && APP_SLUG[v.toUpperCase()] ? <button className="btn btn-sm" style={{ ...small, color: '#1565c0' }} onClick={() => nav2(`/local-app/${APP_SLUG[v.toUpperCase()]}`)}>{v} ↗</button> : <b style={{ fontWeight: 500 }}>{v}</b>}</div>))}
+            <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              {d.project.jira_url && <a className="btn btn-sm" href={d.project.jira_url} target="_blank" rel="noreferrer">Jira ↗</a>}
+              <button className="btn btn-sm btn-primary" title="Open this story in Sprint > My Stories"
+                onClick={() => nav2('/project-management/sprint', { state: { openSprint: d.project.sprint_file ? { file: d.project.sprint_file, name: d.project.sprint_file.replace(/\.xlsx$/i, ''), _openTab: 'My Stories', _highlightJira: itemKey } : null } })}>Sprint › My Stories ↗</button>
+            </span>
+          </div>
+          {d.project.story && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{d.project.story}</div>}
+        </div>)}
       {msg && <div style={{ fontSize: 12, color: '#2e7d32', marginBottom: 6 }}>✓ {msg}</div>}
       {err && <div className="alert alert-error" style={{ fontSize: 12, marginBottom: 6 }}>{err}</div>}
       <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 14, flexWrap: 'wrap' }}>
@@ -298,6 +483,7 @@ function ItemWorkflow({ cfg, typeSlug, itemKey }) {
           </div>
           <div style={{ fontWeight: 700, fontSize: 16 }}>{stage.n}. {stage.name}</div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 10px' }}>{stage.description}</div>
+          {stage.branching && <BranchPanel d={d} itemKey={itemKey} reload={() => api(`${API}/item/${t.type}/${itemKey}`).then(apply)} />}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
             <label style={{ fontSize: 12 }}>Status{' '}
               <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} style={field}>{cfg.statuses.map(s => <option key={s}>{s}</option>)}</select></label>
@@ -366,6 +552,7 @@ function ItemWorkflow({ cfg, typeSlug, itemKey }) {
 
 export default function EngineeringIntelligencePage() {
   const loc = useLocation()
+  nav2 = useNavigate()
   const [cfg, setCfg] = useState(null)
   const [err, setErr] = useState('')
   const reload = useCallback(async () => { const d = await api(`${API}/config`); if (d.ok) setCfg(d); else setErr(d.error || 'Failed to load') }, [])

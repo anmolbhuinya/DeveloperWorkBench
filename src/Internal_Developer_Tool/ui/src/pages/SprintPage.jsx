@@ -280,6 +280,18 @@ function localAppPath(application) {
   return slug ? `/local-app/${slug}` : null
 }
 
+// Opens the work item of a project in Engineering Intelligence > Work Item Intelligence (type chosen by the router)
+function EiButton({ ei, navigate }) {
+  if (!ei) return null
+  return (
+    <button onClick={() => navigate(`/project-management/engineering-intelligence/work-items/${ei.slug}/${ei.key}`)}
+      title={`Open ${ei.key} in Engineering Intelligence > Work Item Intelligence (${ei.type})`}
+      style={{ fontSize:12, padding:'5px 14px', background:'#1565c0', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600 }}>
+      Engineering Intelligence ↗ <span style={{ fontWeight:400, opacity:0.85 }}>({ei.type})</span>
+    </button>
+  )
+}
+
 // ─── SetupProgress ───────────────────────────────────────────────────────────
 function SetupProgress({ setup, onNavigate, onConfirmRevert, onAbort }) {
   if (!setup) return null
@@ -752,6 +764,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
           ...prev, loading: false, branches: [d.branch_name], rule: d.rule, isDefault: d.is_default,
           alreadyExists: d.project_exists, existingFile: d.project_file,
           projectInfo: d.project_info || {},
+          ei: d.ei || null,
           newBranchInput: d.next_branch_suggestion || '',
           fixVersions: d.fix_versions || [],
           codeFreezeDate: d.code_freeze_date || null,
@@ -795,7 +808,6 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
         body: JSON.stringify({
           jira_id: projectModal.jiraId, story: projectModal.story,
           issue_type: projectModal.issueType,
-          branches: (projectModal.branches || []).filter(b => b.trim()),
           developer: projectModal.developer, application: projectModal.rule?.application || '',
           sprints: (projectModal.sprints || []).filter(s => s.trim()),
           team: projectModal.team || '',
@@ -804,10 +816,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
         }),
       }).then(r => r.json())
       if (d.ok) {
-        const firstBranch = (projectModal.branches || []).find(b => b.trim()) || ''
-        const app = projectModal.rule?.application || ''
-        setProjectModal(prev => ({ ...prev, creating: false, created: d.file }))
-        doSetupBranch(firstBranch, app)
+        setProjectModal(prev => ({ ...prev, creating: false, created: d.file, ei: d.ei || prev.ei }))
       } else {
         setProjectModal(prev => ({ ...prev, creating: false, createError: d.error }))
       }
@@ -2345,7 +2354,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                         <td colSpan={mainIndices.length + 1} style={{ padding: '12px 16px', borderBottom: expanded ? 'none' : '2px solid #ce93d8' }}>
                           {projectModal.loading ? (
                             <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--text-muted)' }}>
-                              <span className="spinner" style={{ width:12, height:12, borderWidth:1.5 }} /> Loading branch rules…
+                              <span className="spinner" style={{ width:12, height:12, borderWidth:1.5 }} /> Loading project details…
                             </div>
                           ) : projectModal.error ? (
                             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
@@ -2356,9 +2365,9 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                               <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                                 <span style={{ fontSize:12, color:'#2e7d32', fontWeight:600 }}>✓ Project created: {projectModal.created}</span>
+                                <EiButton ei={projectModal.ei} navigate={navigate} />
                                 <button onClick={() => setProjectModal(null)} style={{ fontSize:11, padding:'2px 8px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, cursor:'pointer', color:'var(--text)' }}>Close</button>
                               </div>
-                              <SetupProgress setup={projectModal.setup} onNavigate={navigate} onConfirmRevert={() => doSetupBranch(projectModal.setup?._branchName, projectModal.setup?._application, true)} onAbort={() => setProjectModal(prev => prev ? ({ ...prev, setup: null }) : prev)} />
                             </div>
                           ) : projectModal.alreadyExists ? (() => {
                             const info = projectModal.projectInfo || {}
@@ -2397,93 +2406,15 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                                 {/* Fix Versions + Release Branch */}
                                 <FixVersionBlock fixVersions={projectModal.fixVersions} app={projectModal.rule?.application || ''} codeFreezeDate={projectModal.codeFreezeDate} releaseDate={projectModal.releaseDate} />
                                 {/* Existing branches */}
-                                {existingBranches.length > 0 && (
-                                  <div>
-                                    <div style={{ fontSize:10, fontWeight:600, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.04em', marginBottom:4 }}>Existing Branches</div>
-                                    {existingBranches.map(([k, v]) => (
-                                      <div key={k} style={{ fontSize:12, padding:'2px 0', display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
-                                        <span style={{ fontSize:10, color:'var(--text-muted)', minWidth:60, flexShrink:0 }}>{k}</span>
-                                        <button
-                                          onClick={() => doSetupBranch(v, projectModal.rule?.application || info.Application || '')}
-                                          title="Click to checkout this branch in local app"
-                                          style={{ fontFamily:'monospace', fontSize:12, background:'none', border:'none', color:'var(--primary,#1976d2)', cursor:'pointer', padding:'1px 4px', textAlign:'left', borderRadius:3, textDecoration:'underline', textDecorationStyle:'dotted' }}
-                                          onMouseEnter={e => { e.currentTarget.style.background='rgba(25,118,210,0.08)'; e.currentTarget.style.textDecorationStyle='solid' }}
-                                          onMouseLeave={e => { e.currentTarget.style.background='none'; e.currentTarget.style.textDecorationStyle='dotted' }}
-                                        >{v}</button>
-                                        {projectModal.confirmDeleteBranch?.label === k ? (
-                                          <span style={{ display:'inline-flex', gap:4, alignItems:'center', fontSize:11 }}>
-                                            <span style={{ color:'#c62828', fontWeight:500 }}>Delete?</span>
-                                            <button onClick={doDeleteBranch} disabled={projectModal.deleteBranchBusy}
-                                              style={{ fontSize:11, padding:'1px 8px', background:'#c62828', color:'#fff', border:'none', borderRadius:3, cursor:'pointer', fontWeight:600, opacity:projectModal.deleteBranchBusy ? 0.6 : 1 }}>
-                                              {projectModal.deleteBranchBusy ? '…' : 'Yes'}
-                                            </button>
-                                            <button onClick={() => setProjectModal(prev => ({ ...prev, confirmDeleteBranch: null }))}
-                                              disabled={projectModal.deleteBranchBusy}
-                                              style={{ fontSize:11, padding:'1px 8px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, cursor:'pointer', color:'var(--text)' }}>
-                                              No
-                                            </button>
-                                          </span>
-                                        ) : (
-                                          <button
-                                            onClick={() => setProjectModal(prev => ({ ...prev, confirmDeleteBranch: { label: k, name: v }, deleteBranchError: null, deleteBranchWarning: null }))}
-                                            title={`Delete ${k}`}
-                                            style={{ fontSize:12, background:'none', border:'none', cursor:'pointer', color:'#999', padding:'0 2px', lineHeight:1, borderRadius:2 }}
-                                            onMouseEnter={e => { e.currentTarget.style.color='#c62828' }}
-                                            onMouseLeave={e => { e.currentTarget.style.color='#999' }}
-                                          >🗑</button>
-                                        )}
-                                      </div>
-                                    ))}
-                                    {projectModal.deleteBranchWarning && (
-                                      <div style={{ fontSize:11, color:'#e65100', background:'#fff3e0', border:'1px solid #ffcc80', borderRadius:4, padding:'5px 8px', marginTop:4 }}>
-                                        ⚠ {projectModal.deleteBranchWarning}
-                                      </div>
-                                    )}
-                                    {projectModal.deleteBranchError && (
-                                      <div style={{ fontSize:11, color:'#c62828', marginTop:4 }}>{projectModal.deleteBranchError}</div>
-                                    )}
-                                  </div>
-                                )}
-                                {/* Add new branch */}
-                                {projectModal.addBranchDone ? (
-                                  <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                                    <span style={{ fontSize:12, color:'#2e7d32', fontWeight:600 }}>✓ Branch created in project</span>
-                                    <button onClick={() => setProjectModal(null)} style={{ fontSize:11, padding:'2px 8px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, cursor:'pointer', color:'var(--text)' }}>Close</button>
-                                  </div>
-                                ) : (projectModal.issueType?.toLowerCase() === 'clone - bug' ? (
-                                  <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                                    <button
-                                      onClick={handleCloneWF}
-                                      disabled={!!projectModal?.cloneWFLoading}
-                                      style={{ fontSize:12, padding:'5px 14px', background: projectModal?.cloneWFLoading ? '#b35000' : '#e65100', color:'#fff', border:'none', borderRadius:4, cursor: projectModal?.cloneWFLoading ? 'not-allowed' : 'pointer', fontWeight:600, opacity: projectModal?.cloneWFLoading ? 0.75 : 1 }}
-                                    >{projectModal?.cloneWFLoading ? 'Opening…' : 'Clone WF'}</button>
-                                    <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Cancel</button>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <div>
-                                      <div style={{ fontSize:10, fontWeight:600, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.04em', marginBottom:4 }}>New Branch</div>
-                                      <input
-                                        value={projectModal.newBranchInput || ''}
-                                        onChange={e => setProjectModal(prev => ({ ...prev, newBranchInput: e.target.value }))}
-                                        style={{ ...inp12, width:'100%', maxWidth:560 }}
-                                        onFocus={e => e.target.style.borderColor='#1565c0'}
-                                        onBlur={e  => e.target.style.borderColor='#90caf9'}
-                                      />
-                                    </div>
-                                    <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                                      <button
-                                        onClick={doAddBranch}
-                                        disabled={projectModal.addBranchBusy || !projectModal.newBranchInput?.trim()}
-                                        style={{ fontSize:12, padding:'5px 14px', background:'#1565c0', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity:(projectModal.addBranchBusy || !projectModal.newBranchInput?.trim()) ? 0.6 : 1 }}
-                                      >{projectModal.addBranchBusy ? 'Creating…' : 'Create Branch'}</button>
-                                      <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Cancel</button>
-                                      {projectModal.addBranchError && <span style={{ fontSize:11, color:'#c62828' }}>{projectModal.addBranchError}</span>}
-                                    </div>
-                                  </>
-                                ))}
-                                {/* Setup progress — triggered by clicking any branch or creating new */}
-                                <SetupProgress setup={projectModal.setup} onNavigate={navigate} onConfirmRevert={() => doSetupBranch(projectModal.setup?._branchName, projectModal.setup?._application, true)} onAbort={() => setProjectModal(prev => prev ? ({ ...prev, setup: null }) : prev)} />
+                                {/* Branches now live in Engineering Intelligence > Work Item Intelligence (development stage) */}
+                                <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                                  <EiButton ei={projectModal.ei} navigate={navigate} />
+                                  {projectModal.issueType?.toLowerCase() === 'clone - bug' && (
+                                    <button onClick={handleCloneWF} disabled={!!projectModal?.cloneWFLoading}
+                                      style={{ fontSize:12, padding:'5px 14px', background:'#e65100', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: projectModal?.cloneWFLoading ? 0.75 : 1 }}>{projectModal?.cloneWFLoading ? 'Opening…' : 'Clone WF'}</button>
+                                  )}
+                                  <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Close</button>
+                                </div>
                               </div>
                             )
                           })() : (
@@ -2557,35 +2488,15 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                                       </button>
                                     </div>
                                     {/* Branch(es) */}
-                                    <div>
-                                      <div style={{ fontSize:10, fontWeight:600, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.04em', marginBottom:5 }}>Branch(es)</div>
-                                      {branches.map((b, i) => (
-                                        <div key={i} style={{ display:'flex', gap:6, marginBottom:5, alignItems:'center' }}>
-                                          <input value={b} onChange={e => updateBranch(i, e.target.value)}
-                                            placeholder="branch-name"
-                                            style={{ ...inp, maxWidth:560 }}
-                                            onFocus={e => e.target.style.borderColor='#6a1b9a'}
-                                            onBlur={e  => e.target.style.borderColor='var(--border)'}
-                                          />
-                                          <button onClick={() => removeBranch(i)}
-                                            style={{ background:'none', border:'none', cursor:'pointer', fontSize:13, color:'var(--text-muted)', padding:'2px 4px', opacity:0.5 }}
-                                            onMouseEnter={e => { e.currentTarget.style.opacity=1; e.currentTarget.style.color='#c62828' }}
-                                            onMouseLeave={e => { e.currentTarget.style.opacity=0.5; e.currentTarget.style.color='var(--text-muted)' }}>✕</button>
-                                        </div>
-                                      ))}
-                                      <button onClick={addBranch}
-                                        style={{ fontSize:11, color:'#6a1b9a', background:'none', border:'1px dashed rgba(106,27,154,0.35)', borderRadius:4, cursor:'pointer', padding:'2px 10px' }}>
-                                        + Add Branch
-                                      </button>
-                                    </div>
+                                    
                                   </>
                                 )
                               })()}
                               <div style={{ display:'flex', gap:8, alignItems:'center' }}>
                                 <button
                                   onClick={doCreateProject}
-                                  disabled={projectModal.creating || !(projectModal.branches||[]).some(b=>b.trim())}
-                                  style={{ fontSize:12, padding:'5px 14px', background:'#6a1b9a', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: (projectModal.creating || !(projectModal.branches||[]).some(b=>b.trim())) ? 0.6 : 1 }}
+                                  disabled={projectModal.creating}
+                                  style={{ fontSize:12, padding:'5px 14px', background:'#6a1b9a', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: projectModal.creating ? 0.6 : 1 }}
                                 >
                                   {projectModal.creating ? 'Creating…' : 'Create Project'}
                                 </button>
@@ -2872,7 +2783,7 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                           <td colSpan={mainIndices.length + 1} style={{ padding: '12px 16px', borderBottom: '2px solid #ce93d8' }}>
                             {projectModal.loading ? (
                               <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--text-muted)' }}>
-                                <span className="spinner" style={{ width:12, height:12, borderWidth:1.5 }} /> Loading branch rules…
+                                <span className="spinner" style={{ width:12, height:12, borderWidth:1.5 }} /> Loading project details…
                               </div>
                             ) : projectModal.error ? (
                               <div style={{ display:'flex', alignItems:'center', gap:10 }}>
@@ -2883,9 +2794,9 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                               <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                                 <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                                   <span style={{ fontSize:12, color:'#2e7d32', fontWeight:600 }}>✓ Project created: {projectModal.created}</span>
+                                <EiButton ei={projectModal.ei} navigate={navigate} />
                                   <button onClick={() => setProjectModal(null)} style={{ fontSize:11, padding:'2px 8px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, cursor:'pointer', color:'var(--text)' }}>Close</button>
                                 </div>
-                                <SetupProgress setup={projectModal.setup} onNavigate={navigate} onConfirmRevert={() => doSetupBranch(projectModal.setup?._branchName, projectModal.setup?._application, true)} onAbort={() => setProjectModal(prev => prev ? ({ ...prev, setup: null }) : prev)} />
                               </div>
                             ) : projectModal.alreadyExists ? (() => {
                               const info = projectModal.projectInfo || {}
@@ -2921,88 +2832,15 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                                     })}
                                   </div>
                                   <FixVersionBlock fixVersions={projectModal.fixVersions} app={projectModal.rule?.application || ''} codeFreezeDate={projectModal.codeFreezeDate} releaseDate={projectModal.releaseDate} />
-                                  {existingBranches.length > 0 && (
-                                    <div>
-                                      <div style={{ fontSize:10, fontWeight:600, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.04em', marginBottom:4 }}>Existing Branches</div>
-                                      {existingBranches.map(([k, v]) => (
-                                        <div key={k} style={{ fontSize:12, padding:'2px 0', display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
-                                          <span style={{ fontSize:10, color:'var(--text-muted)', minWidth:60, flexShrink:0 }}>{k}</span>
-                                          <button
-                                            onClick={() => doSetupBranch(v, projectModal.rule?.application || info.Application || '')}
-                                            title="Click to checkout this branch in local app"
-                                            style={{ fontFamily:'monospace', fontSize:12, background:'none', border:'none', color:'var(--primary,#1976d2)', cursor:'pointer', padding:'1px 4px', textAlign:'left', borderRadius:3, textDecoration:'underline', textDecorationStyle:'dotted' }}
-                                            onMouseEnter={e => { e.currentTarget.style.background='rgba(25,118,210,0.08)'; e.currentTarget.style.textDecorationStyle='solid' }}
-                                            onMouseLeave={e => { e.currentTarget.style.background='none'; e.currentTarget.style.textDecorationStyle='dotted' }}
-                                          >{v}</button>
-                                          {projectModal.confirmDeleteBranch?.label === k ? (
-                                            <span style={{ display:'inline-flex', gap:4, alignItems:'center', fontSize:11 }}>
-                                              <span style={{ color:'#c62828', fontWeight:500 }}>Delete?</span>
-                                              <button onClick={doDeleteBranch} disabled={projectModal.deleteBranchBusy}
-                                                style={{ fontSize:11, padding:'1px 8px', background:'#c62828', color:'#fff', border:'none', borderRadius:3, cursor:'pointer', fontWeight:600, opacity:projectModal.deleteBranchBusy ? 0.6 : 1 }}>
-                                                {projectModal.deleteBranchBusy ? '…' : 'Yes'}
-                                              </button>
-                                              <button onClick={() => setProjectModal(prev => ({ ...prev, confirmDeleteBranch: null }))}
-                                                disabled={projectModal.deleteBranchBusy}
-                                                style={{ fontSize:11, padding:'1px 8px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, cursor:'pointer', color:'var(--text)' }}>
-                                                No
-                                              </button>
-                                            </span>
-                                          ) : (
-                                            <button
-                                              onClick={() => setProjectModal(prev => ({ ...prev, confirmDeleteBranch: { label: k, name: v }, deleteBranchError: null, deleteBranchWarning: null }))}
-                                              title={`Delete ${k}`}
-                                              style={{ fontSize:12, background:'none', border:'none', cursor:'pointer', color:'#999', padding:'0 2px', lineHeight:1, borderRadius:2 }}
-                                              onMouseEnter={e => { e.currentTarget.style.color='#c62828' }}
-                                              onMouseLeave={e => { e.currentTarget.style.color='#999' }}
-                                            >🗑</button>
-                                          )}
-                                        </div>
-                                      ))}
-                                      {projectModal.deleteBranchWarning && (
-                                        <div style={{ fontSize:11, color:'#e65100', background:'#fff3e0', border:'1px solid #ffcc80', borderRadius:4, padding:'5px 8px', marginTop:4 }}>
-                                          ⚠ {projectModal.deleteBranchWarning}
-                                        </div>
-                                      )}
-                                      {projectModal.deleteBranchError && (
-                                        <div style={{ fontSize:11, color:'#c62828', marginTop:4 }}>{projectModal.deleteBranchError}</div>
-                                      )}
-                                    </div>
+                                  {/* Branches now live in Engineering Intelligence > Work Item Intelligence (development stage) */}
+                                <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                                  <EiButton ei={projectModal.ei} navigate={navigate} />
+                                  {projectModal.issueType?.toLowerCase() === 'clone - bug' && (
+                                    <button onClick={handleCloneWF} disabled={!!projectModal?.cloneWFLoading}
+                                      style={{ fontSize:12, padding:'5px 14px', background:'#e65100', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: projectModal?.cloneWFLoading ? 0.75 : 1 }}>{projectModal?.cloneWFLoading ? 'Opening…' : 'Clone WF'}</button>
                                   )}
-                                  {projectModal.addBranchDone ? (
-                                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                                      <span style={{ fontSize:12, color:'#2e7d32', fontWeight:600 }}>✓ Branch created in project</span>
-                                      <button onClick={() => setProjectModal(null)} style={{ fontSize:11, padding:'2px 8px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:3, cursor:'pointer', color:'var(--text)' }}>Close</button>
-                                    </div>
-                                  ) : (projectModal.issueType?.toLowerCase() === 'clone - bug' ? (
-                                    <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                                      <button
-                                        onClick={handleCloneWF}
-                                        style={{ fontSize:12, padding:'5px 14px', background:'#e65100', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600 }}
-                                      >Clone WF</button>
-                                      <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Cancel</button>
-                                    </div>
-                                  ) : (
-                                    <>
-                                      <div>
-                                        <div style={{ fontSize:10, fontWeight:600, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.04em', marginBottom:4 }}>New Branch</div>
-                                        <input
-                                          value={projectModal.newBranchInput || ''}
-                                          onChange={e => setProjectModal(prev => ({ ...prev, newBranchInput: e.target.value }))}
-                                          style={{ ...inp12, width:'100%', maxWidth:560 }}
-                                          onFocus={e => e.target.style.borderColor='#1565c0'}
-                                          onBlur={e  => e.target.style.borderColor='#90caf9'}
-                                        />
-                                      </div>
-                                      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                                        <button onClick={doAddBranch} disabled={projectModal.addBranchBusy || !projectModal.newBranchInput?.trim()}
-                                          style={{ fontSize:12, padding:'5px 14px', background:'#1565c0', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity:(projectModal.addBranchBusy || !projectModal.newBranchInput?.trim()) ? 0.6 : 1 }}
-                                        >{projectModal.addBranchBusy ? 'Creating…' : 'Create Branch'}</button>
-                                        <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Cancel</button>
-                                        {projectModal.addBranchError && <span style={{ fontSize:11, color:'#c62828' }}>{projectModal.addBranchError}</span>}
-                                      </div>
-                                    </>
-                                  ))}
-                                  <SetupProgress setup={projectModal.setup} onNavigate={navigate} onConfirmRevert={() => doSetupBranch(projectModal.setup?._branchName, projectModal.setup?._application, true)} onAbort={() => setProjectModal(prev => prev ? ({ ...prev, setup: null }) : prev)} />
+                                  <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Close</button>
+                                </div>
                                 </div>
                               )
                             })() : (
@@ -3072,33 +2910,13 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                                           + Add Sprint
                                         </button>
                                       </div>
-                                      <div>
-                                        <div style={{ fontSize:10, fontWeight:600, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.04em', marginBottom:5 }}>Branch(es)</div>
-                                        {branches.map((b, i) => (
-                                          <div key={i} style={{ display:'flex', gap:6, marginBottom:5, alignItems:'center' }}>
-                                            <input value={b} onChange={e => updateBranch(i, e.target.value)}
-                                              placeholder="branch-name"
-                                              style={{ ...inp, maxWidth:560 }}
-                                              onFocus={e => e.target.style.borderColor='#6a1b9a'}
-                                              onBlur={e  => e.target.style.borderColor='var(--border)'}
-                                            />
-                                            <button onClick={() => removeBranch(i)}
-                                              style={{ background:'none', border:'none', cursor:'pointer', fontSize:13, color:'var(--text-muted)', padding:'2px 4px', opacity:0.5 }}
-                                              onMouseEnter={e => { e.currentTarget.style.opacity=1; e.currentTarget.style.color='#c62828' }}
-                                              onMouseLeave={e => { e.currentTarget.style.opacity=0.5; e.currentTarget.style.color='var(--text-muted)' }}>✕</button>
-                                          </div>
-                                        ))}
-                                        <button onClick={addBranch}
-                                          style={{ fontSize:11, color:'#6a1b9a', background:'none', border:'1px dashed rgba(106,27,154,0.35)', borderRadius:4, cursor:'pointer', padding:'2px 10px' }}>
-                                          + Add Branch
-                                        </button>
-                                      </div>
+                                      
                                     </>
                                   )
                                 })()}
                                 <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                                  <button onClick={doCreateProject} disabled={projectModal.creating || !(projectModal.branches||[]).some(b=>b.trim())}
-                                    style={{ fontSize:12, padding:'5px 14px', background:'#6a1b9a', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: (projectModal.creating || !(projectModal.branches||[]).some(b=>b.trim())) ? 0.6 : 1 }}>
+                                  <button onClick={doCreateProject} disabled={projectModal.creating}
+                                    style={{ fontSize:12, padding:'5px 14px', background:'#6a1b9a', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: projectModal.creating ? 0.6 : 1 }}>
                                     {projectModal.creating ? 'Creating…' : 'Create Project'}
                                   </button>
                                   <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Cancel</button>
