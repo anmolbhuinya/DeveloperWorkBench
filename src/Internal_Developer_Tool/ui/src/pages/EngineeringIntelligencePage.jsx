@@ -36,19 +36,31 @@ function Progress({ done, total }) {
 }
 
 // ── landing: the tree ────────────────────────────────────────────────────────────────────────────
+// one entry per workflow: the main workflow of every work item type, then the other built-in workflows of that type (e.g. Clone Bug Workflow under Bug)
+function workflowEntries(cfg) {
+  const out = []
+  cfg.types.forEach(t => {
+    const wf = id => (cfg.workflows.find(w => w.id === id) || {})
+    out.push({ key: t.type, type: t, wf: wf(t.workflow), label: t.type === 'Other' ? 'Other' : wf(t.workflow).name || t.type, to: `${BASE}/work-items/${SLUG[t.type]}${t.type === 'Other' ? '' : `?wf=${t.workflow}`}` })
+    if (t.type !== 'Other') cfg.workflows.filter(w => w.builtin && w.type === t.type && w.id !== t.workflow).forEach(w =>
+      out.push({ key: w.id, type: t, wf: w, label: w.name, to: `${BASE}/work-items/${SLUG[t.type]}?wf=${w.id}`, extra: true }))
+  })
+  return out
+}
+
 function Landing({ cfg }) {
   const nav = useNavigate()
   const link = { background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: 14, padding: 0, textAlign: 'left' }
   const wfOf = id => (cfg.workflows.find(w => w.id === id) || {}).name
+  const entries = workflowEntries(cfg)
   return (
     <div className="card" style={{ maxWidth: 760 }}>
       <div style={{ fontFamily: 'monospace', fontSize: 14, lineHeight: 2 }}>
         <div>Project Management</div>
         <div style={{ paddingLeft: 18 }}>└─ <b>Engineering Intelligence</b></div>
         <div style={{ paddingLeft: 52 }}>└─ <button style={{ ...link, fontWeight: 700 }} onClick={() => nav(`${BASE}/work-items`)}>Work Item Intelligence</button></div>
-        {cfg.types.map((t, i) => (
-          <div key={t.type} style={{ paddingLeft: 88 }}>{i === cfg.types.length - 1 ? '└─' : '├─'} <button style={link} onClick={() => nav(`${BASE}/work-items/${SLUG[t.type]}`)}>
-            {t.type === 'Other' ? 'Other' : wfOf(t.workflow) || t.type}</button></div>
+        {entries.map((e, i) => (
+          <div key={e.key} style={{ paddingLeft: 88 }}>{i === entries.length - 1 ? '└─' : '├─'} <button style={link} onClick={() => nav(e.to)}>{e.label}</button></div>
         ))}
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.7 }}>
@@ -227,6 +239,62 @@ function BranchPanel({ d, itemKey, reload }) {
   )
 }
 
+// Implement Clone stage: a ticket that already has a Clone Workflow project is associated with it (its status feeds the stage);
+// only a ticket without one starts a new clone workflow, with the ticket and release version filled in
+function ClonePanel({ d, itemKey, typ, reload }) {
+  const proj = d.project
+  const [pv, setPv] = useState(null)
+  const [cps, setCps] = useState(null)            // Clone Workflow projects of this ticket
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    api(`${API}/item/${typ}/${itemKey}/clone-projects`).then(r => { setCps(r.ok ? r.projects : []); if (r.ok && r.projects.length) reload() })
+    if (proj) api(`${SPRINT_API}/project-preview`, 'POST', { jira_id: itemKey, story: proj.story, issue_type: proj.issue_type }).then(setPv)
+  }, [itemKey, typ, proj?.story, proj?.issue_type])
+  const fv = (pv?.ok && pv.fix_versions || [])[0] || ''
+  const app = ((pv?.ok && pv.rule?.application) || proj?.application || 'Payor').toLowerCase()
+  const startNew = async () => {
+    setBusy(true)
+    let payorVersion = ''
+    if (fv && app) {
+      const r = await api('/api/project-management/sprint/resolve-release-branch', 'POST', { app, fix_version: fv })
+      if (r.ok && r.release_branch) payorVersion = r.release_branch.replace(/^release-/i, '')
+    }
+    setBusy(false)
+    nav2('/clone-projects/new', { state: { ticket: itemKey, payorVersion } })
+  }
+  const has = cps && cps.length > 0
+  const clr = s => (String(s).toLowerCase() === 'completed' ? '#43a047' : /fail|abort|error/i.test(s) ? '#e53935' : '#1e88e5')
+  return (
+    <div style={{ border: '1px solid var(--border)', borderLeft: '4px solid #e65100', borderRadius: 8, padding: '10px 14px', margin: '12px 0', background: 'var(--surface)' }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>🧬 Clone Workflow <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-muted)' }}>— brings the fix of {itemKey} to its target release</span></div>
+      {!cps ? <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} /> : has ? (
+        <>
+          <div style={{ fontSize: 12, marginBottom: 6 }}>✓ This ticket already has {cps.length === 1 ? 'a Clone Workflow project' : `${cps.length} Clone Workflow projects`} - the stage is associated with {cps.length === 1 ? 'it' : 'the newest one'}; no new clone workflow is needed.</div>
+          {cps.map((p, i) => (
+            <div key={p.pid} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, padding: '5px 0', borderTop: i ? '1px dashed var(--border)' : 'none' }}>
+              <b>Project #{p.pid}</b>
+              <span style={{ color: '#fff', background: clr(p.status), borderRadius: 10, padding: '1px 9px', fontSize: 11, fontWeight: 600 }}>{p.status}</span>
+              <span>{p.completed_stages}/{p.total_stages} stages</span>
+              <span>Release <b>{p.payor_version || p.release_branch || '—'}</b></span>
+              {p.clone_branch && <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)' }}>{p.clone_branch}</span>}
+              {p.clone_pr_url && <a href={p.clone_pr_url} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>PR ↗</a>}
+              <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto', background: '#e65100', borderColor: '#e65100' }} onClick={() => nav2(`/projects/${p.pid}`)}>Open Clone Workflow project #{p.pid} ↗</button>
+            </div>))}
+          <div style={{ marginTop: 6 }}><button className="btn btn-sm" style={small} disabled={busy} onClick={() => { if (window.confirm(`${itemKey} already has a Clone Workflow project. Start another one anyway?`)) startNew() }}>Start another clone workflow…</button></div>
+        </>
+      ) : (
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, alignItems: 'center' }}>
+          <span>Ticket <b>{itemKey}</b></span>
+          <span>Fix version {pv ? <b>{fv || '—'}</b> : <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />}</span>
+          <span>Application <b>{proj?.application || app}</b></span>
+          <span style={{ color: 'var(--text-muted)' }}>No Clone Workflow project exists for this ticket yet.</span>
+          <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto', background: '#e65100', borderColor: '#e65100' }} disabled={busy || !pv} onClick={startNew}>{busy ? 'Opening…' : 'Start Clone Workflow ↗'}</button>
+        </div>)}
+      {pv && !pv.ok && <div style={{ fontSize: 12, color: '#c62828', marginTop: 6 }}>{pv.error}</div>}
+    </div>
+  )
+}
+
 // ── Work Item Intelligence table ─────────────────────────────────────────────────────────────────
 function WorkItemTable({ cfg }) {
   const nav = useNavigate()
@@ -239,17 +307,17 @@ function WorkItemTable({ cfg }) {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr>{['Work Item Type', 'Primary Focus', 'Workflow', 'Owner', 'Contributors'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
           <tbody>
-            {cfg.types.map(t => (
-              <tr key={t.type}>
-                <td style={{ ...td, fontWeight: 600 }}>{t.type}</td>
-                <td style={td}>{t.focus}</td>
+            {workflowEntries(cfg).map(e => (
+              <tr key={e.key}>
+                <td style={{ ...td, fontWeight: 600, color: e.extra ? 'var(--text-muted)' : undefined }}>{e.extra ? `${e.type.type} (${e.wf.name.replace(/ Workflow$/, '')})` : e.type.type}</td>
+                <td style={td}>{e.extra ? 'Port an existing fix to another release' : e.type.focus}</td>
                 <td style={td}>
-                  <button onClick={() => nav(`${BASE}/work-items/${SLUG[t.type]}`)} style={{ background: 'none', border: 'none', color: 'var(--primary)', textDecoration: 'underline', cursor: 'pointer', fontSize: 13, padding: 0 }}>
-                    {t.type === 'Other' ? 'Custom' : wfOf(t.workflow)}
+                  <button onClick={() => nav(e.to)} style={{ background: 'none', border: 'none', color: 'var(--primary)', textDecoration: 'underline', cursor: 'pointer', fontSize: 13, padding: 0 }}>
+                    {e.type.type === 'Other' ? 'Custom' : e.wf.name}
                   </button>
                 </td>
-                <td style={td}>{t.owner}</td>
-                <td style={td}>{t.contributors}</td>
+                <td style={td}>{e.type.owner}</td>
+                <td style={td}>{e.type.contributors}</td>
               </tr>))}
           </tbody>
         </table>
@@ -335,10 +403,12 @@ function WorkflowHome({ cfg, reload, typeSlug }) {
   const [err, setErr] = useState('')
   const [designer, setDesigner] = useState(null)       // null | {} (new) | workflow (edit)
   const isOther = t?.type === 'Other'
-  const wfs = isOther ? cfg.workflows.filter(w => !w.builtin) : cfg.workflows.filter(w => w.id === t?.workflow)
-  const loadItems = useCallback(() => { if (t) api(`${API}/items?type=${t.type}`).then(d => setItems(d.ok ? d.items : [])) }, [t?.type])
+  const only = new URLSearchParams(useLocation().search).get('wf')           // ?wf=<workflow id>: that workflow of the type only
+  const typeWfs = isOther ? cfg.workflows.filter(w => !w.builtin) : cfg.workflows.filter(w => w.builtin && w.type === t?.type)
+  const wfs = only && typeWfs.some(w => w.id === only) ? typeWfs.filter(w => w.id === only) : typeWfs
+  const loadItems = useCallback(() => { if (t) api(`${API}/items?type=${t.type}`).then(d => setItems(d.ok ? d.items.filter(i => !only || i.workflow_id === only || !typeWfs.some(w => w.id === only)) : [])) }, [t?.type, only])
   useEffect(() => { loadItems() }, [loadItems])
-  useEffect(() => { if (!wid && wfs.length) setWid(wfs[0].id) }, [wfs.length])
+  useEffect(() => { if (wfs.length && !wfs.some(w => w.id === wid)) setWid(wfs[0].id) }, [wfs.map(w => w.id).join()])
   if (!t) return <div className="alert alert-error">Unknown work item type.</div>
   const names = Object.fromEntries(cfg.stages.map(s => [s.id, s.name]))
   const create = async () => {
@@ -350,7 +420,7 @@ function WorkflowHome({ cfg, reload, typeSlug }) {
   return (
     <>
       <Back to={`${BASE}/work-items`} label="Work Item Intelligence" />
-      <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>{isOther ? 'Other - custom workflows' : wfs[0]?.name}</div>
+      <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>{isOther ? 'Other - custom workflows' : wfs.length === 1 ? wfs[0].name : `${t.type} workflows`}</div>
       <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>{t.type} · {t.focus || 'Custom'}{t.owner ? ` · Owner: ${t.owner}` : ''}</div>
 
       {wfs.map(w => (
@@ -374,7 +444,7 @@ function WorkflowHome({ cfg, reload, typeSlug }) {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <input value={key} onChange={e => setKey(e.target.value)} placeholder={isOther ? 'PAYSUST-210790' : 'PAYOR-211607'} style={{ ...field, width: 170, textTransform: 'uppercase' }} />
             <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Title (optional)" style={{ ...field, flex: '1 1 240px' }} />
-            {isOther && <select value={wid} onChange={e => setWid(e.target.value)} style={field}>{wfs.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select>}
+            {wfs.length > 1 && <select value={wid} onChange={e => setWid(e.target.value)} style={field}>{wfs.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select>}
             <button className="btn btn-sm btn-primary" disabled={!key.trim()} onClick={create}>Create &amp; open</button>
           </div>)}
         {err && <div className="alert alert-error" style={{ marginTop: 8, fontSize: 12 }}>{err}</div>}
@@ -384,12 +454,12 @@ function WorkflowHome({ cfg, reload, typeSlug }) {
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{t.type} work items {items ? `(${items.length})` : ''}</div>
         {items === null ? <span className="spinner" /> : items.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>None yet.</div> : (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr>{['Key', 'Title', ...(isOther ? ['Workflow'] : []), 'Progress', 'Created', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Key', 'Title', ...(wfs.length > 1 || isOther ? ['Workflow'] : []), 'Progress', 'Created', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
             <tbody>{items.map(it => (
               <tr key={it.key}>
                 <td style={td}><button onClick={() => nav(`${BASE}/work-items/${typeSlug}/${it.key}`)} style={{ background: 'none', border: 'none', color: 'var(--primary)', textDecoration: 'underline', cursor: 'pointer', fontWeight: 600, padding: 0 }}>{it.key}</button></td>
                 <td style={td}>{it.title}</td>
-                {isOther && <td style={td}>{it.workflow}</td>}
+                {(wfs.length > 1 || isOther) && <td style={td}>{it.workflow}</td>}
                 <td style={td}><Progress done={it.done} total={it.total} /></td>
                 <td style={{ ...td, whiteSpace: 'nowrap' }}>{it.created}</td>
                 <td style={td}><button className="btn btn-sm btn-danger" onClick={() => del(it.key)}>🗑</button></td>
@@ -483,6 +553,7 @@ function ItemWorkflow({ cfg, typeSlug, itemKey }) {
           </div>
           <div style={{ fontWeight: 700, fontSize: 16 }}>{stage.n}. {stage.name}</div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 10px' }}>{stage.description}</div>
+          {stage.clone && <ClonePanel d={d} itemKey={itemKey} typ={t.type} reload={() => api(`${API}/item/${t.type}/${itemKey}`).then(apply)} />}
           {stage.branching && <BranchPanel d={d} itemKey={itemKey} reload={() => api(`${API}/item/${t.type}/${itemKey}`).then(apply)} />}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
             <label style={{ fontSize: 12 }}>Status{' '}

@@ -285,9 +285,9 @@ function EiButton({ ei, navigate }) {
   if (!ei) return null
   return (
     <button onClick={() => navigate(`/project-management/engineering-intelligence/work-items/${ei.slug}/${ei.key}`)}
-      title={`Open ${ei.key} in Engineering Intelligence > Work Item Intelligence (${ei.type})`}
+      title={`Open ${ei.key} in Engineering Intelligence > Work Item Intelligence (${ei.type} - ${ei.workflow || ''})`}
       style={{ fontSize:12, padding:'5px 14px', background:'#1565c0', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600 }}>
-      Engineering Intelligence ↗ <span style={{ fontWeight:400, opacity:0.85 }}>({ei.type})</span>
+      Engineering Intelligence ↗ <span style={{ fontWeight:400, opacity:0.85 }}>({ei.workflow || ei.type})</span>
     </button>
   )
 }
@@ -777,26 +777,6 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
     } catch(e) {
       setProjectModal(prev => prev?.origIdx === origIdx ? { ...prev, loading: false, error: String(e) } : prev)
     }
-  }
-
-  const handleCloneWF = async () => {
-    if (!projectModal || projectModal.cloneWFLoading) return
-    setProjectModal(prev => ({ ...prev, cloneWFLoading: true }))
-    const fv  = (projectModal.fixVersions || [])[0] || ''
-    const app = (projectModal.rule?.application || 'Payor').toLowerCase()
-    let payorVersion = ''
-    if (fv && app) {
-      try {
-        const d = await fetch('/api/project-management/sprint/resolve-release-branch', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ app, fix_version: fv }),
-        }).then(r => r.json())
-        if (d.ok && d.release_branch) {
-          payorVersion = d.release_branch.replace(/^release-/i, '')
-        }
-      } catch {}
-    }
-    navigate('/clone-projects/new', { state: { ticket: projectModal.jiraId, payorVersion } })
   }
 
   const doCreateProject = async () => {
@@ -2409,10 +2389,6 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                                 {/* Branches now live in Engineering Intelligence > Work Item Intelligence (development stage) */}
                                 <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                                   <EiButton ei={projectModal.ei} navigate={navigate} />
-                                  {projectModal.issueType?.toLowerCase() === 'clone - bug' && (
-                                    <button onClick={handleCloneWF} disabled={!!projectModal?.cloneWFLoading}
-                                      style={{ fontSize:12, padding:'5px 14px', background:'#e65100', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: projectModal?.cloneWFLoading ? 0.75 : 1 }}>{projectModal?.cloneWFLoading ? 'Opening…' : 'Clone WF'}</button>
-                                  )}
                                   <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Close</button>
                                 </div>
                               </div>
@@ -2835,10 +2811,6 @@ function SprintDetail({ sprint: sprintProp, onBack, onRename }) {
                                   {/* Branches now live in Engineering Intelligence > Work Item Intelligence (development stage) */}
                                 <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                                   <EiButton ei={projectModal.ei} navigate={navigate} />
-                                  {projectModal.issueType?.toLowerCase() === 'clone - bug' && (
-                                    <button onClick={handleCloneWF} disabled={!!projectModal?.cloneWFLoading}
-                                      style={{ fontSize:12, padding:'5px 14px', background:'#e65100', color:'#fff', border:'none', borderRadius:4, cursor:'pointer', fontWeight:600, opacity: projectModal?.cloneWFLoading ? 0.75 : 1 }}>{projectModal?.cloneWFLoading ? 'Opening…' : 'Clone WF'}</button>
-                                  )}
                                   <button onClick={() => setProjectModal(null)} style={{ fontSize:12, padding:'5px 12px', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', color:'var(--text)' }}>Close</button>
                                 </div>
                                 </div>

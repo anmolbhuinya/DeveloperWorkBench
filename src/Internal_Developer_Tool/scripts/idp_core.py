@@ -29164,8 +29164,12 @@ done
             if stages is None: stages = _EI_STAGES; _ei_write("stages.json", stages)
             wfs = _ei_read("workflows.json", None)
             if wfs is None: wfs = _EI_WORKFLOWS; _ei_write("workflows.json", wfs)
+            if not any(s_["id"] == "implement_clone" for s_ in stages):
+                stages = stages + _EI_CLONE_STAGES; _ei_write("stages.json", stages)
             if not any(w["id"] == "general_work_item" for w in wfs):
                 wfs = wfs + [_EI_GENERAL_WF]; _ei_write("workflows.json", wfs)
+            if not any(w["id"] == "clone_bug" for w in wfs):
+                wfs = wfs + [_EI_CLONE_WF]; _ei_write("workflows.json", wfs)
         return types, stages, wfs
 
     def _ei_dir(typ, key):
@@ -29239,9 +29243,19 @@ done
         + [(t, "Feature", "feature_analysis") for t in ("Feature", "Clone - Feature", "New Feature", "Enhancement", "Improvement")]
         + [(t, "Story", "story_analysis") for t in ("Story", "Mini-Story", "Spike")]
         + [(t, "Task", "task_implementation") for t in ("Task", "Technical Task", "Tech Debt", "Sub-task", "Subtask", "Sub-Task", "Internal Task")]
-        + [(t, "Bug", "bug_investigation") for t in ("Bug", "Clone - Bug", "Internal Bug", "Clone - Internal Bug", "Product Bug", "Defect", "Doc-Bug")]
+        + [(t, "Bug", "bug_investigation") for t in ("Bug", "Internal Bug", "Product Bug", "Defect", "Doc-Bug")]
+        + [(t, "Bug", "clone_bug") for t in ("Clone - Bug", "Clone - Internal Bug")]
         + [("*", "Other", "general_work_item")]
     )
+    # Clone - Bug: the fix already exists in another release; the work is to bring it over (the existing Clone Workflow tool does the cloning)
+    _EI_CLONE_STAGES = [
+        _ei_stage("clone_source_analysis", "Source Bug & Fix Analysis", "Find the original bug, the fix that was delivered, its PR / commits and the release it went into."),
+        _ei_stage("clone_target_release", "Target Release Identification", "Release / fix version this clone is for and the release branch it must land on."),
+        _ei_stage("clone_applicability", "Applicability Check", "Does the problem exist in the target release? Code differences that stop the fix from applying as is."),
+        _ei_stage("implement_clone", "Implement Clone", "Run the Clone Workflow: it cherry-picks / ports the fix to the target release. Open it with the button below and record the result."),
+    ]
+    _EI_CLONE_WF = {"id": "clone_bug", "name": "Clone Bug Workflow", "type": "Bug", "builtin": True,
+                    "stages": ["clone_source_analysis", "clone_target_release", "clone_applicability", "implement_clone", "regression_risk", "validation_testing", "closure_summary"]}
     _EI_GENERAL_WF = {"id": "general_work_item", "name": "General Work Item", "type": "Other", "builtin": False,
                       "stages": ["requirement", "implementation_plan", "development", "validation", "completion_review"]}
 
@@ -29274,7 +29288,16 @@ done
         wb.save(str(path))
 
     def _ei_router_rows():
-        return _ei_sheet_rows(EI_ROUTER, "router", _EI_ROUTER_COLS, _EI_ROUTER_DEFAULT)
+        rows = _ei_sheet_rows(EI_ROUTER, "router", _EI_ROUTER_COLS, _EI_ROUTER_DEFAULT)
+        fix = [r for r in rows if r.get("Jira Issue Type", "").lower() in ("clone - bug", "clone - internal bug") and r.get("Workflow ID") == "bug_investigation"]
+        if fix:                                                          # the clone issue types had the generic bug workflow before the clone workflow existed
+            for r in fix: r["Workflow ID"] = "clone_bug"
+            have = {r["Jira Issue Type"].lower() for r in rows}
+            for t in ("Clone - Bug", "Clone - Internal Bug"):
+                if t.lower() not in have: rows.append({"Jira Issue Type": t, "Work Item Type": "Bug", "Workflow ID": "clone_bug"})
+            try: _ei_sheet_write(EI_ROUTER, "router", _EI_ROUTER_COLS, [[r.get("Jira Issue Type", ""), r.get("Work Item Type", ""), r.get("Workflow ID", "")] for r in rows])
+            except PermissionError: pass
+        return rows
 
     def _ei_route(issue_type):
         """(work item type, workflow id) for a Jira issue type; '*' is the fallback row."""
@@ -29322,7 +29345,8 @@ done
         exists = bool(typ)
         if not typ: typ, wid = _ei_route(issue_type)
         else: wid = _ei_load_state(d)["meta"].get("Workflow ID", "")
-        return {"type": typ, "slug": typ.lower(), "key": str(key).upper(), "workflow_id": wid, "exists": exists}
+        wname = next((w["name"] for w in _ei_config()[2] if w["id"] == wid), "")
+        return {"type": typ, "slug": typ.lower(), "key": str(key).upper(), "workflow_id": wid, "workflow": wname, "exists": exists}
 
     def _ei_make_item(typ, key, wid, title, project_rows=None):
         """Create the work item folder (workflow.xlsx, analysis.json, recommendations.json, artifacts\\) and its project info file."""
@@ -29431,6 +29455,49 @@ done
         except Exception: pass
         return moved
 
+    _ei_remap_done = []
+    def _ei_remap_workflows(force=False):
+        """Work items created before a workflow existed (e.g. Clone - Bug projects migrated onto the generic bug workflow) are moved to the
+        workflow their Jira issue type routes to - only when nothing has been recorded in them yet and the type folder stays the same."""
+        marker = EI_CFG / "workflows_remapped.json"
+        if (marker.exists() or _ei_remap_done) and not force: return []
+        types, stages, wfs = _ei_config()
+        names = {s_["id"]: s_["name"] for s_ in stages}
+        done = []
+        if EI_DATA.is_dir():
+            for d in sorted(EI_DATA.glob("*/*")):
+                key = d.name
+                if not (d.is_dir() and _EI_KEY.match(key) and (d / "workflow.xlsx").exists()): continue
+                try:
+                    proj = _ei_project(d.parent.name, key)
+                    if not proj or not proj["issue_type"]: continue
+                    typ, wid = _ei_route(proj["issue_type"])
+                    st = _ei_load_state(d)
+                    cur = st["meta"].get("Workflow ID", "")
+                    wf = next((w for w in wfs if w["id"] == wid), None)
+                    if typ != d.parent.name or wid == cur or not wf: continue
+                    old = next((w for w in wfs if w["id"] == cur), None)
+                    if old and not old.get("builtin"): continue                 # a custom workflow was chosen on purpose
+                    if any(v.get("status", "Not Started") != "Not Started" or v.get("notes") for v in st["stages"].values()) or st["notes"].strip(): continue
+                    ana = d / "analysis.json"
+                    if ana.exists() and ana.read_text(encoding="utf-8").strip() not in ("", "{}"): continue
+                    st["meta"]["Workflow"], st["meta"]["Workflow ID"] = wf["name"], wid
+                    _ei_save_state(d, st, wf["stages"], names)
+                    done.append({"key": key, "type": typ, "from": cur, "to": wid})
+                except Exception:
+                    continue
+        _ei_remap_done.append(1)
+        try:
+            old_log = _ei_json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else []
+            EI_CFG.mkdir(parents=True, exist_ok=True)
+            marker.write_text(_ei_json.dumps(old_log + done, indent=2), encoding="utf-8")
+        except Exception: pass
+        return done
+
+    @app.route("/api/project-management/ei/remap-workflows", methods=["POST"])
+    def api_ei_remap():
+        return jsonify({"ok": True, "remapped": _ei_remap_workflows(force=True)})
+
     @app.route("/api/project-management/ei/router", methods=["GET", "POST"])
     def api_ei_router():
         types, stages, wfs = _ei_config()
@@ -29467,7 +29534,7 @@ done
     @app.route("/api/project-management/ei/config", methods=["GET"])
     def api_ei_config():
         types, stages, wfs = _ei_config()
-        try: _ei_migrate_projects()
+        try: _ei_migrate_projects(); _ei_remap_workflows()
         except Exception: pass
         return jsonify({"ok": True, "types": types, "stages": stages, "workflows": wfs, "statuses": _EI_STATUS,
                         "config_dir": str(EI_CFG), "data_dir": str(EI_DATA)})
@@ -29575,7 +29642,9 @@ done
             out.append({"id": sid, "n": i, "name": c["name"], "description": c.get("description", ""), "checklist": c.get("checklist", []),
                         "status": s.get("status", "Not Started"), "started": s.get("started", ""), "completed": s.get("completed", ""), "updated": s.get("updated", ""),
                         "checks": s.get("checks", {}), "notes": s.get("notes", ""), "output": (ana.get(sid) or {}).get("output", "")})
-        for o in out: o["branching"] = o["id"] in _EI_BRANCH_STAGES
+        for o in out:
+            o["branching"] = o["id"] in _EI_BRANCH_STAGES
+            o["clone"] = o["id"] == "implement_clone"
         return {"ok": True, "meta": st["meta"], "workflow": {"id": wf["id"], "name": wf["name"]}, "stages": out, "notes": st["notes"],
                 "recommendations": rec, "artifacts": arts, "folder": str(d), "project": _ei_project(typ, key)}
 
@@ -29590,6 +29659,59 @@ done
             return jsonify({"ok": True})
         p = _ei_item_payload(typ, key)
         return jsonify(p) if p else (jsonify({"ok": False, "error": "Not found"}), 404)
+
+    def _ei_clamp(done, total):
+        try: return min(int(done), int(total))              # the clone project's counter can run past its stage count (retries)
+        except (TypeError, ValueError): return done
+
+    def _ei_clone_projects(key):
+        """Clone Workflow projects (Clone_WorkFlow\\projects.xlsx) that already exist for this ticket, newest first."""
+        out = []
+        for r in load_projects():
+            if str(r.get("ticket") or "").strip().upper() != key.upper(): continue
+            try: ep = _ei_json.loads(r.get("extra_params") or "{}")
+            except Exception: ep = {}
+            so = (ep.get("stage_outputs") or {}).get("clone") or {}
+            out.append({"pid": str(r.get("pid")), "status": str(r.get("status") or ""), "payor_version": str(r.get("payor_version") or ""),
+                        "completed_stages": _ei_clamp(r.get("completed_stages"), r.get("total_stages")), "total_stages": r.get("total_stages"), "created_at": str(r.get("created_at") or ""),
+                        "completed_at": str(r.get("completed_at") or ""), "release_branch": str(ep.get("release_branch") or ""),
+                        "clone_branch": str(so.get("clone_branch") or ""), "clone_pr_url": str(so.get("clone_pr_url") or "")})
+        out.sort(key=lambda x: x["created_at"], reverse=True)
+        return out
+
+    @app.route("/api/project-management/ei/item/<typ>/<key>/clone-projects", methods=["GET"])
+    def api_ei_clone_projects(typ, key):
+        """The Clone Workflow projects of the ticket. When there are some, the Implement Clone stage is associated with them
+        (its status / output follow the newest project) instead of a new clone workflow being started."""
+        if typ not in [t["type"] for t in _ei_config()[0]] or not _EI_KEY.match(key): return jsonify({"ok": False, "error": "Unknown work item"}), 404
+        try: projs = _ei_clone_projects(key)
+        except Exception as ex: return jsonify({"ok": False, "error": str(ex)})
+        p = _ei_item_payload(typ, key)
+        if projs and p and any(s["id"] == "implement_clone" for s in p["stages"]):
+            pr = projs[0]
+            done = str(pr["status"]).lower() == "completed"
+            text = (f"Clone Workflow project #{pr['pid']} - {pr['status']} ({pr['completed_stages']}/{pr['total_stages']} stages)\n"
+                    f"Release {pr['payor_version'] or pr['release_branch']}" + (f"\nClone branch: {pr['clone_branch']}" if pr["clone_branch"] else "")
+                    + (f"\nClone PR: {pr['clone_pr_url']}" if pr["clone_pr_url"] else ""))
+            cur = next(s for s in p["stages"] if s["id"] == "implement_clone")
+            if cur["status"] in ("Not Started", "In Progress", "Completed") and (not cur["output"].strip() or cur["output"].startswith("Clone Workflow project")):
+                want = "Completed" if done else "In Progress"
+                if cur["status"] != want or cur["output"] != text:
+                    d = _ei_dir(typ, key); now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    names = {s["id"]: s["name"] for s in p["stages"]}
+                    with _ei_lock:
+                        st = _ei_load_state(d); c = st["stages"].get("implement_clone", {})
+                        st["stages"]["implement_clone"] = {"status": want, "started": c.get("started") or now, "completed": (c.get("completed") or now) if done else "",
+                                                           "updated": now, "checks": c.get("checks", {}), "notes": c.get("notes", "")}
+                        try:
+                            _ei_save_state(d, st, [s["id"] for s in p["stages"]], names)
+                            ana = {}
+                            try: ana = _ei_json.loads((d / "analysis.json").read_text(encoding="utf-8"))
+                            except Exception: pass
+                            ana["implement_clone"] = {"output": text, "updated": now}
+                            (d / "analysis.json").write_text(_ei_json.dumps(ana, indent=2, ensure_ascii=False), encoding="utf-8")
+                        except PermissionError: pass
+        return jsonify({"ok": True, "projects": projs})
 
     @app.route("/api/project-management/ei/item/<typ>/<key>/stage/<sid>", methods=["PUT"])
     def api_ei_stage_save(typ, key, sid):
